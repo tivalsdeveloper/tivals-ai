@@ -3,7 +3,7 @@
   window.__TIVALS_AI_WIDGET__ = true;
   const script = document.currentScript;
   const config = { name: script?.dataset.name || 'Tivals AI', position: script?.dataset.position === 'left' ? 'left' : 'right', welcome: script?.dataset.welcome || 'Hi! How can I help?', model: script?.dataset.model || 'free/gemini-3.1-pro' };
-  const API = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/ai-tutor';
+  const API = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat';
   const side = config.position;
   let history = [], busy = false, availableModels = [config.model];
   try { history = JSON.parse(localStorage.getItem('tivals-ai-widget-history') || '[]'); } catch {}
