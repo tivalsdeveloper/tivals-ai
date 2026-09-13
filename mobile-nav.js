@@ -1,74 +1,11 @@
 (()=>{
-  if(document.querySelector('#tivalsFloatingNav')) return;
-  const style=document.createElement('style');
-  style.textContent=`
-  .tivals-fab-wrap{position:fixed;right:18px;bottom:max(18px,env(safe-area-inset-bottom));z-index:80;display:flex;align-items:flex-end;gap:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-  .tivals-assistant-pill{height:64px;min-width:min(78vw,420px);border:1.5px solid #61799b;background:#14294b;color:#fff;border-radius:34px;display:flex;align-items:center;gap:14px;padding:0 20px;box-shadow:0 14px 35px #02091666;font-size:18px;font-weight:700}
-  .tivals-assistant-pill .orb{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#39e3b1,#2f8df4);color:#0d3155;font-weight:900}
-  .tivals-assistant-pill .mic{margin-left:auto;font-size:24px;color:#2aa0ff}
-  .tivals-fab{width:64px;height:64px;border:0;border-radius:50%;background:#2499ef;color:#fff;font-size:34px;box-shadow:0 14px 35px #02091666;display:grid;place-items:center;transition:.2s transform,.2s background}
-  .tivals-fab.open{transform:rotate(45deg);background:#229af3}
-  .tivals-flyout{position:absolute;right:0;bottom:78px;width:min(310px,78vw);background:#14294b;border:1px solid #243d63;border-radius:24px;padding:10px;box-shadow:0 22px 60px #0209168f;opacity:0;transform:translateY(12px) scale(.98);pointer-events:none;transition:.18s ease;overflow:hidden}
-  .tivals-flyout.open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
-  .tivals-flyout button{width:100%;border:0;background:transparent;color:#fff;display:flex;align-items:center;gap:16px;padding:14px 16px;border-radius:18px;font-size:17px;text-align:left}
-  .tivals-flyout button:hover,.tivals-flyout button.active{background:#1f4778}
-  .tivals-flyout .icon{width:34px;text-align:center;font-size:24px;line-height:1}
-  .tivals-flyout .label{flex:1}
-  .tivals-mini-sheet{position:fixed;inset:auto 12px calc(96px + env(safe-area-inset-bottom)) 12px;z-index:79;background:#152b4b;border:1px solid #294362;border-radius:24px;padding:20px;box-shadow:0 20px 60px #0008;max-height:66vh;overflow:auto;display:none;color:#fff}
-  .tivals-mini-sheet.open{display:block}
-  .tivals-mini-sheet h2{margin:0 0 8px;font-size:24px}.tivals-mini-sheet p{color:#aebfd5;line-height:1.5}.tivals-mini-sheet .card{background:#20395b;border:1px solid #355172;border-radius:16px;padding:14px;margin-top:10px}.tivals-mini-sheet .card button{margin-top:10px;border:0;border-radius:12px;background:#2499ef;color:white;padding:11px 14px;font-weight:700;width:100%}
-  @media(min-width:761px){.tivals-fab-wrap{right:26px;bottom:26px}.tivals-assistant-pill{min-width:360px}}
-  @media(max-width:520px){.tivals-fab-wrap{left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));gap:10px}.tivals-assistant-pill{min-width:0;flex:1;height:58px;padding:0 16px;font-size:16px}.tivals-assistant-pill .orb{width:34px;height:34px}.tivals-fab{width:58px;height:58px;flex:0 0 58px}.tivals-flyout{right:0;bottom:70px;width:min(300px,86vw)}}
-  `;
-  document.head.appendChild(style);
-
-  const wrap=document.createElement('div');
-  wrap.className='tivals-fab-wrap';
-  wrap.id='tivalsFloatingNav';
-  wrap.innerHTML=`
-    <button class="tivals-assistant-pill" id="tivalsAskAssistant" aria-label="Ask Assistant"><span class="orb">◡</span><span>Ask Assistant</span><span class="mic">🎙</span></button>
-    <button class="tivals-fab" id="tivalsNavToggle" aria-label="Open quick navigation">＋</button>
-    <div class="tivals-flyout" id="tivalsFlyout" role="menu">
-      <button data-action="chats" class="active"><span class="icon">💬</span><span class="label">Chats</span></button>
-      <button data-action="calendar"><span class="icon">📅</span><span class="label">Calendar</span></button>
-      <button data-action="ai"><span class="icon">◡</span><span class="label">Tivals AI</span></button>
-      <button data-action="business"><span class="icon">🏪</span><span class="label">Your business</span></button>
-      <button data-action="settings"><span class="icon">⚙</span><span class="label">Settings</span></button>
-    </div>`;
-  document.body.appendChild(wrap);
-
-  const sheet=document.createElement('section');
-  sheet.className='tivals-mini-sheet';
-  sheet.id='tivalsMiniSheet';
-  document.body.appendChild(sheet);
-
-  const toggle=wrap.querySelector('#tivalsNavToggle');
-  const flyout=wrap.querySelector('#tivalsFlyout');
-  const ask=wrap.querySelector('#tivalsAskAssistant');
-  const closeMenu=()=>{flyout.classList.remove('open');toggle.classList.remove('open');toggle.textContent='＋'};
-  toggle.addEventListener('click',()=>{const open=!flyout.classList.contains('open');flyout.classList.toggle('open',open);toggle.classList.toggle('open',open);toggle.textContent=open?'×':'＋'});
-  ask.addEventListener('click',()=>{const prompt=document.querySelector('#prompt');if(prompt){prompt.focus();prompt.scrollIntoView({behavior:'smooth',block:'end'})}closeMenu()});
-
-  function showSheet(title,body){sheet.innerHTML=`<h2>${title}</h2>${body}`;sheet.classList.add('open');closeMenu()}
-  function closeSheet(){sheet.classList.remove('open')}
-  document.addEventListener('click',e=>{if(!wrap.contains(e.target)&&!sheet.contains(e.target)) closeMenu()});
-
-  flyout.addEventListener('click',e=>{
-    const btn=e.target.closest('button[data-action]');if(!btn)return;
-    flyout.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===btn));
-    const action=btn.dataset.action;
-    if(action==='chats'||action==='ai'){
-      closeSheet();
-      const chat=document.querySelector('#chat');if(chat)chat.scrollTo({top:chat.scrollHeight,behavior:'smooth'});
-      const prompt=document.querySelector('#prompt');if(prompt)prompt.focus();
-      closeMenu();
-    }
-    if(action==='calendar') showSheet('Calendar','<p>Keep AI-related events, follow-ups and reminders in one place.</p><div class="card"><b>Google Calendar</b><p>Calendar connection can be added here next.</p><button type="button" id="tivalsCalendarClose">Close</button></div>');
-    if(action==='business'){
-      const embed=document.querySelector('#embedBtn')||document.querySelector('#sideEmbed');
-      if(embed){embed.click();closeMenu()} else showSheet('Your business','<p>Manage the website assistant and business integrations here.</p>');
-    }
-    if(action==='settings') showSheet('Settings','<div class="card"><b>AI model</b><p>Choose your preferred model using the model selector at the top of the app.</p></div><div class="card"><b>Gmail</b><p>Connect or manage Gmail from the existing Gmail controls.</p></div><div class="card"><b>Website widget</b><p>Use “Add to website” to install Tivals AI on your own site.</p><button type="button" id="tivalsSettingsClose">Done</button></div>');
-  });
-  sheet.addEventListener('click',e=>{if(e.target.id==='tivalsCalendarClose'||e.target.id==='tivalsSettingsClose')closeSheet()});
+if(document.querySelector('#tivalsFloatingNav'))return;
+const css=document.createElement('style');css.textContent=`.tivals-fab-wrap{position:fixed;right:18px;bottom:max(18px,env(safe-area-inset-bottom));z-index:80;display:flex;align-items:flex-end;gap:12px;font-family:Inter,system-ui,sans-serif}.tivals-assistant-pill{height:64px;min-width:min(78vw,420px);border:1.5px solid #61799b;background:#14294b;color:#fff;border-radius:34px;display:flex;align-items:center;gap:14px;padding:0 20px;font-size:18px;font-weight:700}.tivals-assistant-pill .orb{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#39e3b1,#2f8df4);color:#0d3155}.tivals-assistant-pill .mic{margin-left:auto;color:#2aa0ff}.tivals-fab{width:64px;height:64px;border:0;border-radius:50%;background:#2499ef;color:#fff;font-size:34px}.tivals-flyout{position:absolute;right:0;bottom:78px;width:min(310px,82vw);background:#14294b;border:1px solid #29466f;border-radius:22px;padding:10px;box-shadow:0 22px 60px #0209168f;opacity:0;transform:translateY(10px);pointer-events:none;transition:.18s}.tivals-flyout.open{opacity:1;transform:none;pointer-events:auto}.tivals-flyout button{width:100%;border:0;background:transparent;color:#fff;display:flex;gap:16px;padding:14px 16px;border-radius:16px;font-size:17px;text-align:left}.tivals-flyout button.active{background:#1f4778}.tivals-flyout .icon{width:32px;text-align:center}.tivals-page{position:fixed;inset:0;z-index:75;background:#14294b;color:#fff;padding:84px 18px 100px;overflow:auto;display:none}.tivals-page.open{display:block}.tivals-page h1{font-size:34px;margin:0 0 8px}.tivals-page>p{color:#b8c5d8}.tivals-card{background:#20395b;border:1px solid #355172;border-radius:18px;padding:16px;margin:12px 0}.tivals-card h3{margin:0 0 6px}.tivals-card p{color:#b8c5d8;margin:5px 0 12px}.tivals-card button,.tivals-primary{border:0;border-radius:13px;background:#2499ef;color:#fff;padding:12px 15px;font-weight:750}.tivals-close{position:fixed;top:18px;right:18px;z-index:76;width:46px;height:46px;border:0;border-radius:50%;background:#304464;color:#fff;font-size:25px}.tivals-row{display:flex;justify-content:space-between;align-items:center;gap:12px}.tivals-badge{font-size:12px;padding:5px 8px;border-radius:20px;background:#294b70;color:#bfe3ff}@media(max-width:520px){.tivals-fab-wrap{left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));gap:10px}.tivals-assistant-pill{min-width:0;flex:1;height:58px;padding:0 16px;font-size:16px}.tivals-fab{width:58px;height:58px}.tivals-flyout{bottom:70px}.tivals-page{padding-top:76px}}`;document.head.appendChild(css);
+const wrap=document.createElement('div');wrap.id='tivalsFloatingNav';wrap.className='tivals-fab-wrap';wrap.innerHTML=`<button class="tivals-assistant-pill" id="tivalsAsk"><span class="orb">◡</span><span>Ask Assistant</span><span class="mic">🎙</span></button><button class="tivals-fab" id="tivalsToggle">＋</button><div class="tivals-flyout" id="tivalsFly"><button data-a="chats" class="active"><span class="icon">💬</span>Chats</button><button data-a="calendar"><span class="icon">📅</span>Calendar</button><button data-a="ai"><span class="icon">◡</span>Tivals AI</button><button data-a="business"><span class="icon">🏪</span>Your business</button><button data-a="settings"><span class="icon">⚙</span>Settings</button></div>`;document.body.appendChild(wrap);
+const page=document.createElement('section');page.className='tivals-page';page.innerHTML='<button class="tivals-close" aria-label="Close">×</button><div id="tivalsPageBody"></div>';document.body.appendChild(page);
+const fly=wrap.querySelector('#tivalsFly'),toggle=wrap.querySelector('#tivalsToggle'),body=page.querySelector('#tivalsPageBody');const menu=o=>{fly.classList.toggle('open',o);toggle.textContent=o?'×':'＋'};toggle.onclick=()=>menu(!fly.classList.contains('open'));page.querySelector('.tivals-close').onclick=()=>page.classList.remove('open');wrap.querySelector('#tivalsAsk').onclick=()=>{page.classList.remove('open');document.querySelector('#prompt')?.focus();menu(false)};
+const open=(html)=>{body.innerHTML=html;page.classList.add('open');menu(false)};
+fly.onclick=e=>{const b=e.target.closest('[data-a]');if(!b)return;fly.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b));const a=b.dataset.a;if(a==='chats'||a==='ai'){page.classList.remove('open');document.querySelector('#prompt')?.focus();menu(false);return}if(a==='calendar')open(`<h1>Calendar</h1><p>Manage AI follow-ups and appointments.</p><div class="tivals-card"><div class="tivals-row"><h3>Google Calendar</h3><span class="tivals-badge">Ready</span></div><p>Import your Google Calendar to manage bookings and reminders with Tivals AI.</p><button id="calendarConnect">Import Google Calendar</button></div><div class="tivals-card"><h3>New booking</h3><p>Create a booking or reminder. It is saved on this device.</p><button id="newBooking">＋ New booking</button><div id="bookingList"></div></div>`);if(a==='business')open(`<h1>Your business</h1><p>Configure how Tivals AI represents your business.</p><div class="tivals-card"><h3>General information</h3><p>Business name, description and contact information.</p><button id="businessInfo">Edit information</button></div><div class="tivals-card"><h3>Website assistant</h3><p>Install Tivals AI on your website using the existing embed feature.</p><button id="businessWidget">Open website widget</button></div><div class="tivals-card"><h3>FAQ</h3><p>Add answers Tivals AI should use when helping customers.</p><button id="businessFaq">Manage FAQ</button></div>`);if(a==='settings')open(`<h1>Settings</h1><p>Manage Tivals AI and connected services.</p><div class="tivals-card"><h3>AI model</h3><p>Change the model using the model selector at the top of the chat.</p></div><div class="tivals-card"><h3>Gmail</h3><p>Connect Gmail and configure email monitoring.</p><button id="settingsGmail">Manage Gmail</button></div><div class="tivals-card"><h3>Website widget</h3><p>Get the embed code for your websites.</p><button id="settingsWidget">Manage widget</button></div><div class="tivals-card"><h3>Appearance</h3><p>Dark navy mobile interface is enabled.</p></div>`)};
+page.onclick=e=>{if(e.target.id==='settingsGmail'){page.classList.remove('open');document.querySelector('#gmailBtn')?.click()}if(e.target.id==='settingsWidget'||e.target.id==='businessWidget'){page.classList.remove('open');document.querySelector('#embedBtn')?.click()}if(e.target.id==='calendarConnect'){alert('Google Calendar requires Calendar OAuth/API permissions. The interface is ready; authorization must be configured before real calendar data can be imported.')}if(e.target.id==='newBooking'){const title=prompt('Booking or reminder name:');if(!title)return;const when=prompt('Date and time:');const arr=JSON.parse(localStorage.getItem('tivals-bookings')||'[]');arr.push({title,when});localStorage.setItem('tivals-bookings',JSON.stringify(arr));e.target.parentElement.querySelector('#bookingList').innerHTML=arr.map(x=>`<div class="tivals-card"><b>${String(x.title).replace(/[<>]/g,'')}</b><p>${String(x.when||'').replace(/[<>]/g,'')}</p></div>`).join('')}if(e.target.id==='businessInfo'){const name=prompt('Business name:',localStorage.getItem('tivals-business-name')||'');if(name!==null)localStorage.setItem('tivals-business-name',name);alert('Business information saved on this device.')}if(e.target.id==='businessFaq'){const faq=prompt('Add an FAQ or business instruction:',localStorage.getItem('tivals-business-faq')||'');if(faq!==null)localStorage.setItem('tivals-business-faq',faq);alert('FAQ saved on this device.')}};
+document.addEventListener('click',e=>{if(!wrap.contains(e.target)&&!page.contains(e.target))menu(false)});
 })();
