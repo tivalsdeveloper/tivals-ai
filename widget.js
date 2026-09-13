@@ -5,7 +5,7 @@
   const config = { name: script?.dataset.name || 'Tivals AI', position: script?.dataset.position === 'left' ? 'left' : 'right', welcome: script?.dataset.welcome || 'Hi! How can I help?', model: script?.dataset.model || 'free/gemini-3.1-pro' };
   const API = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/ai-tutor';
   const side = config.position;
-  let history = [], busy = false;
+  let history = [], busy = false, availableModels = [config.model];
   try { history = JSON.parse(localStorage.getItem('tivals-ai-widget-history') || '[]'); } catch {}
   const host = document.createElement('div');
   host.id = 'tivals-ai-widget'; document.body.appendChild(host);
@@ -16,11 +16,13 @@
   function add(role, text) { const message = document.createElement('div'); message.className = `msg ${role}`; const bubble = document.createElement('div'); bubble.className = 'bubble'; bubble.textContent = text; message.appendChild(bubble); chat.appendChild(message); requestAnimationFrame(() => { chat.scrollTop = chat.scrollHeight; }); return message; }
   function save() { localStorage.setItem('tivals-ai-widget-history', JSON.stringify(history.slice(-30))); }
   if (!history.length) add('ai', config.welcome); else history.slice(-30).forEach(item => add(item.role === 'assistant' ? 'ai' : 'user', item.content));
+  fetch(API+'?models=1').then(response=>response.json()).then(data=>{const ids=(data.models||[]).map(item=>item.id).filter(Boolean);availableModels=[config.model,...ids].filter((id,index,all)=>all.indexOf(id)===index)}).catch(()=>{});
+  async function askWithFallback(messages,signal,onRetry){let lastError=new Error('All AI models are unavailable.');for(let i=0;i<availableModels.length;i++){if(signal.aborted)throw new DOMException('Stopped','AbortError');if(i>0)onRetry(i+1,availableModels.length);try{const response=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify({model:availableModels[i],messages})});let data={};try{data=await response.json()}catch{}if(response.ok&&data.reply)return data.reply;lastError=new Error(data.error||`Model failed (${response.status}).`)}catch(error){if(error.name==='AbortError')throw error;lastError=error}}throw lastError}
   async function send() {
     const text = input.value.trim(); if (!text || busy) return;
     busy = true; sendButton.disabled = true; input.value = ''; input.style.height = '46px'; add('user', text); history.push({ role: 'user', content: text }); save();
     const waiting = add('ai', 'Thinking…'), controller = new AbortController(), timer = setTimeout(() => controller.abort(), 45000);
-    try { const response = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal, body: JSON.stringify({ model: config.model, messages: history.slice(-10) }) }); let data = {}; try { data = await response.json(); } catch {} if (!response.ok) throw new Error(data.error || `AI request failed (${response.status}).`); waiting.remove(); const reply = data.reply || 'No response received.'; add('ai', reply); history.push({ role: 'assistant', content: reply }); save(); }
+    try { const reply=await askWithFallback(history.slice(-10),controller.signal,(attempt,total)=>{waiting.querySelector('.bubble').textContent=`Trying another model… (${attempt}/${total})`}); waiting.remove(); add('ai', reply); history.push({ role: 'assistant', content: reply }); save(); }
     catch (error) { waiting.querySelector('.bubble').textContent = error.name === 'AbortError' ? 'The response took too long. Please try again.' : (error.message || 'Unable to reach Tivals AI.'); }
     finally { clearTimeout(timer); busy = false; sendButton.disabled = false; input.focus(); }
   }
