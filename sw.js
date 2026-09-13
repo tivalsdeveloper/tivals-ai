@@ -1,5 +1,5 @@
-const CACHE = 'tivals-ai-v11';
-const ASSETS = ['./', './index.html', './widget.js', './manifest.webmanifest', './app-icon.svg', './tivals-theme.css', './robots.txt', './sitemap.xml', './privacy.html', './terms.html'];
+const CACHE = 'tivals-ai-v12';
+const ASSETS = ['./', './index.html', './widget.js', './manifest.webmanifest', './app-icon.svg', './tivals-theme.css', './mobile-nav.js', './robots.txt', './sitemap.xml', './privacy.html', './terms.html'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', event => {
@@ -7,8 +7,9 @@ self.addEventListener('fetch', event => {
   if (event.request.mode === 'navigate') {
     event.respondWith(fetch(event.request).then(async response => {
       const html = await response.text();
-      const themed = html.includes('tivals-theme.css') ? html : html.replace('</head>', '<link rel="stylesheet" href="./tivals-theme.css?v=11"></head>');
-      return new Response(themed, {status: response.status, statusText: response.statusText, headers: {'Content-Type':'text/html; charset=utf-8'}});
+      let enhanced = html.includes('tivals-theme.css') ? html : html.replace('</head>', '<link rel="stylesheet" href="./tivals-theme.css?v=12"></head>');
+      enhanced = enhanced.includes('mobile-nav.js') ? enhanced : enhanced.replace('</body>', '<script src="./mobile-nav.js?v=12"></script></body>');
+      return new Response(enhanced, {status: response.status, statusText: response.statusText, headers: {'Content-Type':'text/html; charset=utf-8'}});
     }).catch(() => caches.match('./index.html')));
     return;
   }
