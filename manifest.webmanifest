@@ -1,0 +1,17 @@
+{
+  "name": "Tivals AI",
+  "short_name": "Tivals AI",
+  "description": "AI coding, learning and Gmail assistant powered by tivalsdeveloper.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#212121",
+  "theme_color": "#212121",
+  "icons": [
+    {
+      "src": "app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
