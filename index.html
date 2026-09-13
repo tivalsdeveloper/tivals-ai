@@ -42,7 +42,7 @@
 <div class="modalBack" id="gmailModal"><div class="modal"><div class="modalTop"><h2>Gmail and email monitor</h2><button class="closeModal" data-close="gmailModal">×</button></div><div class="gmailBox"><b id="gmailStatus">Not connected</b><p id="gmailEmail">Connect your Google account to let Tivals AI read Gmail with read-only permission.</p></div><button class="action" id="gmailConnect">Connect Gmail</button><button class="action" id="gmailRecent" hidden>Show 5 recent emails</button><div class="monitorBox" id="monitorBox" hidden><b><span class="monitorDot" id="modalMonitorDot"></span>Email monitor</b><p id="monitorStatus">Get an alert in this chat when a new email arrives. Monitoring works while this page is open.</p><div class="monitorRow"><select id="monitorInterval" aria-label="Email checking interval"><option value="1">Every minute</option><option value="5" selected>Every 5 minutes</option><option value="15">Every 15 minutes</option></select><button class="action" id="monitorToggle" style="width:auto;margin:0">Start</button></div></div><button class="action danger" id="gmailDisconnect" hidden>Disconnect Gmail</button><div class="emailList" id="emailList"></div></div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0/dist/umd/supabase.min.js"></script>
 <script>
-const API='https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/ai-tutor';
+const API='https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat';
 const SUPABASE_URL='https://kxuszpixwfecawdeqkrx.supabase.co';
 const SUPABASE_KEY='sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
 const AI_URL='https://ai.tivalsdeveloper.site/';
