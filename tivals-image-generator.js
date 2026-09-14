@@ -1,69 +1,43 @@
 /* Tivals AI image generation client. Pixazo API key remains in Supabase Edge Function secrets. */
 (() => {
-  const ENDPOINT = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/pixazo-studio';
-  const SUPABASE_ANON_KEY = 'sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
-  const DEFAULT_MODEL = 'pixazo/flux';
-  const HISTORY_KEY = 'tivals-generated-images';
+  const ENDPOINT='https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/pixazo-studio';
+  const SUPABASE_URL='https://kxuszpixwfecawdeqkrx.supabase.co';
+  const SUPABASE_ANON_KEY='sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
+  const DEFAULT_MODEL='pixazo/flux';
+  const HISTORY_KEY='tivals-generated-images';
+  const BUCKET='tivals-chat-media';
 
-  async function accessToken() {
-    try {
-      if (window.sb?.auth) {
-        const {data} = await window.sb.auth.getSession();
-        if (data?.session?.access_token) return data.session.access_token;
-      }
-      const keys = Object.keys(localStorage).filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'));
-      for (const key of keys) {
-        try {
-          const stored = JSON.parse(localStorage.getItem(key) || '{}');
-          const token = stored?.access_token || stored?.currentSession?.access_token;
-          if (token) return token;
-        } catch {}
-      }
-    } catch {}
-    return '';
+  async function session(){
+    try{if(window.sb?.auth){const {data}=await window.sb.auth.getSession();if(data?.session)return data.session}}catch{}
+    try{for(const key of Object.keys(localStorage).filter(k=>k.startsWith('sb-')&&k.endsWith('-auth-token'))){const v=JSON.parse(localStorage.getItem(key)||'{}');const s=v?.currentSession||v;if(s?.access_token)return s}}catch{}
+    return null;
   }
-
-  function firstUrl(value) {
-    if (!value) return '';
-    if (typeof value === 'string') {
-      const s=value.trim();
-      if (/^https?:\/\//i.test(s)) return s;
-      try { return firstUrl(JSON.parse(s)); } catch {}
-      const m=s.match(/https?:\/\/[^\s"'<>}\\]+/i); return m ? m[0] : '';
-    }
-    if (Array.isArray(value)) { for (const v of value) { const u=firstUrl(v); if(u) return u; } return ''; }
-    if (typeof value === 'object') {
-      for (const key of ['url','image_url','imageUrl','output','images','data','result','response']) {
-        const u=firstUrl(value[key]); if(u) return u;
-      }
-      for (const v of Object.values(value)) { const u=firstUrl(v); if(u) return u; }
-    }
-    return '';
+  function firstUrl(value){if(!value)return'';if(typeof value==='string'){const s=value.trim();if(/^https?:\/\//i.test(s))return s;try{return firstUrl(JSON.parse(s))}catch{}const m=s.match(/https?:\/\/[^\s"'<>}\\]+/i);return m?m[0]:''}if(Array.isArray(value)){for(const v of value){const u=firstUrl(v);if(u)return u}return''}if(typeof value==='object'){for(const k of ['url','image_url','imageUrl','output','images','data','result','response']){const u=firstUrl(value[k]);if(u)return u}for(const v of Object.values(value)){const u=firstUrl(v);if(u)return u}}return''}
+  function chatId(){try{return localStorage.getItem('tivals-active-chat')||'default'}catch{return'default'}}
+  function extFor(type){if(/jpeg/i.test(type))return'jpg';if(/webp/i.test(type))return'webp';if(/gif/i.test(type))return'gif';return'png'}
+  async function archiveImage(sourceUrl,prompt,s){
+    if(!s?.access_token||!s?.user?.id)return null;
+    const r=await fetch(sourceUrl);if(!r.ok)throw new Error('Could not copy generated image to Tivals storage.');
+    const blob=await r.blob();const mime=blob.type||'image/png';const id=(crypto.randomUUID?.()||Date.now()+'-'+Math.random().toString(36).slice(2));
+    const path=s.user.id+'/images/'+id+'.'+extFor(mime);
+    const upload=await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`,{method:'POST',headers:{Authorization:'Bearer '+s.access_token,apikey:SUPABASE_ANON_KEY,'Content-Type':mime,'x-upsert':'false'},body:blob});
+    if(!upload.ok)throw new Error('Generated image was created, but cloud storage upload failed.');
+    const meta=await fetch(`${SUPABASE_URL}/rest/v1/tivals_chat_media`,{method:'POST',headers:{Authorization:'Bearer '+s.access_token,apikey:SUPABASE_ANON_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify({user_id:s.user.id,chat_id:chatId(),media_type:'image',prompt,storage_path:path,mime_type:mime,source_url:sourceUrl})});
+    if(!meta.ok)console.warn('Tivals media metadata save failed');
+    return {storagePath:path,mimeType:mime};
   }
-
-  async function generate(prompt, options = {}) {
-    const text = String(prompt || '').trim();
-    if (!text) throw new Error('Describe the image you want to create.');
-    const token = await accessToken();
-    if (!token) throw new Error('Your sign-in session is missing. Sign in again, then retry image generation.');
-    const response = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json','Authorization':'Bearer '+token,'apikey':SUPABASE_ANON_KEY},
-      body: JSON.stringify({type:'image',prompt:text,model:options.model||DEFAULT_MODEL,steps:options.steps||20,width:options.width||1024,height:options.height||1024})
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401) throw new Error('Your Tivals AI session expired. Sign in again and retry.');
-      throw new Error(data.error || data.message || `Image generation failed (${response.status})`);
-    }
-    const url=firstUrl(data);
-    if(!url) throw new Error('The image service responded successfully but did not return an image URL.');
-    const item={id:data.id||data.request_id||String(Date.now()),prompt:text,model:options.model||DEFAULT_MODEL,url,createdAt:new Date().toISOString(),raw:data};
-    let history=[]; try{history=JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]')}catch{}
-    history.unshift(item); localStorage.setItem(HISTORY_KEY,JSON.stringify(history.slice(0,100)));
-    window.dispatchEvent(new CustomEvent('tivals:image-generated',{detail:item}));
-    return item;
+  async function signedUrl(path,s,expires=604800){if(!path||!s?.access_token)return'';const r=await fetch(`${SUPABASE_URL}/storage/v1/object/sign/${BUCKET}/${path}`,{method:'POST',headers:{Authorization:'Bearer '+s.access_token,apikey:SUPABASE_ANON_KEY,'Content-Type':'application/json'},body:JSON.stringify({expiresIn:expires})});const d=await r.json().catch(()=>({}));if(!r.ok||!d.signedURL)return'';return d.signedURL.startsWith('http')?d.signedURL:SUPABASE_URL+'/storage/v1'+d.signedURL}
+  async function resolve(item){if(!item?.storagePath)return item;const s=await session();const url=await signedUrl(item.storagePath,s);return url?{...item,url}:item}
+  async function generate(prompt,options={}){
+    const text=String(prompt||'').trim();if(!text)throw new Error('Describe the image you want to create.');const s=await session();const token=s?.access_token;if(!token)throw new Error('Your sign-in session is missing. Sign in again, then retry image generation.');
+    const response=await fetch(ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,'apikey':SUPABASE_ANON_KEY},body:JSON.stringify({type:'image',prompt:text,model:options.model||DEFAULT_MODEL,steps:options.steps||20,width:options.width||1024,height:options.height||1024})});
+    const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)throw new Error('Your Tivals AI session expired. Sign in again and retry.');throw new Error(data.error||data.message||`Image generation failed (${response.status})`)}
+    const sourceUrl=firstUrl(data);if(!sourceUrl)throw new Error('The image service responded successfully but did not return an image URL.');
+    let archived=null;try{archived=await archiveImage(sourceUrl,text,s)}catch(e){console.warn(e);}
+    let url=sourceUrl;if(archived?.storagePath){const cloud=await signedUrl(archived.storagePath,s);if(cloud)url=cloud}
+    const item={id:data.id||data.request_id||String(Date.now()),prompt:text,model:options.model||DEFAULT_MODEL,url,sourceUrl,storagePath:archived?.storagePath||'',createdAt:new Date().toISOString()};
+    let history=[];try{history=JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]')}catch{}history.unshift(item);localStorage.setItem(HISTORY_KEY,JSON.stringify(history.slice(0,100)));window.dispatchEvent(new CustomEvent('tivals:image-generated',{detail:item}));return item;
   }
   function history(){try{return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]')}catch{return[]}}
-  window.TivalsImageGenerator={generate,history,model:DEFAULT_MODEL};
+  window.TivalsImageGenerator={generate,history,resolve,model:DEFAULT_MODEL,bucket:BUCKET};
 })();
