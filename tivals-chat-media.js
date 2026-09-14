@@ -1,17 +1,28 @@
 /* Tivals AI — image generation inside the main conversation */
 (() => {
-  const IMAGE_RE=/^(?:\s*)(?:generate|create|make|draw|design|render)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|artwork|illustration)\b/i;
-  const IMAGE_OF_RE=/\b(?:generate|create|make|draw|render)\b.{0,18}\b(?:image|picture|photo|artwork|illustration)\s+(?:of|showing|with)\b/i;
+  const VISUAL_WORD='(?:image|logo|picture|photo|artwork|illustration|graphic|poster|icon|banner)';
+  const IMAGE_RE=new RegExp('^(?:\\s*)(?:generate|create|make|draw|design|render)\\s+(?:me\\s+)?(?:an?\\s+)?'+VISUAL_WORD+'\\b','i');
+  const IMAGE_OF_RE=new RegExp('\\b(?:generate|create|make|draw|design|render)\\b.{0,24}\\b'+VISUAL_WORD+'\\b','i');
   function isImageRequest(text){return IMAGE_RE.test(text)||IMAGE_OF_RE.test(text)}
-  function cleanPrompt(text){return String(text).replace(/^\s*(?:please\s+)?(?:generate|create|make|draw|design|render)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|artwork|illustration)\s*(?:of|showing)?\s*/i,'').trim()||text.trim()}
+  function cleanPrompt(text){return String(text).replace(new RegExp('^\\s*(?:please\\s+)?(?:generate|create|make|draw|design|render)\\s+(?:me\\s+)?(?:an?\\s+)?'+VISUAL_WORD+'\\s*(?:of|showing|with|for)?\\s*','i'),'').trim()||String(text).trim()}
   function parseSavedImage(bubble){
     if(!bubble)return null;
     const text=String(bubble.textContent||'').replace(/\u00a0/g,' ').trim();
-    if(!/\[Generated image\]/i.test(text))return null;
-    const urlMatch=text.match(/https?:\/\/[^\s<>"']+\.(?:png|jpe?g|webp|gif)(?:\?[^\s<>"']*)?/i)||text.match(/https?:\/\/[^\s<>"']+/i);
+    const urlMatch=text.match(/https?:\/\/[^\s<>"']+\.(?:png|jpe?g|webp|gif|avif)(?:\?[^\s<>"']*)?/i);
     if(!urlMatch)return null;
-    const before=text.slice(0,urlMatch.index).replace(/^.*?\[Generated image\]\s*/is,'').trim();
-    return {prompt:before||'Generated image',url:urlMatch[0].replace(/[),.;]+$/,'')};
+    const url=urlMatch[0].replace(/[),.;]+$/,'');
+    const marker=text.match(new RegExp('\\[Generated\\s+('+VISUAL_WORD.slice(3,-1)+')\\]\\s*','i'));
+    const looksGenerated=!!marker || /r2\.dev\//i.test(url) || /flux|image|generated|prompt-/i.test(url);
+    if(!looksGenerated)return null;
+    let prompt='Generated image';
+    if(marker){
+      const start=(marker.index||0)+marker[0].length;
+      prompt=text.slice(start,urlMatch.index).trim()||('Generated '+marker[1].toLowerCase());
+    } else {
+      const before=text.slice(0,urlMatch.index).trim();
+      if(before && before.length<240)prompt=before.replace(/^\[?Generated[^\]]*\]?\s*/i,'').trim()||prompt;
+    }
+    return {prompt,url};
   }
   async function downloadImage(url,prompt,button){const old=button.textContent;button.textContent='Downloading…';button.disabled=true;try{const r=await fetch(url);if(!r.ok)throw new Error('Download failed');const blob=await r.blob();const objectUrl=URL.createObjectURL(blob);const a=document.createElement('a');a.href=objectUrl;a.download='tivals-ai-'+String(prompt||'image').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').slice(0,48)+'.png';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),1500);button.textContent='Downloaded ✓'}catch{const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';a.download='tivals-ai-image.png';document.body.appendChild(a);a.click();a.remove();button.textContent='Open to save'}finally{button.disabled=false;setTimeout(()=>button.textContent=old,2200)}}
   function fillImageCard(bubble,url,prompt){if(!bubble||!url)return;bubble.innerHTML='';bubble.dataset.tivalsImage='1';const card=document.createElement('div');card.className='tivalsImageCard';const title=document.createElement('div');title.className='tivalsImageTitle';title.textContent='Generated image';card.appendChild(title);const img=document.createElement('img');img.className='tivalsGeneratedImage';img.src=url;img.alt=prompt||'Generated image';img.loading='eager';img.referrerPolicy='no-referrer';img.onerror=()=>{img.alt='Generated image could not be loaded';};card.appendChild(img);const actions=document.createElement('div');actions.className='tivalsImageActions';const dl=document.createElement('button');dl.type='button';dl.textContent='↓ Download';dl.onclick=()=>downloadImage(url,prompt,dl);actions.appendChild(dl);const open=document.createElement('a');open.href=url;open.target='_blank';open.rel='noopener';open.textContent='Open';actions.appendChild(open);const again=document.createElement('button');again.type='button';again.textContent='Generate again';again.onclick=()=>runImage(prompt);actions.appendChild(again);card.appendChild(actions);const cap=document.createElement('p');cap.className='tivalsImagePrompt';cap.textContent=prompt||'';card.appendChild(cap);bubble.appendChild(card)}
@@ -28,8 +39,8 @@
   const style=document.createElement('style');style.textContent=`.tivalsImageCard{display:grid;gap:12px}.tivalsImageTitle{font-weight:800;font-size:16px}.tivalsGeneratedImage{display:block;width:min(100%,720px);max-height:720px;object-fit:contain;border-radius:16px;border:1px solid #355f91;background:#07111f}.tivalsImagePrompt{color:#8faed5;font-size:13px;margin:0!important}.tivalsImageActions{display:flex;gap:8px;flex-wrap:wrap}.tivalsImageActions a,.tivalsImageActions button{border:1px solid #355f91;background:#173a66;color:#fff;border-radius:10px;padding:10px 13px;text-decoration:none;font-weight:650}.tivalsImageActions button:first-child{background:#2499ef;border-color:#2499ef}.logo img,.authBrand .logo img,.sideBrand .logo img{width:100%;height:100%;object-fit:cover;border-radius:inherit}`;document.head.appendChild(style);
   document.querySelectorAll('.logo').forEach(el=>{el.textContent='';const img=document.createElement('img');img.src='./app-icon.svg';img.alt='Tivals AI';el.appendChild(img)});
   const restore=()=>requestAnimationFrame(()=>restoreSavedImages());
-  restore();setTimeout(restore,150);setTimeout(restore,600);setTimeout(restore,1500);
+  restore();setTimeout(restore,100);setTimeout(restore,400);setTimeout(restore,1000);setTimeout(restore,2500);
   let scheduled=false;const observer=new MutationObserver(()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;restoreSavedImages()})});const chatRoot=document.querySelector('#chat')||document.querySelector('.chat')||document.body;observer.observe(chatRoot,{childList:true,subtree:true,characterData:true});
-  document.addEventListener('click',e=>{if(e.target.closest?.('.historyBtn,.sideNew'))setTimeout(restore,50)},true);
+  document.addEventListener('click',()=>setTimeout(restore,80),true);
   window.addEventListener('storage',restore);
 })();
