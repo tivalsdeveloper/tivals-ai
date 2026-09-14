@@ -8,8 +8,8 @@ android {
         applicationId 'com.tivalsdeveloper.tivalsai'
         minSdk 23
         targetSdk 35
-        versionCode 9
-        versionName '8.0.1'
+        versionCode 10
+        versionName '8.0.2'
     }
 
     buildFeatures {
