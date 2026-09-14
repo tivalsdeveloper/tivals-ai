@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 
 android {
     namespace 'com.tivalsdeveloper.tivalsai'
-    compileSdk 35
+    compileSdk 36
     defaultConfig {
         applicationId 'com.tivalsdeveloper.tivalsai'
         minSdk 23
