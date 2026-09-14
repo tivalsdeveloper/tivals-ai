@@ -49,11 +49,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="android-v4.0.0"
+          TAG="android-v6.0.0"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" Tivals-AI.apk --clobber
           else
             gh release create "$TAG" Tivals-AI.apk \
-              --title "Tivals AI Android v4.0.0" \
-              --notes "Installable Tivals AI Android APK. Download Tivals-AI.apk directly below."
+              --title "Tivals AI Android v6.0.0" \
+              --notes "Installable Tivals AI Android APK. This Android app opens the live Tivals AI service at ai.tivalsdeveloper.site and includes the latest Android wrapper improvements. Download Tivals-AI.apk directly below."
           fi
