@@ -1,0 +1,72 @@
+name: Fix Tivals AI UI assets
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-index-assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-index:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add UI assets directly to index.html
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('index.html')
+          html = path.read_text(encoding='utf-8')
+
+          css = '<link rel="stylesheet" href="./tivals-theme.css?v=20260914-ui-fix">'
+          scripts = '''<script src="./mobile-nav.js?v=20260914-ui-fix" defer></script>
+          <script src="./tivals-image-generator.js?v=20260914-ui-fix" defer></script>
+          <script src="./tivals-chat-media.js?v=20260914-ui-fix" defer></script>'''
+
+          if 'tivals-theme.css' not in html:
+              marker = '</head>'
+              if marker not in html:
+                  raise SystemExit('index.html has no </head> tag')
+              html = html.replace(marker, f'{css}\n{marker}', 1)
+
+          if 'mobile-nav.js' not in html or 'tivals-image-generator.js' not in html or 'tivals-chat-media.js' not in html:
+              marker = '</body>'
+              if marker not in html:
+                  raise SystemExit('index.html has no </body> tag')
+              missing = []
+              if 'mobile-nav.js' not in html:
+                  missing.append('<script src="./mobile-nav.js?v=20260914-ui-fix" defer></script>')
+              if 'tivals-image-generator.js' not in html:
+                  missing.append('<script src="./tivals-image-generator.js?v=20260914-ui-fix" defer></script>')
+              if 'tivals-chat-media.js' not in html:
+                  missing.append('<script src="./tivals-chat-media.js?v=20260914-ui-fix" defer></script>')
+              html = html.replace(marker, '\n'.join(missing) + '\n' + marker, 1)
+
+          path.write_text(html, encoding='utf-8')
+
+      - name: Verify assets are referenced
+        run: |
+          grep -q 'tivals-theme.css' index.html
+          grep -q 'mobile-nav.js' index.html
+          grep -q 'tivals-image-generator.js' index.html
+          grep -q 'tivals-chat-media.js' index.html
+
+      - name: Commit repaired index
+        run: |
+          if git diff --quiet -- index.html; then
+            echo 'index.html already contains all required UI assets.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git commit -m 'Load Tivals AI UI enhancements directly'
+          git push
