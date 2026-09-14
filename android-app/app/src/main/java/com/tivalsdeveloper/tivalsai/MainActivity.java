@@ -11,8 +11,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.webkit.CookieManager;
+import android.webkit.DownloadListener;
+import android.webkit.MimeTypeMap;
 import android.webkit.PermissionRequest;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -57,7 +61,7 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowFileAccess(true); s.setAllowContentAccess(true); s.setMediaPlaybackRequiresUserGesture(false);
         s.setLoadWithOverviewMode(true); s.setUseWideViewPort(true); s.setSupportZoom(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        s.setUserAgentString(s.getUserAgentString() + " TivalsAI-Android/8.0");
+        s.setUserAgentString(s.getUserAgentString() + " TivalsAI-Android/8.0.2");
         CookieManager cookies = CookieManager.getInstance(); cookies.setAcceptCookie(true); cookies.setAcceptThirdPartyCookies(webView, true);
 
         webView.setWebViewClient(new WebViewClient() {
@@ -85,15 +89,41 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        webView.setDownloadListener((url,ua,cd,mime,len) -> {
-            try {
-                DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url)); r.setMimeType(mime); r.addRequestHeader("User-Agent",ua);
-                String cookie = CookieManager.getInstance().getCookie(url); if(cookie!=null) r.addRequestHeader("Cookie",cookie);
-                r.setTitle("Tivals AI download"); r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                r.setDestinationInExternalFilesDir(MainActivity.this, Environment.DIRECTORY_DOWNLOADS, null);
-                ((DownloadManager)getSystemService(DOWNLOAD_SERVICE)).enqueue(r); Toast.makeText(this,"Download started",Toast.LENGTH_SHORT).show();
-            } catch(Exception e) { Toast.makeText(this,"Unable to start download.",Toast.LENGTH_LONG).show(); }
-        });
+        webView.setDownloadListener((url, ua, contentDisposition, mimeType, contentLength) ->
+            startDownload(url, ua, contentDisposition, mimeType));
+    }
+
+    private void startDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+        try {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+                Toast.makeText(this,"This download type is not supported yet.",Toast.LENGTH_LONG).show();
+                return;
+            }
+            String resolvedMime = mimeType;
+            if (resolvedMime == null || resolvedMime.isEmpty() || "application/octet-stream".equals(resolvedMime)) {
+                String ext = MimeTypeMap.getFileExtensionFromUrl(url);
+                String guessed = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext == null ? "" : ext.toLowerCase());
+                if (guessed != null) resolvedMime = guessed;
+            }
+            String filename = URLUtil.guessFileName(url, contentDisposition, resolvedMime);
+            if (filename == null || filename.trim().isEmpty()) filename = "tivals-ai-download-" + System.currentTimeMillis();
+
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            if (resolvedMime != null && !resolvedMime.isEmpty()) request.setMimeType(resolvedMime);
+            if (userAgent != null) request.addRequestHeader("User-Agent", userAgent);
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null) request.addRequestHeader("Cookie", cookie);
+            request.setTitle(filename);
+            request.setDescription("Downloading from Tivals AI");
+            request.setAllowedOverMetered(true);
+            request.setAllowedOverRoaming(false);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
+            ((DownloadManager)getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
+            Toast.makeText(this,"Downloading " + filename + " to Downloads",Toast.LENGTH_LONG).show();
+        } catch(Exception e) {
+            Toast.makeText(this,"Unable to download this file.",Toast.LENGTH_LONG).show();
+        }
     }
 
     private boolean handleUrl(Uri uri) {
