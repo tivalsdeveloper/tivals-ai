@@ -2,6 +2,7 @@ package com.tivalsdeveloper.tivalsai;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
@@ -11,15 +12,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
-import android.view.View;
-import android.view.Window;
 import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
-import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -31,13 +28,13 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
+    private boolean errorDialogVisible = false;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        Window window = getWindow();
-        window.setStatusBarColor(Color.rgb(5, 18, 38));
-        window.setNavigationBarColor(Color.rgb(5, 18, 38));
+        getWindow().setStatusBarColor(Color.rgb(5, 18, 38));
+        getWindow().setNavigationBarColor(Color.rgb(5, 18, 38));
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(5, 18, 38));
@@ -51,8 +48,7 @@ public class MainActivity extends Activity {
             webView.restoreState(state);
         }
 
-        if (Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2001);
         }
     }
@@ -69,7 +65,7 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setBuiltInZoomControls(false);
         settings.setSupportZoom(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " TivalsAI-Android/2.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " TivalsAI-Android/5.0");
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -85,12 +81,19 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 return handleUrl(Uri.parse(url));
             }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    showLoadError(error == null ? "The website could not be loaded." : error.getDescription().toString());
+                }
+            }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
-                                             FileChooserParams params) {
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
                 try {
@@ -105,29 +108,45 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPermissionRequest(PermissionRequest request) {
-                runOnUiThread(() -> request.grant(request.getResources()));
-            }
-
-            @Override
-            public void onGeolocationPermissionsShowPrompt(String origin,
-                                                            GeolocationPermissions.Callback callback) {
-                callback.invoke(origin, true, false);
+                // Do not automatically grant every website permission.
+                runOnUiThread(request::deny);
             }
         });
 
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, length) -> {
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            request.setMimeType(mimeType);
-            request.addRequestHeader("User-Agent", userAgent);
-            String cookie = CookieManager.getInstance().getCookie(url);
-            if (cookie != null) request.addRequestHeader("Cookie", cookie);
-            request.setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalFilesDir(
-                    MainActivity.this, Environment.DIRECTORY_DOWNLOADS, null);
-            ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
-            Toast.makeText(MainActivity.this, "Download started", Toast.LENGTH_SHORT).show();
+            try {
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                request.setMimeType(mimeType);
+                request.addRequestHeader("User-Agent", userAgent);
+                String cookie = CookieManager.getInstance().getCookie(url);
+                if (cookie != null) request.addRequestHeader("Cookie", cookie);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setDestinationInExternalFilesDir(MainActivity.this, Environment.DIRECTORY_DOWNLOADS, null);
+                ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
+                Toast.makeText(MainActivity.this, "Download started", Toast.LENGTH_SHORT).show();
+            } catch (Exception error) {
+                Toast.makeText(MainActivity.this, "Unable to start download.", Toast.LENGTH_LONG).show();
+            }
         });
+    }
+
+    private void showLoadError(String detail) {
+        if (isFinishing() || errorDialogVisible) return;
+        errorDialogVisible = true;
+        new AlertDialog.Builder(this)
+                .setTitle("Tivals AI could not connect")
+                .setMessage("The app could not reach ai.tivalsdeveloper.site. Your internet may still be working.\n\n" + detail)
+                .setPositiveButton("Try again", (dialog, which) -> {
+                    errorDialogVisible = false;
+                    webView.loadUrl(HOME_URL);
+                })
+                .setNeutralButton("Open in browser", (dialog, which) -> {
+                    errorDialogVisible = false;
+                    openSecureBrowser(Uri.parse(HOME_URL));
+                })
+                .setNegativeButton("Close", (dialog, which) -> errorDialogVisible = false)
+                .setOnCancelListener(dialog -> errorDialogVisible = false)
+                .show();
     }
 
     private boolean handleUrl(Uri uri) {
@@ -135,9 +154,7 @@ public class MainActivity extends Activity {
         String host = uri.getHost() == null ? "" : uri.getHost();
 
         if (("http".equals(scheme) || "https".equals(scheme)) &&
-                ("ai.tivalsdeveloper.site".equals(host) ||
-                 host.endsWith(".supabase.co") ||
-                 host.endsWith(".supabase.com"))) {
+                ("ai.tivalsdeveloper.site".equals(host) || host.endsWith(".supabase.co") || host.endsWith(".supabase.com"))) {
             return false;
         }
 
@@ -166,7 +183,7 @@ public class MainActivity extends Activity {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
         } catch (ActivityNotFoundException error) {
-            Toast.makeText(this, "A browser is required for secure sign-in.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "A browser is required.", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -174,17 +191,14 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (intent.getData() != null && webView != null) {
-            webView.loadUrl(intent.getData().toString());
-        }
+        if (intent.getData() != null && webView != null) webView.loadUrl(intent.getData().toString());
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == FILE_CHOOSER_REQUEST && fileCallback != null) {
-            fileCallback.onReceiveValue(
-                    WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+            fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             fileCallback = null;
         }
     }
