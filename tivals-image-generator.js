@@ -1,19 +1,49 @@
-/* Tivals AI image generation client. API key remains in Supabase Edge Function secrets. */
+/* Tivals AI image generation client. Pixazo API key remains in Supabase Edge Function secrets. */
 (() => {
   const ENDPOINT = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/pixazo-studio';
+  const SUPABASE_URL = 'https://kxuszpixwfecawdeqkrx.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
   const DEFAULT_MODEL = 'pixazo/flux';
   const HISTORY_KEY = 'tivals-generated-images';
+
+  async function accessToken() {
+    try {
+      if (window.sb?.auth) {
+        const {data} = await window.sb.auth.getSession();
+        if (data?.session?.access_token) return data.session.access_token;
+      }
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'));
+      for (const key of keys) {
+        try {
+          const stored = JSON.parse(localStorage.getItem(key) || '{}');
+          const token = stored?.access_token || stored?.currentSession?.access_token;
+          if (token) return token;
+        } catch {}
+      }
+    } catch {}
+    return '';
+  }
 
   async function generate(prompt, options = {}) {
     const text = String(prompt || '').trim();
     if (!text) throw new Error('Describe the image you want to create.');
+    const token = await accessToken();
+    if (!token) throw new Error('Your sign-in session is missing. Sign in again, then retry image generation.');
+
     const response = await fetch(ENDPOINT, {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {
+        'Content-Type':'application/json',
+        'Authorization':'Bearer ' + token,
+        'apikey': SUPABASE_ANON_KEY
+      },
       body: JSON.stringify({type:'image', prompt:text, model:options.model || DEFAULT_MODEL, steps:options.steps || 20, width:options.width || 1024, height:options.height || 1024})
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || data.message || `Image generation failed (${response.status})`);
+    if (!response.ok) {
+      if (response.status === 401) throw new Error('Your Tivals AI session expired. Sign in again and retry.');
+      throw new Error(data.error || data.message || `Image generation failed (${response.status})`);
+    }
     const item = {
       id: data.id || data.request_id || String(Date.now()),
       prompt: text,
