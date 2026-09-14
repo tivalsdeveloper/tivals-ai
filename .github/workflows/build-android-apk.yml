@@ -29,18 +29,27 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Build installable APK
+      - name: Build packaged Android APK
         working-directory: android-app
         run: gradle assembleDebug
 
       - name: Name APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk Tivals-AI.apk
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk Tivals-AI-v8.apk
+
+      - name: Verify APK is a packaged app
+        run: |
+          SIZE=$(stat -c%s Tivals-AI-v8.apk)
+          echo "APK size: $SIZE bytes"
+          if [ "$SIZE" -lt 3000000 ]; then
+            echo "APK is unexpectedly smaller than 3 MB; refusing to publish."
+            exit 1
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Tivals-AI-APK
-          path: Tivals-AI.apk
+          name: Tivals-AI-v8-APK
+          path: Tivals-AI-v8.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -49,11 +58,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="android-v7.0.0"
+          TAG="android-v8.0.0"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" Tivals-AI.apk --clobber
+            gh release upload "$TAG" Tivals-AI-v8.apk --clobber
           else
-            gh release create "$TAG" Tivals-AI.apk \
-              --title "Tivals AI Android v7.0.0" \
-              --notes "Tivals AI Android v7. Standalone app-window navigation, refreshed Tivals AI launcher icon, file downloads, notifications, and the live Tivals AI service."
+            gh release create "$TAG" Tivals-AI-v8.apk \
+              --title "Tivals AI Android v8.0.0" \
+              --notes "Tivals AI Android v8 uses a full AndroidX/Material app runtime with standalone in-app navigation, camera and microphone permission support, downloads, notifications, refreshed launcher branding, and the live Tivals AI service. The build is automatically rejected if the APK is under 3 MB."
           fi
