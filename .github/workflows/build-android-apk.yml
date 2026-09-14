@@ -34,11 +34,11 @@ jobs:
         run: gradle assembleDebug
 
       - name: Name APK
-        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk Tivals-AI-v8.0.1.apk
+        run: cp android-app/app/build/outputs/apk/debug/app-debug.apk Tivals-AI-v8.0.2.apk
 
       - name: Verify APK is a packaged app
         run: |
-          SIZE=$(stat -c%s Tivals-AI-v8.0.1.apk)
+          SIZE=$(stat -c%s Tivals-AI-v8.0.2.apk)
           echo "APK size: $SIZE bytes"
           if [ "$SIZE" -lt 3000000 ]; then
             echo "APK is unexpectedly smaller than 3 MB; refusing to publish."
@@ -48,8 +48,8 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Tivals-AI-v8.0.1-APK
-          path: Tivals-AI-v8.0.1.apk
+          name: Tivals-AI-v8.0.2-APK
+          path: Tivals-AI-v8.0.2.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -58,11 +58,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="android-v8.0.1"
+          TAG="android-v8.0.2"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" Tivals-AI-v8.0.1.apk --clobber
+            gh release upload "$TAG" Tivals-AI-v8.0.2.apk --clobber
           else
-            gh release create "$TAG" Tivals-AI-v8.0.1.apk \
-              --title "Tivals AI Android v8.0.1" \
-              --notes "Startup crash fix: Tivals AI now uses the required AppCompat application theme. Includes the v8 Android runtime, in-app navigation, camera/microphone permissions, downloads and notifications."
+            gh release create "$TAG" Tivals-AI-v8.0.2.apk \
+              --title "Tivals AI Android v8.0.2" \
+              --notes "Improved Android downloads: generated images and other downloadable files are saved to the public Downloads folder with filenames, MIME types, authentication cookies, and completion notifications. Includes the v8.0.1 startup crash fix."
           fi
