@@ -1,11 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="512" android:viewportHeight="512">
-  <path android:fillColor="#071A35" android:pathData="M96,32H416A64,64 0,0 1,480 96V416A64,64 0,0 1,416 480H96A64,64 0,0 1,32 416V96A64,64 0,0 1,96 32Z"/>
-  <path android:fillColor="#153E73" android:pathData="M256,62A194,194 0,1 0,256 450A194,194 0,1 0,256 62"/>
-  <path android:fillColor="#22D3EE" android:pathData="M256,82A174,174 0,1 0,256 430A174,174 0,1 0,256 82M256,104A152,152 0,1 1,256 408A152,152 0,1 1,256 104"/>
-  <path android:fillColor="#0A1328" android:pathData="M166,168Q166,132 202,132H310Q346,132 346,168V316Q346,356 306,356H206Q166,356 166,316Z"/>
-  <path android:fillColor="#38BDF8" android:pathData="M197,221Q215,203 233,221Q215,239 197,221M279,221Q297,203 315,221Q297,239 279,221"/>
-  <path android:fillColor="#A855F7" android:pathData="M210,285Q256,321 302,285L292,304Q256,330 220,304Z"/>
-  <path android:fillColor="#22D3EE" android:pathData="M246,111H266V82H246ZM251,61A10,10 0,1 0,251 81A10,10 0,1 0,251 61"/>
-  <path android:fillColor="#6366F1" android:pathData="M137,205H166V303H137Q115,303 115,281V227Q115,205 137,205M346,205H375Q397,205 397,227V281Q397,303 375,303H346Z"/>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="512" android:viewportHeight="512">
+  <!-- premium deep-navy tile -->
+  <path android:fillColor="#050D1D" android:pathData="M92,28H420A64,64 0,0 1,484 92V420A64,64 0,0 1,420 484H92A64,64 0,0 1,28 420V92A64,64 0,0 1,92 28Z"/>
+  <!-- layered AI halo -->
+  <path android:fillColor="#102B55" android:pathData="M256,58A198,198 0,1 0,256 454A198,198 0,1 0,256 58"/>
+  <path android:fillColor="#1266C8" android:pathData="M256,70A186,186 0,1 0,256 442A186,186 0,1 0,256 70M256,91A165,165 0,1 1,256 421A165,165 0,1 1,256 91"/>
+  <path android:fillColor="#39D8FF" android:pathData="M256,84A172,172 0,1 0,256 428A172,172 0,1 0,256 84M256,99A157,157 0,1 1,256 413A157,157 0,1 1,256 99"/>
+  <!-- headset -->
+  <path android:fillColor="#5B67F1" android:pathData="M133,205H170V313H133Q108,313 108,288V230Q108,205 133,205M342,205H379Q404,205 404,230V288Q404,313 379,313H342Z"/>
+  <path android:fillColor="#2BAEF4" android:pathData="M128,207Q137,132 201,104Q256,80 311,104Q375,132 384,207H365Q355,147 304,124Q256,103 208,124Q157,147 147,207Z"/>
+  <!-- robot head -->
+  <path android:fillColor="#071426" android:pathData="M174,164Q174,132 206,132H306Q338,132 338,164V321Q338,357 302,357H210Q174,357 174,321Z"/>
+  <path android:fillColor="#12345C" android:pathData="M190,178Q190,151 217,151H295Q322,151 322,178V307Q322,337 292,337H220Q190,337 190,307Z"/>
+  <!-- visor -->
+  <path android:fillColor="#06101F" android:pathData="M198,194Q198,178 214,178H298Q314,178 314,194V257Q314,273 298,273H214Q198,273 198,257Z"/>
+  <!-- bright expressive eyes -->
+  <path android:fillColor="#67E8F9" android:pathData="M211,220Q226,201 242,220Q226,239 211,220M270,220Q286,201 301,220Q286,239 270,220"/>
+  <path android:fillColor="#FFFFFF" android:pathData="M222,214A5,5 0,1 0,222 224A5,5 0,1 0,222 214M281,214A5,5 0,1 0,281 224A5,5 0,1 0,281 214"/>
+  <!-- friendly AI smile -->
+  <path android:fillColor="#8B5CF6" android:pathData="M213,293Q256,325 299,293L291,311Q256,337 221,311Z"/>
+  <path android:fillColor="#39D8FF" android:pathData="M247,132H265V93H247ZM256,65A12,12 0,1 0,256 89A12,12 0,1 0,256 65"/>
+  <!-- small circuit accents -->
+  <path android:fillColor="#2DD4BF" android:pathData="M158,352H190V362H158ZM322,352H354V362H322Z"/>
 </vector>
