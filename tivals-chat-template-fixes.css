@@ -1,0 +1,15 @@
+/* Tivals AI chat-template stabilization: one chronological stream, mobile-safe composer, media cards. */
+.chat{scroll-padding-bottom:150px!important;overscroll-behavior-y:contain!important;-webkit-overflow-scrolling:touch!important;touch-action:pan-y!important}
+.msg{position:relative!important;width:100%!important;max-width:850px!important;margin:16px auto!important;align-items:flex-start!important}
+.msg.ai{justify-content:flex-start!important}.msg.user{justify-content:flex-end!important}
+.msg.ai>.bubble{min-width:0!important;max-width:min(760px,calc(100% - 42px))!important;width:auto!important;background:#0b294e!important;border:1px solid #244e79!important;border-radius:6px 18px 18px 18px!important;padding:13px 14px!important}
+.msg.user>.bubble{max-width:min(82%,680px)!important;border-radius:18px 18px 6px 18px!important}
+.msg.ai>.avatar{flex:0 0 32px!important;width:32px!important;height:32px!important;overflow:hidden!important}
+.tivals-youtube-message{max-width:850px!important;margin:16px auto!important;padding:0!important;align-items:flex-start!important}
+.tivals-youtube-message>.tivals-youtube-avatar{flex:0 0 32px!important;width:32px!important;height:32px!important}
+.tivals-youtube-message>.tivals-youtube-bubble{min-width:0!important;max-width:min(760px,calc(100% - 42px))!important;background:#0b294e!important;border:1px solid #244e79!important;border-radius:6px 18px 18px 18px!important;padding:13px 14px!important}
+.tivals-youtube-results{max-width:100%!important;overflow:visible!important;touch-action:pan-y!important}.tivals-youtube-results iframe{max-width:100%!important}
+.codebox,pre{max-width:100%!important}.codebox pre{overflow-x:auto!important}.bubble img{max-width:100%!important;height:auto!important;border-radius:12px}
+#tivalsFloatingNav{pointer-events:none!important}#tivalsFloatingNav>*{pointer-events:auto!important}
+@media(max-width:760px){.chat{padding:14px 12px 132px!important}.msg{margin:13px auto!important;gap:8px!important}.msg.ai>.bubble,.tivals-youtube-message>.tivals-youtube-bubble{max-width:calc(100% - 40px)!important;padding:12px!important}.msg.user>.bubble{max-width:88%!important}.tivals-youtube-message{gap:8px!important}.tivals-youtube-results article{max-width:100%!important}.tivals-fab-wrap{bottom:max(10px,env(safe-area-inset-bottom))!important}.tivals-flyout{max-height:min(64vh,520px)!important}.tivals-page{padding-bottom:100px!important}}
+@media(max-width:390px){.chat{padding-left:9px!important;padding-right:9px!important}.msg.ai>.bubble,.tivals-youtube-message>.tivals-youtube-bubble{max-width:calc(100% - 38px)!important}.msg.user>.bubble{max-width:91%!important}}
