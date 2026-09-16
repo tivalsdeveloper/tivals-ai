@@ -14,5 +14,5 @@
   function history(){try{return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]')}catch{return[]}} window.TivalsImageGenerator={generate,history,resolve,model:DEFAULT_MODEL,bucket:BUCKET};
   function script(src,key){if(!document.querySelector(`script[data-${key}]`)){const s=document.createElement('script');s.src=src;s.defer=true;s.setAttribute(`data-${key}`,'1');document.head.appendChild(s)}}
   function style(href,key){if(!document.querySelector(`link[data-${key}]`)){const l=document.createElement('link');l.rel='stylesheet';l.href=href;l.setAttribute(`data-${key}`,'1');document.head.appendChild(l)}}
-  style('./tivals-chat-template-fixes.css?v=4','tivals-chat-template-fixes');script('./tivals-response-sanitizer.js?v=3','tivals-response-sanitizer');script('./tivals-cloud-history.js?v=4','tivals-cloud-history');script('./tivals-youtube.js?v=14','tivals-youtube');script('./tivals-web-search.js?v=1','tivals-web-search');
+  script('./tivals-intent-router.js?v=1','tivals-intent-router');style('./tivals-chat-template-fixes.css?v=4','tivals-chat-template-fixes');script('./tivals-response-sanitizer.js?v=3','tivals-response-sanitizer');script('./tivals-cloud-history.js?v=4','tivals-cloud-history');script('./tivals-youtube.js?v=14','tivals-youtube');script('./tivals-web-search.js?v=1','tivals-web-search');
 })();
