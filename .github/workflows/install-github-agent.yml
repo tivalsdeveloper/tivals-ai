@@ -1,0 +1,30 @@
+name: Install Tivals GitHub Agent
+on:
+  push:
+    paths:
+      - '.github/workflows/install-github-agent.yml'
+permissions:
+  contents: write
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add GitHub agent client to app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text()
+          tag='<script src="tivals-github-agent.js"></script>'
+          if tag not in s:
+              s=s.replace('</body>', tag+'\n</body>')
+              p.write_text(s)
+          PY
+      - name: Commit integration
+        run: |
+          git config user.name "Tivals AI Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add index.html
+          git diff --cached --quiet || git commit -m "Connect Tivals AI to GitHub coding agent"
+          git push
