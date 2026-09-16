@@ -1,0 +1,40 @@
+name: Validate static app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate JavaScript files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(tivals-*.js mobile-nav.js sw.js)
+          for file in "${files[@]}"; do
+            [ -f "$file" ] || continue
+            node --check "$file"
+          done
+      - name: Verify required files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in index.html app-icon.svg manifest.webmanifest terms.html privacy.html; do
+            test -f "$file"
+          done
+          while IFS= read -r src; do
+            test -f "$src"
+          done < <(sed -nE 's/.*src="(\.\/[^"?]+)(\?[^"]*)?".*/\1/p' index.html)
