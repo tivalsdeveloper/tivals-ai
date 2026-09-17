@@ -157,7 +157,7 @@ Deno.serve(async(req:Request)=>{
       try{await syncWebhook();return json({ok:true,webhook_synced:true,callback_buttons:false});}
       catch(e){return json({ok:false,error:friendlyError(e)},500);}
     }
-    return json({ok:true,service:"Tivals AI Telegram webhook",version:20,callback_buttons:false,fast_fallback:true});
+    return json({ok:true,service:"Tivals AI Telegram webhook",version:21,callback_buttons:false,fast_fallback:true});
   }
   if(req.method!=="POST")return json({error:"Method not allowed."},405);
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
@@ -170,9 +170,40 @@ Deno.serve(async(req:Request)=>{
   const text=String(message?.text||"").trim();if(!text)return json({ok:true,ignored:true});
   try{
     if(text==="/start"||text.startsWith("/start ")){await sendFormatted(chatId,"👋 **Hi! I'm Tivals AI.**\n\nAsk me questions, learn a topic, check Gmail, search YouTube, or generate an image.",business);return json({ok:true});}
-    if(text==="/help"){await sendFormatted(chatId,"**Tivals AI**\n\n/connect — Connect Gmail or GitHub\n/emails — Latest Gmail\n/unread — Unread Gmail\n\nYou can also say **Teach me Python** or **Search networking on YouTube**.",business);return json({ok:true});}
+    if(text==="/help"){await sendFormatted(chatId,"**Tivals AI**\n\n/connect — Connect Gmail or GitHub\n/emails — Latest Gmail\n/unread — Unread Gmail\n/channel @channel Your message — Post to a channel you administer\n\nYou can also say **Teach me Python** or **Search networking on YouTube**.",business);return json({ok:true});}
     if(text==="/connect"){if(!tg)throw new Error("Telegram user ID unavailable.");await connectMenu(chatId,tg,business);return json({ok:true});}
     if(text==="/accounts"){if(!tg)throw new Error("Telegram user ID unavailable.");const d=await oauthCall("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];await sendFormatted(chatId,list.length?`**Connected accounts**\n\n${list.map((x:any)=>`• ${x.provider}: ${x.account_label||"Connected"}`).join("\n")}`:"**Connected accounts**\n\nNo accounts connected.",business);return json({ok:true});}
+    if(/^\/channel(?:@\w+)?(?:\s|$)/i.test(text)){
+      if(message?.chat?.type!=="private"){
+        await sendFormatted(chatId,"⚠️ Use /channel from a private chat with me.");
+        return json({ok:false,route:"channel-post"});
+      }
+      if(!tg)throw new Error("Telegram user ID unavailable.");
+      const m=text.match(/^\/channel(?:@\w+)?\s+(@[A-Za-z0-9_]{5,}|-100\d+)\s+([\s\S]+)$/i);
+      if(!m){
+        await sendFormatted(chatId,"**Channel posting**\n\nUse: `/channel @channelusername Your message`\n\nFirst add me to the channel as an administrator with permission to post messages.");
+        return json({ok:false,route:"channel-post-help"});
+      }
+      const target=m[1]; const channelText=m[2].trim();
+      const member=await telegram("getChatMember",{chat_id:target,user_id:tg});
+      const status=String(member?.result?.status||"");
+      if(!["creator","administrator"].includes(status)){
+        await sendFormatted(chatId,"⚠️ You must be an administrator of that channel before you can post through Tivals AI.");
+        return json({ok:false,route:"channel-post-denied"});
+      }
+      try{
+        await sendFormatted(target,channelText);
+        await sendFormatted(chatId,`✅ Posted to **${target}**.`);
+        return json({ok:true,route:"channel-post"});
+      }catch(e){
+        const msg=String((e as Error)?.message||e||"");
+        if(/not enough rights|CHAT_ADMIN_REQUIRED|forbidden|not found/i.test(msg)){
+          await sendFormatted(chatId,"⚠️ I couldn't post there. Add Tivals AI to the channel as an administrator and enable **Post Messages**, then try again.");
+          return json({ok:false,route:"channel-post-permission"});
+        }
+        throw e;
+      }
+    }
     await telegram("sendChatAction",{chat_id:chatId,action:"typing",...(business?{business_connection_id:business}:{})}).catch(()=>{});
     const gi=gmailIntent(text);if(gi.matched){if(!tg)throw new Error("Telegram user ID unavailable.");await handleGmail(chatId,tg,gi,business);return json({ok:true,route:"gmail"});}
     const yt=youtubeQuery(text);if(yt){await sendHtml(chatId,ytHtml(yt,await searchYouTube(yt)),business);return json({ok:true,route:"youtube"});}
