@@ -7,6 +7,7 @@ const PIXAZO_STUDIO_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1
 const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-oauth";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
+let webhookSynced = false;
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -56,6 +57,18 @@ async function telegram(method: string, payload: Record<string, unknown>) {
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed (${r.status}).`);
   return d;
 }
+async function ensureWebhook(url: string, secret: string) {
+  if (webhookSynced) return;
+  const payload: any = {
+    url,
+    allowed_updates: ["message", "business_message", "business_connection", "callback_query"],
+    drop_pending_updates: false
+  };
+  if (secret) payload.secret_token = secret;
+  await telegram("setWebhook", payload);
+  webhookSynced = true;
+}
+
 async function sendHtml(chatId: number|string, html: string, business?: string) {
   for (const part of splitText(html)) {
     const p: any = { chat_id: chatId, text: part, parse_mode: "HTML", link_preview_options: { is_disabled: true } };
@@ -163,55 +176,59 @@ async function askTivalsAI(message: string) {
   const messages = [{ role: "system", content: TELEGRAM_STYLE }, { role: "user", content: message }];
   const errors: string[] = [];
 
-  try {
+  const primary = async () => {
     const { r, d } = await fetchJsonWithTimeout(TIVALS_AI_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "tivals-ai", messages })
-    }, 45000);
+    }, 20000);
     if (r.ok && d?.reply) return String(d.reply);
-    errors.push(d?.error || `Tivals AI failed (${r.status}).`);
-  } catch (e) {
-    errors.push((e as Error)?.name === "AbortError" ? "Tivals AI timed out" : String((e as Error)?.message || e));
-  }
+    throw new Error(d?.error || `Tivals AI failed (${r.status}).`);
+  };
 
+  const providers: Promise<string>[] = [primary()];
   const open = Deno.env.get("OPENROUTER_API_KEY") || "";
-  if (open) {
-    try {
-      const { r, d } = await fetchJsonWithTimeout(`${OPENROUTER_BASE}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${open}`, "Content-Type": "application/json", "HTTP-Referer": "https://ai.tivalsdeveloper.site/", "X-OpenRouter-Title": "Tivals AI Telegram" },
-        body: JSON.stringify({ model: "openrouter/free", messages, max_tokens: 1600, temperature: 0.4 })
-      }, 30000);
-      const txt = chatContent(d);
-      if (r.ok && txt) return txt;
-      errors.push(d?.error?.message || d?.error || `OpenRouter failed (${r.status}).`);
-    } catch (e) {
-      errors.push((e as Error)?.name === "AbortError" ? "OpenRouter timed out" : String((e as Error)?.message || e));
-    }
+  if (open) providers.push((async () => {
+    const { r, d } = await fetchJsonWithTimeout(`${OPENROUTER_BASE}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${open}`, "Content-Type": "application/json", "HTTP-Referer": "https://ai.tivalsdeveloper.site/", "X-OpenRouter-Title": "Tivals AI Telegram" },
+      body: JSON.stringify({ model: "openrouter/free", messages, max_tokens: 1400, temperature: 0.35 })
+    }, 20000);
+    const txt = chatContent(d);
+    if (r.ok && txt) return txt;
+    throw new Error(d?.error?.message || d?.error || `OpenRouter failed (${r.status}).`);
+  })());
+
+  try {
+    return await Promise.any(providers);
+  } catch (e) {
+    errors.push(String((e as Error)?.message || e));
   }
 
   const app = Deno.env.get("APPMIX_API_KEY") || "";
   if (app) {
-    for (const model of ["openai/gpt-4.1-free", "google/gemini-3-flash-preview-free"]) {
-      try {
-        const { r, d } = await fetchJsonWithTimeout(`${APPMIX_BASE}/chat/completions`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${app}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages, max_tokens: 1600, temperature: 0.4 })
-        }, 30000);
-        const txt = chatContent(d);
-        if (r.ok && txt) return txt;
-        errors.push(d?.error?.message || d?.error || `${model} failed (${r.status}).`);
-      } catch (e) {
-        errors.push((e as Error)?.name === "AbortError" ? `${model} timed out` : String((e as Error)?.message || e));
-      }
+    const models = ["openai/gpt-4.1-free", "google/gemini-3-flash-preview-free"];
+    const fallbacks = models.map((model) => (async () => {
+      const { r, d } = await fetchJsonWithTimeout(`${APPMIX_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${app}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, max_tokens: 1400, temperature: 0.35 })
+      }, 16000);
+      const txt = chatContent(d);
+      if (r.ok && txt) return txt;
+      throw new Error(d?.error?.message || d?.error || `${model} failed (${r.status}).`);
+    })());
+    try {
+      return await Promise.any(fallbacks);
+    } catch (e) {
+      errors.push(String((e as Error)?.message || e));
     }
   }
 
   console.error("All Tivals AI providers failed", errors);
   throw new Error("AI_TEMPORARILY_UNAVAILABLE");
 }
+
 function friendlyError(e: unknown) {
   const m = String((e as Error)?.message || e || "");
   if (/AI_TEMPORARILY_UNAVAILABLE|AbortError|signal has been aborted|timed out|timeout/i.test(m)) {
@@ -265,10 +282,14 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true });
+  if (req.method === "GET") {
+  await ensureWebhook(req.url, Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "").catch((e) => console.error("Webhook sync failed", e));
+  return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, callback_buttons: true, fast_fallback: true });
+}
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
   if (secret && (req.headers.get("x-telegram-bot-api-secret-token") || "") !== secret) return json({ error: "Unauthorized webhook." }, 401);
+  await ensureWebhook(req.url, secret).catch((e) => console.error("Webhook sync failed", e));
   let update:any; try { update = await req.json(); } catch { return json({ error: "Invalid Telegram update." }, 400); }
   if (update?.business_connection) return json({ ok: true });
 
