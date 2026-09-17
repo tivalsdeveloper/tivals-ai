@@ -70,7 +70,7 @@ async function syncWebhook() {
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
   const payload:any = {
     url: PUBLIC_WEBHOOK_URL,
-    allowed_updates: ["message", "business_message", "business_connection", "callback_query"],
+    allowed_updates: ["message"],
     drop_pending_updates: false
   };
   if (secret) payload.secret_token = secret;
@@ -118,18 +118,6 @@ function friendlyError(e:unknown) {
   return m || "Something went wrong. Please try again.";
 }
 
-function learningTopic(text:string) {
-  const m=String(text||"").trim().match(/^(?:teach\s+me|help\s+me\s+learn|learn)\s+(?:about\s+)?(.{2,50}?)[.!?]?$/i);
-  return m?.[1]?.trim()||"";
-}
-async function sendLearningControls(chatId:number|string, topic:string, business?:string) {
-  const safe=String(topic||"this topic").replace(/[\n\r|]/g," ").trim().slice(0,36)||"this topic";
-  const p:any={chat_id:chatId,text:`📚 <b>Continue learning ${esc(safe)}</b>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[
-    [{text:"➡️ Next lesson",callback_data:`learn_next|${safe}`},{text:"📝 Try an exercise",callback_data:`learn_exercise|${safe}`}],
-    [{text:"💡 Explain again",callback_data:`learn_explain|${safe}`},{text:"🏠 Main menu",callback_data:"learn_menu|"}]
-  ]}};
-  if(business) p.business_connection_id=business; await telegram("sendMessage",p);
-}
 
 async function oauthCall(action:string,tg:number,provider="",extra:Record<string,unknown>={}) {
   const key=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
@@ -166,34 +154,18 @@ Deno.serve(async(req:Request)=>{
   if(req.method==="GET"){
     const u=new URL(req.url);
     if(u.searchParams.get("sync")==="1"){
-      try{await syncWebhook();return json({ok:true,webhook_synced:true,callback_buttons:true});}
+      try{await syncWebhook();return json({ok:true,webhook_synced:true,callback_buttons:false});}
       catch(e){return json({ok:false,error:friendlyError(e)},500);}
     }
-    return json({ok:true,service:"Tivals AI Telegram webhook",version:19,callback_buttons:true,fast_fallback:true});
+    return json({ok:true,service:"Tivals AI Telegram webhook",version:20,callback_buttons:false,fast_fallback:true});
   }
   if(req.method!=="POST")return json({error:"Method not allowed."},405);
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
   if(secret&&(req.headers.get("x-telegram-bot-api-secret-token")||"")!==secret)return json({error:"Unauthorized webhook."},401);
   let update:any;try{update=await req.json();}catch{return json({error:"Invalid Telegram update."},400);}
   if(update?.business_connection)return json({ok:true});
-
-  const cb=update?.callback_query;
-  if(cb?.message?.chat?.id&&String(cb?.data||"").startsWith("learn_")){
-    const chatId=cb.message.chat.id;const [action,topicRaw=""]=String(cb.data).split("|");const topic=topicRaw.trim()||"this topic";
-    await telegram("answerCallbackQuery",{callback_query_id:cb.id}).catch(()=>{});
-    try{
-      if(action==="learn_menu"){await sendFormatted(chatId,"🏠 **Tivals AI**\n\nAsk me anything, or say **Teach me Python**.");return json({ok:true,route:"learning-menu"});}
-      await telegram("sendChatAction",{chat_id:chatId,action:"typing"}).catch(()=>{});
-      const prompt=action==="learn_next"?`Teach the next focused lesson in ${topic}. Do not repeat the previous lesson. Include one short example and one practice task.`:action==="learn_exercise"?`Give one short beginner-friendly exercise about ${topic}. Do not reveal the answer immediately.`:`Explain ${topic} again in simpler language with one easy example.`;
-      const answer=await askAI(prompt);await sendFormatted(chatId,answer);await sendLearningControls(chatId,topic);return json({ok:true,route:"learning-control"});
-    }catch(e){await sendFormatted(chatId,`⚠️ ${friendlyError(e)}`).catch(()=>{});return json({ok:false},200);}
-  }
-
-  const bm=update?.business_message;
-  // Ignore outgoing business messages created by this bot, otherwise Telegram
-  // sends them back as business_message updates and the bot replies to itself.
-  if(bm&&(bm?.sender_business_bot||bm?.via_bot||bm?.from?.is_bot))return json({ok:true,ignored:true,reason:"outgoing-business-message"});
-  const message=bm||update?.message;const business=bm?.business_connection_id||undefined;
+  if(update?.business_message)return json({ok:true,ignored:true,reason:"business-message-disabled"});
+  const message=update?.message;const business=undefined;
   const chatId=message?.chat?.id;const tg=Number(message?.from?.id||0);if(!chatId)return json({ok:true,ignored:true});
   const text=String(message?.text||"").trim();if(!text)return json({ok:true,ignored:true});
   try{
@@ -205,6 +177,6 @@ Deno.serve(async(req:Request)=>{
     const gi=gmailIntent(text);if(gi.matched){if(!tg)throw new Error("Telegram user ID unavailable.");await handleGmail(chatId,tg,gi,business);return json({ok:true,route:"gmail"});}
     const yt=youtubeQuery(text);if(yt){await sendHtml(chatId,ytHtml(yt,await searchYouTube(yt)),business);return json({ok:true,route:"youtube"});}
     const img=imagePrompt(text);if(img){const url=await generateImage(img);const p:any={chat_id:chatId,photo:url,caption:`🎨 <b>Generated image</b>\n${esc(img.slice(0,500))}`,parse_mode:"HTML"};if(business)p.business_connection_id=business;await telegram("sendPhoto",p);return json({ok:true,route:"image"});}
-    const topic=learningTopic(text);const answer=await askAI(text);await sendFormatted(chatId,answer,business);if(topic)await sendLearningControls(chatId,topic,business);return json({ok:true,route:"ai"});
+    const answer=await askAI(text);await sendFormatted(chatId,answer,business);return json({ok:true,route:"ai"});
   }catch(e){await sendFormatted(chatId,`⚠️ ${friendlyError(e)}`,business).catch(()=>{});return json({ok:false,error:String((e as Error)?.message||e)},200);}
 });
