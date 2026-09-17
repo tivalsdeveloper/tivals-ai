@@ -1,0 +1,54 @@
+name: Fix Telegram AI timeout v2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-telegram-ai-timeout-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Telegram AI routing
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('supabase/functions/tivals-telegram/index.ts')
+          s = p.read_text()
+
+          if 'const APINEX_BASE =' not in s:
+              s = s.replace('const OPENROUTER_BASE = "https://openrouter.ai/api/v1";\n', 'const APINEX_BASE = "https://api.apinex.bond/v1";\nconst OPENROUTER_BASE = "https://openrouter.ai/api/v1";\n')
+
+          s = s.replace('},18000);\n    if(r.ok&&d?.reply)', '},12000);\n    if(r.ok&&d?.reply)', 1)
+          s = s.replace('},18000);\n    const txt=chatContent(d);', '},12000);\n    const txt=chatContent(d);', 1)
+
+          marker = '  const open=Deno.env.get("OPENROUTER_API_KEY")||"";\n'
+          apinex = '''  const apinex=Deno.env.get("APINEX_API_KEY")||"";\n  if(apinex) providers.push((async()=>{\n    const {r,d}=await fetchJson(`${APINEX_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${apinex}`,"Content-Type":"application/json"},body:JSON.stringify({model:"free/gemini-3.1-pro",messages,max_tokens:1300,temperature:0.35})},10000);\n    const txt=chatContent(d); if(r.ok&&txt) return txt; throw new Error("Apinex failed");\n  })());\n'''
+          if apinex not in s:
+              s = s.replace(marker, apinex + marker)
+
+          s = s.replace('},14000);\n      const txt=chatContent(d);', '},9000);\n      const txt=chatContent(d);')
+
+          if 'function instantReply(' not in s:
+              insert = '''\nfunction instantReply(text:string){\n  const t=text.trim().toLowerCase();\n  if(/^(hi|hello|hey|hello there|good morning|good afternoon|good evening)[!. ]*$/.test(t)) return "👋 Hi! How can I help you today?";\n  if(/^(topic|topics|learn|study)[!. ]*$/.test(t)) return "📚 What topic would you like to learn?\\n\\nFor example: **Python**, **English**, **Cybersecurity**, **Mathematics**, or **Web development**.";\n  return "";\n}\n'''
+              s = s.replace('function friendlyError(e:unknown) {', insert + '\nfunction friendlyError(e:unknown) {')
+
+          route_marker = '    if(text==="/accounts"){if(!tg)throw new Error("Telegram user ID unavailable.");const d=await oauthCall("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];await sendFormatted(chatId,list.length?`**Connected accounts**\\n\\n${list.map((x:any)=>`• ${x.provider}: ${x.account_label||"Connected"}`).join("\\n")}`:"**Connected accounts**\\n\\nNo accounts connected.",business);return json({ok:true});}\n'
+          fast_route = '    const quick=instantReply(text);if(quick){await sendFormatted(chatId,quick,business);return json({ok:true,route:"instant"});}\n'
+          if fast_route not in s:
+              s = s.replace(route_marker, route_marker + fast_route)
+
+          s = s.replace('version:21,callback_buttons:false', 'version:22,callback_buttons:false')
+          p.write_text(s)
+
+      - name: Commit change
+        run: |
+          git config user.name "tivalsdeveloper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add supabase/functions/tivals-telegram/index.ts
+          git commit -m "Fix Telegram AI timeouts and add fast replies" || exit 0
+          git push
