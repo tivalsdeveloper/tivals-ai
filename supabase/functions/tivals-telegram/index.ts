@@ -169,7 +169,7 @@ Deno.serve(async(req:Request)=>{
       try{await syncWebhook();return json({ok:true,webhook_synced:true,callback_buttons:true});}
       catch(e){return json({ok:false,error:friendlyError(e)},500);}
     }
-    return json({ok:true,service:"Tivals AI Telegram webhook",version:18,callback_buttons:true,fast_fallback:true});
+    return json({ok:true,service:"Tivals AI Telegram webhook",version:19,callback_buttons:true,fast_fallback:true});
   }
   if(req.method!=="POST")return json({error:"Method not allowed."},405);
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
@@ -189,7 +189,11 @@ Deno.serve(async(req:Request)=>{
     }catch(e){await sendFormatted(chatId,`⚠️ ${friendlyError(e)}`).catch(()=>{});return json({ok:false},200);}
   }
 
-  const bm=update?.business_message;const message=bm||update?.message;const business=bm?.business_connection_id||undefined;
+  const bm=update?.business_message;
+  // Ignore outgoing business messages created by this bot, otherwise Telegram
+  // sends them back as business_message updates and the bot replies to itself.
+  if(bm&&(bm?.sender_business_bot||bm?.via_bot||bm?.from?.is_bot))return json({ok:true,ignored:true,reason:"outgoing-business-message"});
+  const message=bm||update?.message;const business=bm?.business_connection_id||undefined;
   const chatId=message?.chat?.id;const tg=Number(message?.from?.id||0);if(!chatId)return json({ok:true,ignored:true});
   const text=String(message?.text||"").trim();if(!text)return json({ok:true,ignored:true});
   try{
