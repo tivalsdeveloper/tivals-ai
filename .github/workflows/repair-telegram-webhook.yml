@@ -1,0 +1,55 @@
+name: Repair Telegram webhook handling
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-telegram-webhook.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Telegram webhook handling
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('supabase/functions/tivals-telegram/index.ts')
+          s = p.read_text()
+
+          public_url = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-telegram'
+          if 'const PUBLIC_WEBHOOK_URL' not in s:
+              s = s.replace('const APPMIX_BASE = "https://api.apmix.ai/v1";\n', f'const APPMIX_BASE = "https://api.apmix.ai/v1";\nconst PUBLIC_WEBHOOK_URL = "{public_url}";\n')
+
+          # Never reset the webhook while processing an incoming Telegram update.
+          s = s.replace('  await ensureWebhook(req.url, secret).catch((e) => console.error("Webhook sync failed", e));\n', '')
+
+          # Replace GET handler with a safe health check and an explicit one-time sync route.
+          s = re.sub(
+              r'if \(req\.method === "GET"\) \{[\s\S]*?return json\(\{ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, callback_buttons: true, fast_fallback: true \}\);\n\s*\}',
+              '''if (req.method === "GET") {
+    const u = new URL(req.url);
+    if (u.searchParams.get("sync") === "1") {
+      await ensureWebhook(PUBLIC_WEBHOOK_URL, Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "");
+      return json({ ok: true, webhook_synced: true, callback_buttons: true });
+    }
+    return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, callback_buttons: true, fast_fallback: true });
+  }''',
+              s,
+              count=1,
+          )
+
+          p.write_text(s)
+
+      - name: Commit repair
+        run: |
+          git config user.name "tivalsdeveloper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add supabase/functions/tivals-telegram/index.ts
+          git commit -m "Repair Telegram webhook processing" || exit 0
+          git push
