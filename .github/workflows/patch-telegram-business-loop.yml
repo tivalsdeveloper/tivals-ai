@@ -1,0 +1,37 @@
+name: Patch Telegram business echo loop
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-telegram-business-loop.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch outgoing business message guard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('supabase/functions/tivals-telegram/index.ts')
+          s = p.read_text()
+          old = '  const bm=update?.business_message;const message=bm||update?.message;const business=bm?.business_connection_id||undefined;\n'
+          new = '''  const bm=update?.business_message;\n  // Ignore outgoing business messages created by this bot, otherwise Telegram\n  // sends them back as business_message updates and the bot replies to itself.\n  if(bm&&(bm?.sender_business_bot||bm?.via_bot||bm?.from?.is_bot))return json({ok:true,ignored:true,reason:"outgoing-business-message"});\n  const message=bm||update?.message;const business=bm?.business_connection_id||undefined;\n'''
+          if old not in s:
+              raise SystemExit('Target business_message line not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('version:18,callback_buttons:true,fast_fallback:true', 'version:19,callback_buttons:true,fast_fallback:true')
+          p.write_text(s)
+
+      - name: Commit fix
+        run: |
+          git config user.name "tivalsdeveloper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add supabase/functions/tivals-telegram/index.ts
+          git commit -m "Stop Telegram bot replying to its own business messages"
+          git push
