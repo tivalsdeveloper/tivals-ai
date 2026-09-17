@@ -1,0 +1,125 @@
+name: Patch Telegram buttons and speed
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-telegram-buttons-speed.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Telegram Edge Function
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('supabase/functions/tivals-telegram/index.ts')
+          s = p.read_text()
+
+          if 'let webhookSynced = false;' not in s:
+              s = s.replace('const APPMIX_BASE = "https://api.apmix.ai/v1";\n', 'const APPMIX_BASE = "https://api.apmix.ai/v1";\nlet webhookSynced = false;\n')
+
+          marker = '''async function sendHtml(chatId: number|string, html: string, business?: string) {'''
+          helper = '''async function ensureWebhook(url: string, secret: string) {
+            if (webhookSynced) return;
+            const payload: any = {
+              url,
+              allowed_updates: ["message", "business_message", "business_connection", "callback_query"],
+              drop_pending_updates: false
+            };
+            if (secret) payload.secret_token = secret;
+            await telegram("setWebhook", payload);
+            webhookSynced = true;
+          }
+          '''
+          if 'async function ensureWebhook(' not in s:
+              s = s.replace(marker, helper + '\n' + marker)
+
+          new_ask = r'''async function askTivalsAI(message: string) {
+            const messages = [{ role: "system", content: TELEGRAM_STYLE }, { role: "user", content: message }];
+            const errors: string[] = [];
+
+            const primary = async () => {
+              const { r, d } = await fetchJsonWithTimeout(TIVALS_AI_URL, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ model: "tivals-ai", messages })
+              }, 20000);
+              if (r.ok && d?.reply) return String(d.reply);
+              throw new Error(d?.error || `Tivals AI failed (${r.status}).`);
+            };
+
+            const providers: Promise<string>[] = [primary()];
+            const open = Deno.env.get("OPENROUTER_API_KEY") || "";
+            if (open) providers.push((async () => {
+              const { r, d } = await fetchJsonWithTimeout(`${OPENROUTER_BASE}/chat/completions`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${open}`, "Content-Type": "application/json", "HTTP-Referer": "https://ai.tivalsdeveloper.site/", "X-OpenRouter-Title": "Tivals AI Telegram" },
+                body: JSON.stringify({ model: "openrouter/free", messages, max_tokens: 1400, temperature: 0.35 })
+              }, 20000);
+              const txt = chatContent(d);
+              if (r.ok && txt) return txt;
+              throw new Error(d?.error?.message || d?.error || `OpenRouter failed (${r.status}).`);
+            })());
+
+            try {
+              return await Promise.any(providers);
+            } catch (e) {
+              errors.push(String((e as Error)?.message || e));
+            }
+
+            const app = Deno.env.get("APPMIX_API_KEY") || "";
+            if (app) {
+              const models = ["openai/gpt-4.1-free", "google/gemini-3-flash-preview-free"];
+              const fallbacks = models.map((model) => (async () => {
+                const { r, d } = await fetchJsonWithTimeout(`${APPMIX_BASE}/chat/completions`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${app}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({ model, messages, max_tokens: 1400, temperature: 0.35 })
+                }, 16000);
+                const txt = chatContent(d);
+                if (r.ok && txt) return txt;
+                throw new Error(d?.error?.message || d?.error || `${model} failed (${r.status}).`);
+              })());
+              try {
+                return await Promise.any(fallbacks);
+              } catch (e) {
+                errors.push(String((e as Error)?.message || e));
+              }
+            }
+
+            console.error("All Tivals AI providers failed", errors);
+            throw new Error("AI_TEMPORARILY_UNAVAILABLE");
+          }
+          '''
+          s, n = re.subn(r'async function askTivalsAI\(message: string\) \{[\s\S]*?\n\}\nfunction friendlyError', new_ask + '\nfunction friendlyError', s, count=1)
+          if n != 1:
+              raise SystemExit('Could not replace askTivalsAI')
+
+          old_get = 'if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true });'
+          new_get = '''if (req.method === "GET") {
+            await ensureWebhook(req.url, Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "").catch((e) => console.error("Webhook sync failed", e));
+            return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, callback_buttons: true, fast_fallback: true });
+          }'''
+          if old_get not in s:
+              raise SystemExit('Could not patch GET handler')
+          s = s.replace(old_get, new_get)
+
+          auth_line = 'if (secret && (req.headers.get("x-telegram-bot-api-secret-token") || "") !== secret) return json({ error: "Unauthorized webhook." }, 401);'
+          if 'await ensureWebhook(req.url, secret).catch' not in s:
+              s = s.replace(auth_line, auth_line + '\n  await ensureWebhook(req.url, secret).catch((e) => console.error("Webhook sync failed", e));')
+
+          p.write_text(s)
+      - name: Commit patch
+        run: |
+          git config user.name "tivalsdeveloper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add supabase/functions/tivals-telegram/index.ts
+          git commit -m "Fix Telegram lesson buttons and speed up AI responses"
+          git push
