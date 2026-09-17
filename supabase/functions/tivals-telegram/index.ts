@@ -140,13 +140,84 @@ async function handleGmail(chatId: number|string, tg: number, intent: {query:str
   await sendHtml(chatId, formatEmails(d, intent.title), business);
 }
 
-async function askTivalsAI(message: string) {
-  const c = new AbortController(); const timer = setTimeout(() => c.abort(), 15000);
+const TELEGRAM_STYLE = "You are replying inside Telegram. Format responses for a small phone screen. Use short sections, concise paragraphs, useful emoji sparingly, and Markdown headings/bold/code fences. Never output horizontal-rule lines such as --- or ***. For programming code, always use fenced code blocks. When the user asks to learn or be taught a broad subject, teach ONE focused lesson at a time instead of dumping an entire course, then end with a short practice task. Keep normal replies concise unless the user explicitly asks for detail.";
+
+async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const c = new AbortController();
+  const timer = setTimeout(() => c.abort(), timeoutMs);
   try {
-    const telegramStyle = "You are replying inside Telegram. Format responses for a small phone screen. Use short sections, concise paragraphs, useful emoji sparingly, and Markdown headings/bold/code fences. Never output horizontal-rule lines such as --- or ***. For programming code, always use fenced code blocks. When the user asks to learn or be taught a broad subject, teach ONE focused lesson at a time instead of dumping an entire course, then end with a short practice task. Keep normal replies concise unless the user explicitly asks for detail.";
-    const r = await fetch(TIVALS_AI_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "system", content: telegramStyle }, { role: "user", content: message }] }), signal: c.signal });
-    const d = await r.json().catch(() => ({})); if (!r.ok || !d?.reply) throw new Error(d?.error || `Tivals AI failed (${r.status}).`); return String(d.reply);
-  } finally { clearTimeout(timer); }
+    const r = await fetch(url, { ...init, signal: c.signal });
+    const d = await r.json().catch(() => ({}));
+    return { r, d };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function chatContent(d: any) {
+  const c = d?.choices?.[0]?.message?.content;
+  if (typeof c === "string") return c.trim();
+  if (Array.isArray(c)) return c.map((x:any) => typeof x === "string" ? x : x?.text || "").join("").trim();
+  return "";
+}
+async function askTivalsAI(message: string) {
+  const messages = [{ role: "system", content: TELEGRAM_STYLE }, { role: "user", content: message }];
+  const errors: string[] = [];
+
+  try {
+    const { r, d } = await fetchJsonWithTimeout(TIVALS_AI_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "tivals-ai", messages })
+    }, 45000);
+    if (r.ok && d?.reply) return String(d.reply);
+    errors.push(d?.error || `Tivals AI failed (${r.status}).`);
+  } catch (e) {
+    errors.push((e as Error)?.name === "AbortError" ? "Tivals AI timed out" : String((e as Error)?.message || e));
+  }
+
+  const open = Deno.env.get("OPENROUTER_API_KEY") || "";
+  if (open) {
+    try {
+      const { r, d } = await fetchJsonWithTimeout(`${OPENROUTER_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${open}`, "Content-Type": "application/json", "HTTP-Referer": "https://ai.tivalsdeveloper.site/", "X-OpenRouter-Title": "Tivals AI Telegram" },
+        body: JSON.stringify({ model: "openrouter/free", messages, max_tokens: 1600, temperature: 0.4 })
+      }, 30000);
+      const txt = chatContent(d);
+      if (r.ok && txt) return txt;
+      errors.push(d?.error?.message || d?.error || `OpenRouter failed (${r.status}).`);
+    } catch (e) {
+      errors.push((e as Error)?.name === "AbortError" ? "OpenRouter timed out" : String((e as Error)?.message || e));
+    }
+  }
+
+  const app = Deno.env.get("APPMIX_API_KEY") || "";
+  if (app) {
+    for (const model of ["openai/gpt-4.1-free", "google/gemini-3-flash-preview-free"]) {
+      try {
+        const { r, d } = await fetchJsonWithTimeout(`${APPMIX_BASE}/chat/completions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${app}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages, max_tokens: 1600, temperature: 0.4 })
+        }, 30000);
+        const txt = chatContent(d);
+        if (r.ok && txt) return txt;
+        errors.push(d?.error?.message || d?.error || `${model} failed (${r.status}).`);
+      } catch (e) {
+        errors.push((e as Error)?.name === "AbortError" ? `${model} timed out` : String((e as Error)?.message || e));
+      }
+    }
+  }
+
+  console.error("All Tivals AI providers failed", errors);
+  throw new Error("AI_TEMPORARILY_UNAVAILABLE");
+}
+function friendlyError(e: unknown) {
+  const m = String((e as Error)?.message || e || "");
+  if (/AI_TEMPORARILY_UNAVAILABLE|AbortError|signal has been aborted|timed out|timeout/i.test(m)) {
+    return "Tivals AI is taking longer than expected right now. Please try again in a moment.";
+  }
+  return m || "Something went wrong. Please try again.";
 }
 function youtubeQuery(text: string) {
   for (const p of [/^\s*search\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i,/^\s*youtube\s+(?:search\s+)?(?:for\s+)?(.+?)\s*[.!]?\s*$/i,/^\s*find\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i]) { const m = text.match(p); if (m?.[1]) return m[1].trim(); }
@@ -223,7 +294,7 @@ Deno.serve(async (req: Request) => {
       await sendLearningControls(chatId, topic);
       return json({ok:true,route:"learning-control"});
     } catch (e) {
-      const m = String((e as Error)?.message || e); await sendFormatted(chatId, `⚠️ ${m}`).catch(()=>{}); return json({ok:false,error:m},200);
+      const m = friendlyError(e); await sendFormatted(chatId, `⚠️ ${m}`).catch(()=>{}); return json({ok:false,error:String((e as Error)?.message || e)},200);
     }
   }
 
@@ -251,6 +322,6 @@ Deno.serve(async (req: Request) => {
     if (topic) await sendLearningControls(chatId, topic, business);
     return json({ok:true,route:"ai"});
   } catch (e) {
-    const m = String((e as Error)?.message || e); await sendFormatted(chatId, `⚠️ ${m}`, business).catch(()=>{}); console.error("Tivals Telegram error", m); return json({ok:false,error:m},200);
+    const raw = String((e as Error)?.message || e); const m = friendlyError(e); await sendFormatted(chatId, `⚠️ ${m}`, business).catch(()=>{}); console.error("Tivals Telegram error", raw); return json({ok:false,error:raw},200);
   }
 });
