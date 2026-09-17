@@ -17,58 +17,21 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-
+          import base64
           p = Path('supabase/functions/tivals-telegram/index.ts')
           s = p.read_text()
-
           old_help = 'if(text==="/help"){await sendFormatted(chatId,"**Tivals AI**\\n\\n/connect — Connect Gmail or GitHub\\n/emails — Latest Gmail\\n/unread — Unread Gmail\\n\\nYou can also say **Teach me Python** or **Search networking on YouTube**.",business);return json({ok:true});}'
           new_help = 'if(text==="/help"){await sendFormatted(chatId,"**Tivals AI**\\n\\n/connect — Connect Gmail or GitHub\\n/emails — Latest Gmail\\n/unread — Unread Gmail\\n/channel @channel Your message — Post to a channel you administer\\n\\nYou can also say **Teach me Python** or **Search networking on YouTube**.",business);return json({ok:true});}'
           if old_help in s:
               s = s.replace(old_help, new_help)
-
           marker = '    if(text==="/accounts"){if(!tg)throw new Error("Telegram user ID unavailable.");const d=await oauthCall("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];await sendFormatted(chatId,list.length?`**Connected accounts**\\n\\n${list.map((x:any)=>`• ${x.provider}: ${x.account_label||"Connected"}`).join("\\n")}`:"**Connected accounts**\\n\\nNo accounts connected.",business);return json({ok:true});}\n'
-
-          channel_block = '''    if(/^\\/channel(?:@\\w+)?(?:\\s|$)/i.test(text)){
-      if(message?.chat?.type!=="private"){
-        await sendFormatted(chatId,"⚠️ Use /channel from a private chat with me.");
-        return json({ok:false,route:"channel-post"});
-      }
-      if(!tg)throw new Error("Telegram user ID unavailable.");
-      const m=text.match(/^\\/channel(?:@\\w+)?\\s+(@[A-Za-z0-9_]{5,}|-100\\d+)\\s+([\\s\\S]+)$/i);
-      if(!m){
-        await sendFormatted(chatId,"**Channel posting**\\n\\nUse: `/channel @channelusername Your message`\\n\\nFirst add me to the channel as an administrator with permission to post messages.");
-        return json({ok:false,route:"channel-post-help"});
-      }
-      const target=m[1]; const channelText=m[2].trim();
-      const member=await telegram("getChatMember",{chat_id:target,user_id:tg});
-      const status=String(member?.result?.status||"");
-      if(!["creator","administrator"].includes(status)){
-        await sendFormatted(chatId,"⚠️ You must be an administrator of that channel before you can post through Tivals AI.");
-        return json({ok:false,route:"channel-post-denied"});
-      }
-      try{
-        await sendFormatted(target,channelText);
-        await sendFormatted(chatId,`✅ Posted to **${target}**.`);
-        return json({ok:true,route:"channel-post"});
-      }catch(e){
-        const msg=String((e as Error)?.message||e||"");
-        if(/not enough rights|CHAT_ADMIN_REQUIRED|forbidden|not found/i.test(msg)){
-          await sendFormatted(chatId,"⚠️ I couldn't post there. Add Tivals AI to the channel as an administrator and enable **Post Messages**, then try again.");
-          return json({ok:false,route:"channel-post-permission"});
-        }
-        throw e;
-      }
-    }
-'''
-
+          block = base64.b64decode('ICAgIGlmKC9eXC9jaGFubmVsKD86QFx3Kyk/KD86XHN8JCkvaS50ZXN0KHRleHQpKXsKICAgICAgaWYobWVzc2FnZT8uY2hhdD8udHlwZSE9PSJwcml2YXRlIil7CiAgICAgICAgYXdhaXQgc2VuZEZvcm1hdHRlZChjaGF0SWQsIuKaoO+4jyBVc2UgL2NoYW5uZWwgZnJvbSBhIHByaXZhdGUgY2hhdCB3aXRoIG1lLiIpOwogICAgICAgIHJldHVybiBqc29uKHtvazpmYWxzZSxyb3V0ZToiY2hhbm5lbC1wb3N0In0pOwogICAgICB9CiAgICAgIGlmKCF0Zyl0aHJvdyBuZXcgRXJyb3IoIlRlbGVncmFtIHVzZXIgSUQgdW5hdmFpbGFibGUuIik7CiAgICAgIGNvbnN0IG09dGV4dC5tYXRjaCgvXlwvY2hhbm5lbCg/OkBcdyspP1xzKyhAW0EtWmEtejAtOV9dezUsfXwtMTAwXGQrKVxzKyhbXHNcU10rKSQvaSk7CiAgICAgIGlmKCFtKXsKICAgICAgICBhd2FpdCBzZW5kRm9ybWF0dGVkKGNoYXRJZCwiKipDaGFubmVsIHBvc3RpbmcqKlxuXG5Vc2U6IGAvY2hhbm5lbCBAY2hhbm5lbHVzZXJuYW1lIFlvdXIgbWVzc2FnZWBcblxuRmlyc3QgYWRkIG1lIHRvIHRoZSBjaGFubmVsIGFzIGFuIGFkbWluaXN0cmF0b3Igd2l0aCBwZXJtaXNzaW9uIHRvIHBvc3QgbWVzc2FnZXMuIik7CiAgICAgICAgcmV0dXJuIGpzb24oe29rOmZhbHNlLHJvdXRlOiJjaGFubmVsLXBvc3QtaGVscCJ9KTsKICAgICAgfQogICAgICBjb25zdCB0YXJnZXQ9bVsxXTsgY29uc3QgY2hhbm5lbFRleHQ9bVsyXS50cmltKCk7CiAgICAgIGNvbnN0IG1lbWJlcj1hd2FpdCB0ZWxlZ3JhbSgiZ2V0Q2hhdE1lbWJlciIse2NoYXRfaWQ6dGFyZ2V0LHVzZXJfaWQ6dGd9KTsKICAgICAgY29uc3Qgc3RhdHVzPVN0cmluZyhtZW1iZXI/LnJlc3VsdD8uc3RhdHVzfHwiIik7CiAgICAgIGlmKCFbImNyZWF0b3IiLCJhZG1pbmlzdHJhdG9yIl0uaW5jbHVkZXMoc3RhdHVzKSl7CiAgICAgICAgYXdhaXQgc2VuZEZvcm1hdHRlZChjaGF0SWQsIuKaoO+4jyBZb3UgbXVzdCBiZSBhbiBhZG1pbmlzdHJhdG9yIG9mIHRoYXQgY2hhbm5lbCBiZWZvcmUgeW91IGNhbiBwb3N0IHRocm91Z2ggVGl2YWxzIEFJLiIpOwogICAgICAgIHJldHVybiBqc29uKHtvazpmYWxzZSxyb3V0ZToiY2hhbm5lbC1wb3N0LWRlbmllZCJ9KTsKICAgICAgfQogICAgICB0cnl7CiAgICAgICAgYXdhaXQgc2VuZEZvcm1hdHRlZCh0YXJnZXQsY2hhbm5lbFRleHQpOwogICAgICAgIGF3YWl0IHNlbmRGb3JtYXR0ZWQoY2hhdElkLGDinIUgUG9zdGVkIHRvICoqJHt0YXJnZXR9KiouYCk7CiAgICAgICAgcmV0dXJuIGpzb24oe29rOnRydWUscm91dGU6ImNoYW5uZWwtcG9zdCJ9KTsKICAgICAgfWNhdGNoKGUpewogICAgICAgIGNvbnN0IG1zZz1TdHJpbmcoKGUgYXMgRXJyb3IpPy5tZXNzYWdlfHxlfHwiIik7CiAgICAgICAgaWYoL25vdCBlbm91Z2ggcmlnaHRzfENIQVRfQURNSU5fUkVRVUlSRUR8Zm9yYmlkZGVufG5vdCBmb3VuZC9pLnRlc3QobXNnKSl7CiAgICAgICAgICBhd2FpdCBzZW5kRm9ybWF0dGVkKGNoYXRJZCwi4pqg77iPIEkgY291bGRuJ3QgcG9zdCB0aGVyZS4gQWRkIFRpdmFscyBBSSB0byB0aGUgY2hhbm5lbCBhcyBhbiBhZG1pbmlzdHJhdG9yIGFuZCBlbmFibGUgKipQb3N0IE1lc3NhZ2VzKiosIHRoZW4gdHJ5IGFnYWluLiIpOwogICAgICAgICAgcmV0dXJuIGpzb24oe29rOmZhbHNlLHJvdXRlOiJjaGFubmVsLXBvc3QtcGVybWlzc2lvbiJ9KTsKICAgICAgICB9CiAgICAgICAgdGhyb3cgZTsKICAgICAgfQogICAgfQo=').decode()
           if 'route:"channel-post"' not in s:
               if marker not in s:
                   raise SystemExit('Could not find accounts command insertion point')
-              s = s.replace(marker, marker + channel_block)
-
+              s = s.replace(marker, marker + block)
           s = s.replace('version:20,callback_buttons:false', 'version:21,callback_buttons:false')
           p.write_text(s)
-
       - name: Commit change
         run: |
           git config user.name "tivalsdeveloper-bot"
