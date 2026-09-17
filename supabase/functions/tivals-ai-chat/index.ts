@@ -8,7 +8,8 @@ const cors = {
 const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
-const VERSION = 23;
+const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
+const VERSION = 24;
 
 const APPMIX_FREE_MODELS = [
   "anthropic/claude-sonnet-4-6-free",
@@ -22,23 +23,20 @@ const APPMIX_FREE_MODELS = [
 
 const APINEX_FALLBACK_MODELS = ["free/gemini-3.1-pro"];
 
-type ProviderName = "appmix" | "apinex" | "openrouter";
+type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter";
 type SelectedModel = { provider: ProviderName; model: string };
-
-type PublicModel = {
-  id: string;
-  name: string;
-  provider?: string;
-  model?: string;
-};
+type PublicModel = { id: string; name: string; provider?: string; model?: string };
 
 const cooldownUntil: Record<ProviderName, number> = {
+  bazaarlink: 0,
   appmix: 0,
   apinex: 0,
   openrouter: 0
 };
+
 let appMixWorkingModel = "";
 let apinexWorkingModel = "";
+let bazaarWorkingModel = "";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: cors });
@@ -80,8 +78,9 @@ function safeErr(e: unknown) {
   const s = String((e as Error)?.message || e || "");
   if (/abort|timeout|timed out/i.test(s)) return "timeout";
   if (/401|unauthor|invalid api|invalid key|key_expired/i.test(s)) return "unauthorized";
+  if (/402|insufficient.*credit|payment required/i.test(s)) return "no_credits";
   if (/429|rate|quota|allowance|insufficient_quota|allowance_exhausted|limit/i.test(s)) return "rate_limited";
-  if (/model.*not.*found|unknown model|retired model|model_unavailable/i.test(s)) return "model_unavailable";
+  if (/model.*not.*found|unknown model|retired model|model_unavailable|model_not_available/i.test(s)) return "model_unavailable";
   if (/no_models|no_free_models/i.test(s)) return s;
   return s.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 180) || "failed";
 }
@@ -90,6 +89,7 @@ function setCooldown(provider: ProviderName, reason: string) {
   if (reason === "rate_limited") cooldownUntil[provider] = Date.now() + 10 * 60_000;
   else if (reason === "unauthorized") cooldownUntil[provider] = Date.now() + 30 * 60_000;
   else if (reason === "timeout") cooldownUntil[provider] = Date.now() + 60_000;
+  else if (reason === "no_credits") cooldownUntil[provider] = Date.now() + 10 * 60_000;
 }
 
 function inCooldown(provider: ProviderName) {
@@ -139,7 +139,6 @@ function extractModelIds(d: any) {
       const x = v?.[key];
       if (typeof x === "string" && x.includes("/")) out.add(x);
     }
-
     for (const key of ["data", "models", "items", "result", "results"]) {
       if (v?.[key] != null) walk(v[key], depth + 1);
     }
@@ -158,11 +157,45 @@ async function listModels(base: string, key: string, timeout = 3500) {
   if (!r.ok) {
     throw new Error(`${r.status} ${d?.error?.code || ""} ${d?.error?.message || d?.message || "models request failed"}`.trim());
   }
-  return extractModelIds(d);
+  return { ids: extractModelIds(d), raw: d };
 }
 
 function uniqueModels(models: string[]) {
   return [...new Set(models.filter(Boolean))];
+}
+
+function isZeroPrice(v: unknown) {
+  if (v === null || v === undefined || v === "") return false;
+  const n = Number(v);
+  return Number.isFinite(n) && n === 0;
+}
+
+function bazaarFreeModels(raw: any) {
+  const rows = Array.isArray(raw?.data) ? raw.data : [];
+  const out: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    const id = String(row?.id || "").trim();
+    const aliases = Array.isArray(row?.aliases) ? row.aliases.map((x:any) => String(x || "").trim()).filter(Boolean) : [];
+    const ownedBy = String(row?.owned_by || "").trim();
+    const pricing = row?.pricing || {};
+    const zero = isZeroPrice(pricing?.prompt) && isZeroPrice(pricing?.completion);
+    const candidates = [id, ...aliases];
+
+    let model = candidates.find(x => x === "auto:free" || /:free$/i.test(x)) || "";
+    if (!model && zero) {
+      model = aliases.find((x:string) => x.includes("/")) || (ownedBy && id && !id.includes("/") ? `${ownedBy}/${id}` : id);
+    }
+    if (!model || seen.has(model)) continue;
+
+    const name = String(row?.name || "").trim() || model;
+    seen.add(model);
+    out.push({ id: model, name });
+  }
+
+  if (!seen.has("auto:free")) out.unshift({ id: "auto:free", name: "BazaarLink Auto Free" });
+  return out;
 }
 
 function prettyModelName(model: string, provider: ProviderName) {
@@ -175,35 +208,54 @@ function prettyModelName(model: string, provider: ProviderName) {
     "anthropic/claude-opus-4-7-free": "Claude Opus 4.7",
     "zai/glm-5.2-free": "GLM 5.2",
     "openai/gpt-4.1-free": "GPT-4.1",
-    "openrouter/free": "OpenRouter Free Router"
+    "openrouter/free": "OpenRouter Free Router",
+    "auto:free": "BazaarLink Auto Free"
   };
   if (known[model]) return known[model];
 
   let name = model.split("/").pop() || model;
   name = name
+    .replace(/:free$/i, "")
     .replace(/-free$/i, "")
     .replace(/-preview$/i, " Preview")
     .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase());
-  return `${name} (${provider === "appmix" ? "AppMix" : provider === "apinex" ? "Apinex" : "OpenRouter"})`;
+  return name || provider;
 }
 
-function publicModel(provider: ProviderName, model: string): PublicModel {
-  const providerLabel = provider === "appmix" ? "AppMix" : provider === "apinex" ? "Apinex" : "OpenRouter";
+function providerLabel(provider: ProviderName) {
+  if (provider === "bazaarlink") return "BazaarLink";
+  if (provider === "appmix") return "AppMix";
+  if (provider === "apinex") return "Apinex";
+  return "OpenRouter";
+}
+
+function publicModel(provider: ProviderName, model: string, name?: string): PublicModel {
+  const label = providerLabel(provider);
   return {
     id: `${provider}:${model}`,
-    name: `${prettyModelName(model, provider)} · ${providerLabel}`,
-    provider: providerLabel,
+    name: `${name || prettyModelName(model, provider)} · ${label}`,
+    provider: label,
     model
   };
 }
 
-async function getPublicModels(apinex: string, open: string, app: string) {
+async function getPublicModels(apinex: string, open: string, app: string, bazaar: string) {
   const models: PublicModel[] = [{ id: "auto", name: "Auto (Recommended)" }];
+
+  if (bazaar) {
+    try {
+      const { raw } = await listModels(BAZAARLINK_BASE, bazaar, 3500);
+      const free = bazaarFreeModels(raw).slice(0, 20);
+      for (const item of free) models.push(publicModel("bazaarlink", item.id, item.name));
+    } catch {
+      models.push(publicModel("bazaarlink", "auto:free", "BazaarLink Auto Free"));
+    }
+  }
 
   if (app) {
     let discovered: string[] = [];
-    try { discovered = await listModels(APPMIX_BASE, app, 3000); } catch {}
+    try { discovered = (await listModels(APPMIX_BASE, app, 3000)).ids; } catch {}
     const free = discovered.filter(id => /-free(?:$|\b)/i.test(id) || /free/i.test(id));
     const candidates = uniqueModels([...(free.length ? free : discovered), ...APPMIX_FREE_MODELS]).slice(0, 16);
     for (const model of candidates) models.push(publicModel("appmix", model));
@@ -211,15 +263,12 @@ async function getPublicModels(apinex: string, open: string, app: string) {
 
   if (apinex) {
     let discovered: string[] = [];
-    try { discovered = (await listModels(APINEX_BASE, apinex, 3000)).filter(id => id.startsWith("free/")); } catch {}
+    try { discovered = (await listModels(APINEX_BASE, apinex, 3000)).ids.filter(id => id.startsWith("free/")); } catch {}
     const candidates = uniqueModels([...discovered, ...APINEX_FALLBACK_MODELS]).slice(0, 16);
     for (const model of candidates) models.push(publicModel("apinex", model));
   }
 
-  if (open) {
-    models.push(publicModel("openrouter", "openrouter/free"));
-  }
-
+  if (open) models.push(publicModel("openrouter", "openrouter/free"));
   return models;
 }
 
@@ -231,7 +280,7 @@ function parseSelectedModel(value: unknown): SelectedModel | null {
   if (colon > 0) {
     const provider = id.slice(0, colon) as ProviderName;
     const model = id.slice(colon + 1);
-    if (["appmix", "apinex", "openrouter"].includes(provider) && model) {
+    if (["bazaarlink", "appmix", "apinex", "openrouter"].includes(provider) && model) {
       return { provider, model };
     }
   }
@@ -239,6 +288,7 @@ function parseSelectedModel(value: unknown): SelectedModel | null {
   // Legacy ids kept for existing browser localStorage values.
   if (id.startsWith("free/")) return { provider: "apinex", model: id };
   if (id === "openrouter/free") return { provider: "openrouter", model: id };
+  if (id === "auto:free" || /:free$/i.test(id)) return { provider: "bazaarlink", model: id };
   if (/-free(?:$|\b)/i.test(id)) return { provider: "appmix", model: id };
   return null;
 }
@@ -251,13 +301,14 @@ async function tryModels(
 ) {
   let last = "no_models";
   const candidates = uniqueModels(models).slice(0, maxCandidates);
+
   for (const model of candidates) {
     try {
       const reply = await run(model);
       return { reply, route: `${provider}:${model}`, model };
     } catch (e) {
       last = safeErr(e);
-      if (last === "rate_limited" || last === "unauthorized" || last === "timeout") {
+      if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(last)) {
         setCooldown(provider, last);
         break;
       }
@@ -267,14 +318,51 @@ async function tryModels(
   throw new Error(last);
 }
 
+async function callBazaarLink(key: string, prompt: any[], excluded: string[] = []) {
+  if (inCooldown("bazaarlink")) throw new Error("cooldown");
+
+  let models: string[] = [];
+  if (bazaarWorkingModel) models.push(bazaarWorkingModel);
+  try {
+    const { raw } = await listModels(BAZAARLINK_BASE, key, 3500);
+    models.push(...bazaarFreeModels(raw).map(x => x.id));
+  } catch (e) {
+    const reason = safeErr(e);
+    if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) {
+      setCooldown("bazaarlink", reason);
+      throw new Error(reason);
+    }
+  }
+
+  models.push("auto:free");
+  const excludedSet = new Set(excluded);
+  models = uniqueModels(models).filter(m => !excludedSet.has(m));
+
+  const result = await tryModels(
+    "bazaarlink",
+    models,
+    m => callProvider(
+      `${BAZAARLINK_BASE}/chat/completions`,
+      key,
+      m,
+      prompt,
+      { "X-Free-Fallback": "false" },
+      10000
+    ),
+    3
+  );
+  bazaarWorkingModel = result.model;
+  return result;
+}
+
 async function callAppMix(key: string, prompt: any[], excluded: string[] = []) {
   if (inCooldown("appmix")) throw new Error("cooldown");
 
   let discovered: string[] = [];
-  try { discovered = await listModels(APPMIX_BASE, key, 3000); }
+  try { discovered = (await listModels(APPMIX_BASE, key, 3000)).ids; }
   catch (e) {
     const reason = safeErr(e);
-    if (reason === "rate_limited" || reason === "unauthorized" || reason === "timeout") {
+    if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) {
       setCooldown("appmix", reason);
       throw new Error(reason);
     }
@@ -304,17 +392,17 @@ async function callApinex(key: string, prompt: any[], excluded: string[] = []) {
   let models: string[] = [];
   if (apinexWorkingModel) models.push(apinexWorkingModel);
   try {
-    const discovered = (await listModels(APINEX_BASE, key, 3000)).filter(id => id.startsWith("free/"));
-    models.push(...discovered);
+    models.push(...(await listModels(APINEX_BASE, key, 3000)).ids.filter(id => id.startsWith("free/")));
   } catch (e) {
     if (!models.length) {
       const reason = safeErr(e);
-      if (["rate_limited", "unauthorized", "timeout"].includes(reason)) {
+      if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) {
         setCooldown("apinex", reason);
         throw new Error(reason);
       }
     }
   }
+
   models.push(...APINEX_FALLBACK_MODELS);
   const excludedSet = new Set(excluded);
   models = uniqueModels(models).filter(m => !excludedSet.has(m));
@@ -347,7 +435,7 @@ async function callOpenRouter(key: string, prompt: any[]) {
     return { reply, route: "openrouter:openrouter/free", model: "openrouter/free" };
   } catch (e) {
     const reason = safeErr(e);
-    if (["rate_limited", "unauthorized", "timeout"].includes(reason)) setCooldown("openrouter", reason);
+    if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) setCooldown("openrouter", reason);
     throw new Error(reason);
   }
 }
@@ -355,17 +443,26 @@ async function callOpenRouter(key: string, prompt: any[]) {
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
-  apinex: string,
-  open: string,
-  app: string
+  keys: { bazaar: string; app: string; apinex: string; open: string }
 ) {
   const { provider, model } = selected;
   if (inCooldown(provider)) throw new Error("cooldown");
 
-  const key = provider === "appmix" ? app : provider === "apinex" ? apinex : open;
+  const key = provider === "bazaarlink" ? keys.bazaar
+    : provider === "appmix" ? keys.app
+    : provider === "apinex" ? keys.apinex
+    : keys.open;
   if (!key) throw new Error("provider_not_configured");
 
   try {
+    if (provider === "bazaarlink") {
+      const reply = await callProvider(
+        `${BAZAARLINK_BASE}/chat/completions`, key, model, prompt,
+        { "X-Free-Fallback": "false" }, 10000
+      );
+      bazaarWorkingModel = model;
+      return { reply, route: `bazaarlink:${model}`, model };
+    }
     if (provider === "appmix") {
       const reply = await callProvider(`${APPMIX_BASE}/chat/completions`, key, model, prompt, {}, 10000);
       appMixWorkingModel = model;
@@ -376,58 +473,50 @@ async function callSpecificModel(
       apinexWorkingModel = model;
       return { reply, route: `apinex:${model}`, model };
     }
-    const reply = await callProvider(
-      `${OPENROUTER_BASE}/chat/completions`,
-      key,
-      model,
-      prompt,
-      {
-        "HTTP-Referer": "https://ai.tivalsdeveloper.site/",
-        "X-OpenRouter-Title": "Tivals AI"
-      },
-      10000
-    );
-    return { reply, route: `openrouter:${model}`, model };
+    return await callOpenRouter(key, prompt);
   } catch (e) {
     const reason = safeErr(e);
-    if (["rate_limited", "unauthorized", "timeout"].includes(reason)) setCooldown(provider, reason);
+    if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) setCooldown(provider, reason);
     throw new Error(reason);
   }
 }
 
-async function providerStatus(apinex: string, open: string, app: string) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; open: string }) {
   const providers: any[] = [];
 
-  if (app) {
+  if (keys.bazaar) {
     try {
-      const models = await listModels(APPMIX_BASE, app, 3000);
+      const { raw } = await listModels(BAZAARLINK_BASE, keys.bazaar, 3500);
       providers.push({
-        name: "AppMix",
+        name: "BazaarLink",
         configured: true,
-        models_visible: models.length,
-        recovery_models: APPMIX_FREE_MODELS.length,
-        cooldown_ms: Math.max(0, cooldownUntil.appmix - Date.now())
+        free_models_visible: bazaarFreeModels(raw).length,
+        cooldown_ms: Math.max(0, cooldownUntil.bazaarlink - Date.now())
       });
     } catch (e) {
-      providers.push({ name: "AppMix", configured: true, error: safeErr(e), recovery_models: APPMIX_FREE_MODELS.length });
+      providers.push({ name: "BazaarLink", configured: true, error: safeErr(e) });
+    }
+  } else providers.push({ name: "BazaarLink", configured: false });
+
+  if (keys.app) {
+    try {
+      const models = (await listModels(APPMIX_BASE, keys.app, 3000)).ids;
+      providers.push({ name: "AppMix", configured: true, models_visible: models.length, cooldown_ms: Math.max(0, cooldownUntil.appmix - Date.now()) });
+    } catch (e) {
+      providers.push({ name: "AppMix", configured: true, error: safeErr(e) });
     }
   } else providers.push({ name: "AppMix", configured: false });
 
-  if (apinex) {
+  if (keys.apinex) {
     try {
-      const models = (await listModels(APINEX_BASE, apinex, 3000)).filter(id => id.startsWith("free/"));
-      providers.push({
-        name: "Apinex",
-        configured: true,
-        free_models_visible: models.length,
-        cooldown_ms: Math.max(0, cooldownUntil.apinex - Date.now())
-      });
+      const models = (await listModels(APINEX_BASE, keys.apinex, 3000)).ids.filter(id => id.startsWith("free/"));
+      providers.push({ name: "Apinex", configured: true, free_models_visible: models.length, cooldown_ms: Math.max(0, cooldownUntil.apinex - Date.now()) });
     } catch (e) {
       providers.push({ name: "Apinex", configured: true, error: safeErr(e) });
     }
   } else providers.push({ name: "Apinex", configured: false });
 
-  providers.push(open
+  providers.push(keys.open
     ? { name: "OpenRouter", configured: true, cooldown_ms: Math.max(0, cooldownUntil.openrouter - Date.now()) }
     : { name: "OpenRouter", configured: false });
 
@@ -437,22 +526,19 @@ async function providerStatus(apinex: string, open: string, app: string) {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
-  const apinex = Deno.env.get("APINEX_API_KEY") || "";
-  const open = Deno.env.get("OPENROUTER_API_KEY") || "";
-  const app = Deno.env.get("APPMIX_API_KEY") || "";
+  const keys = {
+    bazaar: Deno.env.get("BAZAARLINK_API_KEY") || "",
+    app: Deno.env.get("APPMIX_API_KEY") || "",
+    apinex: Deno.env.get("APINEX_API_KEY") || "",
+    open: Deno.env.get("OPENROUTER_API_KEY") || ""
+  };
 
   if (req.method === "GET") {
     const u = new URL(req.url);
 
     if (u.searchParams.get("models") === "1") {
-      const models = await getPublicModels(apinex, open, app);
-      return json({
-        ok: true,
-        service: "tivals-ai-chat",
-        version: VERSION,
-        models,
-        default_model: "auto"
-      });
+      const models = await getPublicModels(keys.apinex, keys.open, keys.app, keys.bazaar);
+      return json({ ok: true, version: VERSION, models, count: models.length });
     }
 
     if (u.searchParams.get("health") === "1") {
@@ -460,11 +546,11 @@ Deno.serve(async (req: Request) => {
         ok: true,
         service: "tivals-ai-chat",
         version: VERSION,
-        routing: "selected-first-then-sequential-fallback",
+        routing: "sequential",
         provider_racing: false,
         completion_tested: false,
-        note: "Health checks do not consume AI completions.",
-        providers: await providerStatus(apinex, open, app)
+        note: "Health checks only list provider/model availability and do not send AI completion requests.",
+        providers: await providerStatus(keys)
       });
     }
 
@@ -472,9 +558,15 @@ Deno.serve(async (req: Request) => {
       ok: true,
       service: "tivals-ai-chat",
       version: VERSION,
-      routing: "selected-first-then-sequential-fallback",
+      routing: "sequential",
       provider_racing: false,
-      models_endpoint: "?models=1"
+      selected_model_supported: true,
+      configured_providers: [
+        ...(keys.bazaar ? ["BazaarLink"] : []),
+        ...(keys.app ? ["AppMix"] : []),
+        ...(keys.apinex ? ["Apinex"] : []),
+        ...(keys.open ? ["OpenRouter"] : [])
+      ]
     });
   }
 
@@ -485,9 +577,7 @@ Deno.serve(async (req: Request) => {
   catch { return json({ error: "Invalid JSON request." }, 400); }
 
   const messages = cleanMessages(body?.messages);
-  if (!messages.length && body?.message) {
-    messages.push({ role: "user", content: String(body.message).slice(0, 16000) });
-  }
+  if (!messages.length && body?.message) messages.push({ role: "user", content: String(body.message).slice(0,16000) });
   if (!messages.length) return json({ error: "Please enter a message." }, 400);
 
   const system = {
@@ -496,66 +586,61 @@ Deno.serve(async (req: Request) => {
   };
   const prompt = [system, ...messages.filter((m:any) => m.role !== "system")];
   const selected = parseSelectedModel(body?.model);
-  const selectedId = String(body?.model || "auto");
-  const failures: { provider: string, error: string }[] = [];
+  const failures: { provider: string; error: string }[] = [];
   const excluded: Partial<Record<ProviderName,string[]>> = {};
 
   if (selected) {
     try {
-      const result = await callSpecificModel(selected, prompt, apinex, open, app);
-      return json({
-        reply: result.reply,
-        model: selectedId,
-        selected_model: selectedId,
-        used_model: result.model,
-        provider: "Tivals AI",
-        route: result.route,
-        fallback_used: false
-      });
+      const result = await callSpecificModel(selected, prompt, keys);
+      return json({ reply: result.reply, model: selected.model, provider: providerLabel(selected.provider), route: result.route, selected: true });
     } catch (e) {
-      failures.push({ provider: selected.provider, error: safeErr(e) });
+      failures.push({ provider: `${providerLabel(selected.provider)}:${selected.model}`, error: safeErr(e) });
       excluded[selected.provider] = [selected.model];
     }
   }
 
-  const providerOrder: ProviderName[] = ["appmix", "apinex", "openrouter"];
-  for (const provider of providerOrder) {
+  // Sequential fallback. BazaarLink is first because its auto:free route is designed
+  // specifically for free model selection and X-Free-Fallback:false prevents paid fallback.
+  if (keys.bazaar) {
     try {
-      let result: { reply: string; route: string; model: string };
-      if (provider === "appmix") {
-        if (!app) continue;
-        result = await callAppMix(app, prompt, excluded.appmix || []);
-      } else if (provider === "apinex") {
-        if (!apinex) continue;
-        result = await callApinex(apinex, prompt, excluded.apinex || []);
-      } else {
-        if (!open) continue;
-        if ((excluded.openrouter || []).includes("openrouter/free")) continue;
-        result = await callOpenRouter(open, prompt);
-      }
-
-      return json({
-        reply: result.reply,
-        model: selectedId || "auto",
-        selected_model: selectedId || "auto",
-        used_model: result.model,
-        provider: "Tivals AI",
-        route: result.route,
-        fallback_used: !!selected
-      });
-    } catch (e) {
-      failures.push({ provider, error: safeErr(e) });
-    }
+      const result = await callBazaarLink(keys.bazaar, prompt, excluded.bazaarlink || []);
+      return json({ reply: result.reply, model: result.model, provider: "BazaarLink", route: result.route, fallback: !!selected });
+    } catch (e) { failures.push({ provider: "BazaarLink", error: safeErr(e) }); }
   }
 
-  if (!app && !apinex && !open) {
-    return json({ error: "Tivals AI is not configured.", code: "NO_PROVIDER_KEYS" }, 503);
+  if (keys.app) {
+    try {
+      const result = await callAppMix(keys.app, prompt, excluded.appmix || []);
+      return json({ reply: result.reply, model: result.model, provider: "AppMix", route: result.route, fallback: !!selected });
+    } catch (e) { failures.push({ provider: "AppMix", error: safeErr(e) }); }
   }
 
+  if (keys.apinex) {
+    try {
+      const result = await callApinex(keys.apinex, prompt, excluded.apinex || []);
+      return json({ reply: result.reply, model: result.model, provider: "Apinex", route: result.route, fallback: !!selected });
+    } catch (e) { failures.push({ provider: "Apinex", error: safeErr(e) }); }
+  }
+
+  if (keys.open) {
+    try {
+      const result = await callOpenRouter(keys.open, prompt);
+      return json({ reply: result.reply, model: result.model, provider: "OpenRouter", route: result.route, fallback: !!selected });
+    } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
+  }
+
+  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.open) {
+    return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
+  }
+
+  // Return a single friendly reply instead of a failing HTTP status. The website has an
+  // older client-side retry loop; a 200 reply prevents it from repeatedly hitting every
+  // model/provider again when all providers are already unavailable.
   return json({
-    error: "All configured AI providers are currently unavailable. Please try again shortly.",
+    reply: "All configured AI providers are currently unavailable or rate-limited. Please try again shortly.",
+    model: "system",
+    provider: "Tivals AI",
     code: "ALL_PROVIDERS_FAILED",
-    selected_model: selectedId || "auto",
     failures
-  }, 502);
+  }, 200);
 });
