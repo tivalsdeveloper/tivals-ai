@@ -5,6 +5,7 @@ const TIVALS_AI_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tiv
 const YOUTUBE_SEARCH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/youtube-search";
 const PIXAZO_STUDIO_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/pixazo-studio";
 const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-oauth";
+const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const PUBLIC_WEBHOOK_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-telegram";
@@ -93,25 +94,38 @@ async function askAI(message:string) {
   const messages = [{role:"system",content:TELEGRAM_STYLE},{role:"user",content:message}];
   const providers: Promise<string>[] = [];
   providers.push((async()=>{
-    const {r,d}=await fetchJson(TIVALS_AI_URL,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:"tivals-ai",messages})},18000);
+    const {r,d}=await fetchJson(TIVALS_AI_URL,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:"tivals-ai",messages})},12000);
     if(r.ok&&d?.reply) return String(d.reply); throw new Error(d?.error||`Tivals AI ${r.status}`);
+  })());
+  const apinex=Deno.env.get("APINEX_API_KEY")||"";
+  if(apinex) providers.push((async()=>{
+    const {r,d}=await fetchJson(`${APINEX_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${apinex}`,"Content-Type":"application/json"},body:JSON.stringify({model:"free/gemini-3.1-pro",messages,max_tokens:1300,temperature:0.35})},10000);
+    const txt=chatContent(d); if(r.ok&&txt) return txt; throw new Error("Apinex failed");
   })());
   const open=Deno.env.get("OPENROUTER_API_KEY")||"";
   if(open) providers.push((async()=>{
-    const {r,d}=await fetchJson(`${OPENROUTER_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${open}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI Telegram"},body:JSON.stringify({model:"openrouter/free",messages,max_tokens:1300,temperature:0.35})},18000);
+    const {r,d}=await fetchJson(`${OPENROUTER_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${open}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI Telegram"},body:JSON.stringify({model:"openrouter/free",messages,max_tokens:1300,temperature:0.35})},12000);
     const txt=chatContent(d); if(r.ok&&txt) return txt; throw new Error("OpenRouter failed");
   })());
   try { return await Promise.any(providers); } catch {}
   const app=Deno.env.get("APPMIX_API_KEY")||"";
   if(app) {
     const fallbacks=["openai/gpt-4.1-free","google/gemini-3-flash-preview-free"].map(model=>(async()=>{
-      const {r,d}=await fetchJson(`${APPMIX_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${app}`,"Content-Type":"application/json"},body:JSON.stringify({model,messages,max_tokens:1300,temperature:0.35})},14000);
+      const {r,d}=await fetchJson(`${APPMIX_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${app}`,"Content-Type":"application/json"},body:JSON.stringify({model,messages,max_tokens:1300,temperature:0.35})},9000);
       const txt=chatContent(d); if(r.ok&&txt) return txt; throw new Error(`${model} failed`);
     })());
     try { return await Promise.any(fallbacks); } catch {}
   }
   throw new Error("AI_TEMPORARILY_UNAVAILABLE");
 }
+
+function instantReply(text:string){
+  const t=text.trim().toLowerCase();
+  if(/^(hi|hello|hey|hello there|good morning|good afternoon|good evening)[!. ]*$/.test(t)) return "👋 Hi! How can I help you today?";
+  if(/^(topic|topics|learn|study)[!. ]*$/.test(t)) return "📚 What topic would you like to learn?\n\nFor example: **Python**, **English**, **Cybersecurity**, **Mathematics**, or **Web development**.";
+  return "";
+}
+
 function friendlyError(e:unknown) {
   const m=String((e as Error)?.message||e||"");
   if(/AI_TEMPORARILY_UNAVAILABLE|AbortError|aborted|timed out|timeout/i.test(m)) return "Tivals AI is taking longer than expected. Please try again in a moment.";
@@ -157,7 +171,7 @@ Deno.serve(async(req:Request)=>{
       try{await syncWebhook();return json({ok:true,webhook_synced:true,callback_buttons:false});}
       catch(e){return json({ok:false,error:friendlyError(e)},500);}
     }
-    return json({ok:true,service:"Tivals AI Telegram webhook",version:21,callback_buttons:false,fast_fallback:true});
+    return json({ok:true,service:"Tivals AI Telegram webhook",version:22,callback_buttons:false,fast_fallback:true});
   }
   if(req.method!=="POST")return json({error:"Method not allowed."},405);
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
@@ -173,6 +187,7 @@ Deno.serve(async(req:Request)=>{
     if(text==="/help"){await sendFormatted(chatId,"**Tivals AI**\n\n/connect — Connect Gmail or GitHub\n/emails — Latest Gmail\n/unread — Unread Gmail\n/channel @channel Your message — Post to a channel you administer\n\nYou can also say **Teach me Python** or **Search networking on YouTube**.",business);return json({ok:true});}
     if(text==="/connect"){if(!tg)throw new Error("Telegram user ID unavailable.");await connectMenu(chatId,tg,business);return json({ok:true});}
     if(text==="/accounts"){if(!tg)throw new Error("Telegram user ID unavailable.");const d=await oauthCall("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];await sendFormatted(chatId,list.length?`**Connected accounts**\n\n${list.map((x:any)=>`• ${x.provider}: ${x.account_label||"Connected"}`).join("\n")}`:"**Connected accounts**\n\nNo accounts connected.",business);return json({ok:true});}
+    const quick=instantReply(text);if(quick){await sendFormatted(chatId,quick,business);return json({ok:true,route:"instant"});}
     if(/^\/channel(?:@\w+)?(?:\s|$)/i.test(text)){
       if(message?.chat?.type!=="private"){
         await sendFormatted(chatId,"⚠️ Use /channel from a private chat with me.");
