@@ -1,0 +1,85 @@
+name: Remove Telegram learning buttons
+
+on:
+  push:
+    paths:
+      - '.github/workflows/remove-telegram-learning-buttons.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove lesson buttons and callback handling
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('supabase/functions/tivals-telegram/index.ts')
+          s = p.read_text()
+
+          # Webhook: normal Telegram messages only. Remove callback/business delivery.
+          s = re.sub(
+              r'allowed_updates:\s*\[[^\]]*\]',
+              'allowed_updates: ["message"]',
+              s,
+              count=1,
+          )
+
+          # Remove learning button helper completely.
+          s = re.sub(
+              r'\nasync function sendLearningControls\([\s\S]*?\n\}\n\nasync function oauthCall',
+              '\n\nasync function oauthCall',
+              s,
+              count=1,
+          )
+
+          # Remove callback-query lesson handler completely.
+          s = re.sub(
+              r'\n\s*const cb=update\?\.callback_query;[\s\S]*?\n\s*const bm=update\?\.business_message;',
+              '\n\n  const bm=update?.business_message;',
+              s,
+              count=1,
+          )
+
+          # Ignore all business messages; the public bot should respond only to ordinary user messages.
+          s = re.sub(
+              r'\n\s*const bm=update\?\.business_message;[\s\S]*?const message=bm\|\|update\?\.message;const business=bm\?\.business_connection_id\|\|undefined;',
+              '\n  if(update?.business_message)return json({ok:true,ignored:true,reason:"business-message-disabled"});\n  const message=update?.message;const business=undefined;',
+              s,
+              count=1,
+          )
+
+          # Stop adding learning controls after AI replies.
+          s = re.sub(
+              r'const topic=learningTopic\(text\);const answer=await askAI\(text\);await sendFormatted\(chatId,answer,business\);if\(topic\)await sendLearningControls\(chatId,topic,business\);',
+              'const answer=await askAI(text);await sendFormatted(chatId,answer,business);',
+              s,
+              count=1,
+          )
+
+          # Remove now-unused learningTopic helper.
+          s = re.sub(
+              r'\nfunction learningTopic\(text:string\) \{[\s\S]*?\n\}\n',
+              '\n',
+              s,
+              count=1,
+          )
+
+          # Health metadata should reflect no callback buttons.
+          s = s.replace('callback_buttons:true', 'callback_buttons:false')
+          s = s.replace('version:19', 'version:20')
+
+          p.write_text(s)
+
+      - name: Commit change
+        run: |
+          git config user.name "tivalsdeveloper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add supabase/functions/tivals-telegram/index.ts
+          git commit -m "Remove Telegram lesson buttons and callback handling" || exit 0
+          git push
