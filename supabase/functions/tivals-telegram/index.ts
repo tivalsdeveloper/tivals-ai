@@ -14,14 +14,30 @@ function json(data: unknown, status = 200) {
 function esc(v: string) { return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function stripTags(v: string) { return String(v || "").replace(/<[^>]+>/g, ""); }
 function mdToHtml(input: string) {
-  let t = esc(String(input || "").trim());
-  if (!t) return "I couldn't generate a response.";
-  t = t.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
-       .replace(/^#{1,4}\s+(.+)$/gm, "<b>$1</b>")
-       .replace(/^\s*[-*]\s+/gm, "• ")
-       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-       .replace(/\n{3,}/g, "\n\n");
-  return t;
+  let raw = String(input || "").trim();
+  if (!raw) return "I couldn't generate a response.";
+
+  const codeBlocks: string[] = [];
+  raw = raw.replace(/```(?:[a-zA-Z0-9_+.#-]+)?\s*\n?([\s\S]*?)```/g, (_m, code) => {
+    const token = `@@TIVALS_CODE_${codeBlocks.length}@@`;
+    codeBlocks.push(`<pre><code>${esc(String(code || "").trim())}</code></pre>`);
+    return token;
+  });
+
+  let t = esc(raw)
+    .replace(/^\s*(?:---+|___+|\*\*\*+)\s*$/gm, "")
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/__([^_\n]+)__/g, "<b>$1</b>")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/^\s*(\d+)\.\s+/gm, "$1. ")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\n{3,}/g, "\n\n");
+
+  codeBlocks.forEach((block, i) => {
+    t = t.replace(`@@TIVALS_CODE_${i}@@`, block);
+  });
+  return t.trim();
 }
 function splitText(text: string, limit = 3500) {
   if (text.length <= limit) return [text];
@@ -49,6 +65,26 @@ async function sendHtml(chatId: number|string, html: string, business?: string) 
   }
 }
 async function sendFormatted(chatId: number|string, text: string, business?: string) { return sendHtml(chatId, mdToHtml(text), business); }
+
+function learningTopic(text: string) {
+  const t = String(text || "").trim();
+  const m = t.match(/^(?:teach\s+me|help\s+me\s+learn|learn)\s+(?:about\s+)?(.{2,50}?)[.!?]?$/i);
+  return m?.[1]?.trim() || "";
+}
+async function sendLearningControls(chatId: number|string, topic: string, business?: string) {
+  const safeTopic = String(topic || "this topic").replace(/[\n\r|]/g, " ").trim().slice(0, 36) || "this topic";
+  const p: any = {
+    chat_id: chatId,
+    text: `📚 <b>Continue learning ${esc(safeTopic)}</b>`,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [
+      [{ text: "➡️ Next lesson", callback_data: `learn_next|${safeTopic}` }, { text: "📝 Try an exercise", callback_data: `learn_exercise|${safeTopic}` }],
+      [{ text: "💡 Explain again", callback_data: `learn_explain|${safeTopic}` }, { text: "🏠 Main menu", callback_data: "learn_menu|" }]
+    ] }
+  };
+  if (business) p.business_connection_id = business;
+  await telegram("sendMessage", p);
+}
 
 async function oauthCall(action: string, tg: number, provider = "", extra: Record<string, unknown> = {}) {
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -107,7 +143,8 @@ async function handleGmail(chatId: number|string, tg: number, intent: {query:str
 async function askTivalsAI(message: string) {
   const c = new AbortController(); const timer = setTimeout(() => c.abort(), 15000);
   try {
-    const r = await fetch(TIVALS_AI_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "user", content: message }] }), signal: c.signal });
+    const telegramStyle = "You are replying inside Telegram. Format responses for a small phone screen. Use short sections, concise paragraphs, useful emoji sparingly, and Markdown headings/bold/code fences. Never output horizontal-rule lines such as --- or ***. For programming code, always use fenced code blocks. When the user asks to learn or be taught a broad subject, teach ONE focused lesson at a time instead of dumping an entire course, then end with a short practice task. Keep normal replies concise unless the user explicitly asks for detail.";
+    const r = await fetch(TIVALS_AI_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "system", content: telegramStyle }, { role: "user", content: message }] }), signal: c.signal });
     const d = await r.json().catch(() => ({})); if (!r.ok || !d?.reply) throw new Error(d?.error || `Tivals AI failed (${r.status}).`); return String(d.reply);
   } finally { clearTimeout(timer); }
 }
@@ -163,6 +200,33 @@ Deno.serve(async (req: Request) => {
   if (secret && (req.headers.get("x-telegram-bot-api-secret-token") || "") !== secret) return json({ error: "Unauthorized webhook." }, 401);
   let update:any; try { update = await req.json(); } catch { return json({ error: "Invalid Telegram update." }, 400); }
   if (update?.business_connection) return json({ ok: true });
+
+  const callback = update?.callback_query;
+  if (callback?.message?.chat?.id && String(callback?.data || "").startsWith("learn_")) {
+    const chatId = callback.message.chat.id;
+    const data = String(callback.data || "");
+    const [action, topicRaw = ""] = data.split("|");
+    const topic = topicRaw.trim() || "this topic";
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id }).catch(()=>{});
+    try {
+      if (action === "learn_menu") {
+        await sendFormatted(chatId, "🏠 **Tivals AI**\n\nAsk me a question, say **Teach me Python**, check Gmail with /emails, or use /help to see commands.");
+        return json({ok:true,route:"learning-menu"});
+      }
+      await telegram("sendChatAction", { chat_id: chatId, action: "typing" }).catch(()=>{});
+      const prompt = action === "learn_next"
+        ? `Teach me the next focused lesson in ${topic}. Do not repeat the previous lesson. Include one short example and one practice task.`
+        : action === "learn_exercise"
+          ? `Give me a short beginner-friendly exercise about ${topic}. Do not reveal the answer immediately. Ask me to try it first.`
+          : `Explain the core idea of ${topic} again in simpler language with one very easy example.`;
+      await sendFormatted(chatId, await askTivalsAI(prompt));
+      await sendLearningControls(chatId, topic);
+      return json({ok:true,route:"learning-control"});
+    } catch (e) {
+      const m = String((e as Error)?.message || e); await sendFormatted(chatId, `⚠️ ${m}`).catch(()=>{}); return json({ok:false,error:m},200);
+    }
+  }
+
   const bm = update?.business_message; const message = bm || update?.message; const business = bm?.business_connection_id || undefined;
   const chatId = message?.chat?.id; const tg = Number(message?.from?.id || 0); if (!chatId) return json({ ok: true, ignored: true });
   const text = String(message?.text || "").trim(); const caption = String(message?.caption || "").trim(); const photos = Array.isArray(message?.photo) ? message.photo : []; const doc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
@@ -182,7 +246,10 @@ Deno.serve(async (req: Request) => {
     const gi = gmailIntent(text); if (gi.matched) { if (!tg) throw new Error("Telegram user ID is unavailable."); await handleGmail(chatId,tg,gi,business); return json({ok:true,route:"gmail"}); }
     const yt = youtubeQuery(text); if (yt) { await sendHtml(chatId,ytHtml(yt,await searchYouTube(yt)),business); return json({ok:true,route:"youtube"}); }
     const img = imagePrompt(text); if (img) { await telegram("sendChatAction", { chat_id: chatId, action: "upload_photo", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{}); await sendPhoto(chatId,await generateImage(img),img,business); return json({ok:true,route:"image-generation"}); }
-    await sendFormatted(chatId,await askTivalsAI(text),business); return json({ok:true,route:"ai"});
+    const topic = learningTopic(text);
+    await sendFormatted(chatId,await askTivalsAI(text),business);
+    if (topic) await sendLearningControls(chatId, topic, business);
+    return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e); await sendFormatted(chatId, `⚠️ ${m}`, business).catch(()=>{}); console.error("Tivals Telegram error", m); return json({ok:false,error:m},200);
   }
