@@ -17,6 +17,26 @@
     return d;
   }
 
+  async function completeTelegramWebsiteLink(){
+    var q=new URLSearchParams(location.search);
+    var state=q.get("telegram_link") || localStorage.getItem("tivals-telegram-link-state") || "";
+    if(!state)return;
+    localStorage.setItem("tivals-telegram-link-state",state);
+    var s=await session();
+    if(!s?.access_token)return;
+    try{
+      var d=await api("complete_telegram_website_link",{state:state});
+      localStorage.removeItem("tivals-telegram-link-state");
+      q.delete("telegram_link");
+      history.replaceState({}, "", location.pathname+(q.toString()?"?"+q.toString():"")+location.hash);
+      show("ai","### Telegram connected ✓\n\nYour Telegram account is now linked to this Tivals AI website account as **"+(d.account_label||"Tivals AI account")+"**.");
+    }catch(e){
+      if(!/sign in/i.test(String(e.message||""))){
+        localStorage.removeItem("tivals-telegram-link-state");
+        show("ai","Telegram website connection failed: "+e.message);
+      }
+    }
+  }
   function show(role,text){return typeof window.add==='function'?window.add(role,text):null}
   function closeSide(){document.querySelector('#sidebar')?.classList.remove('open');document.querySelector('#sideOverlay')?.classList.remove('open')}
 
@@ -214,14 +234,16 @@
   async function boot(){
     ensureUI();
     var q=new URLSearchParams(location.search);
+    if(q.get('telegram_link')) localStorage.setItem('tivals-telegram-link-state',q.get('telegram_link'));
     if(q.get('tiktok')==='connected'){
       q.delete('tiktok');
       history.replaceState({},'',location.pathname+(q.toString()?'?'+q:'')+location.hash);
       setTimeout(function(){show('ai','### TikTok connected ✓\n\nYour TikTok account is now available to Tivals AI. Try @tiktok show my stats or @tiktok show my latest videos.')},350);
     }
-    setTimeout(function(){refreshTikTok();refreshTelegram()},700);
+    setTimeout(function(){completeTelegramWebsiteLink();refreshTikTok();refreshTelegram()},700);
   }
 
+  window.addEventListener('tivals:auth-ui',function(e){if(e?.detail?.signedIn)completeTelegramWebsiteLink()});
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
   window.TivalsAccountTools={open:openTools,refreshTikTok:refreshTikTok,connectTikTok:connectTikTok,disconnectTikTok:disconnectTikTok,refreshTelegram:refreshTelegram};
 })();
