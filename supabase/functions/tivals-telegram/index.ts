@@ -194,6 +194,8 @@ function toolsHelpText() {
     "**Choose a Tivals AI tool with @tool**",
     "",
     "• `@tiktok check my TikTok account`",
+    "• `@tiktok show my stats`",
+    "• `@tiktok show my latest videos`",
     "• `@gmail check my latest emails`",
     "• `@github check my GitHub account`",
     "• `@youtube Python tutorial`",
@@ -206,15 +208,38 @@ function toolsHelpText() {
 
 function formatTikTokProfile(data: any) {
   const p = data?.profile || {};
+  const st = data?.stats || {};
   const scope = String(data?.scope || "");
   const lines = [
     "🎵 **TikTok account**",
     "",
-    `**Display name:** ${String(p.display_name || data?.account || "TikTok account")}`,
+    "**Display name:** " + String(p.display_name || data?.account || "TikTok account"),
   ];
-  if (p.open_id) lines.push(`**Open ID:** ${String(p.open_id)}`);
-  lines.push("", `**Connected permission:** ${scope || "user.info.basic"}`);
+  if (p.open_id) lines.push("**Open ID:** " + String(p.open_id));
+  if (st.follower_count != null || st.following_count != null || st.likes_count != null || st.video_count != null) {
+    lines.push("", "**Statistics**");
+    lines.push("• Followers: " + String(st.follower_count ?? "—"));
+    lines.push("• Following: " + String(st.following_count ?? "—"));
+    lines.push("• Likes: " + String(st.likes_count ?? "—"));
+    lines.push("• Public videos: " + String(st.video_count ?? "—"));
+  }
+  lines.push("", "**Connected permission:** " + (scope || "user.info.basic"));
   return lines.join("\n");
+}
+
+function formatTikTokVideos(data: any) {
+  const videos = Array.isArray(data?.videos) ? data.videos : [];
+  if (!videos.length) return "🎵 **TikTok videos**\n\nNo public videos were returned.";
+  const blocks = videos.slice(0, 10).map((v:any, i:number) => {
+    const title = String(v?.title || v?.video_description || ("Video " + (i + 1))).trim() || ("Video " + (i + 1));
+    const duration = Number(v?.duration || 0);
+    const link = String(v?.embed_link || "").trim();
+    const lines = ["**" + (i + 1) + ". " + title + "**"];
+    if (duration > 0) lines.push("Duration: " + duration + "s");
+    if (link) lines.push(link);
+    return lines.join("\n");
+  });
+  return "🎵 **Latest TikTok videos**\n\n" + blocks.join("\n\n");
 }
 
 async function handleToolRequest(chatId: number|string, tg: number, toolReq: ToolRequest, business?: string) {
@@ -228,15 +253,19 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
 
   if (tool === "tiktok") {
     if (!tg) throw new Error("Telegram user ID is unavailable.");
-    if (/\b(followers?|following|likes?|statistics|stats|video count)\b/i.test(request)) {
-      await sendFormatted(chatId, "🎵 Your current TikTok connection only has `user.info.basic`. TikTok statistics require the `user.info.stats` scope.", business);
-      return "tiktok-scope";
+
+    if (/\b(videos?|posts?|latest videos?|recent videos?)\b/i.test(request)) {
+      const d = await oauthCall("tiktok_videos", tg, "tiktok", { max_results: 5 });
+      await sendFormatted(chatId, formatTikTokVideos(d), business);
+      return "tiktok-videos";
     }
-    if (/\b(videos?|posts?)\b/i.test(request)) {
-      await sendFormatted(chatId, "🎵 Reading your TikTok videos requires the `video.list` scope. Your current connection only has `user.info.basic`.", business);
-      return "tiktok-scope";
-    }
+
     const d = await oauthCall("tiktok_profile", tg, "tiktok");
+    const scope = String(d?.scope || "");
+    if (/\b(followers?|following|likes?|statistics|stats|video count)\b/i.test(request) && !scope.includes("user.info.stats")) {
+      await sendFormatted(chatId, "🎵 TikTok statistics are not authorized on this connection yet. Run /connect again and approve `user.info.stats`.", business);
+      return "tiktok-scope";
+    }
     await sendFormatted(chatId, formatTikTokProfile(d), business);
     return "tiktok";
   }
