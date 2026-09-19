@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f17">
+<title>Tivals AI Dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+<style>
+:root{color-scheme:dark;--bg:var(--tg-theme-bg-color,#0b0f17);--card:var(--tg-theme-secondary-bg-color,#151b26);--text:var(--tg-theme-text-color,#f4f7fb);--muted:var(--tg-theme-hint-color,#8c98aa);--accent:var(--tg-theme-button-color,#5b8cff);--accentText:var(--tg-theme-button-text-color,#fff);--line:rgba(255,255,255,.09);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);min-height:100vh}.wrap{max-width:760px;margin:auto;padding:18px 16px 96px}.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}.avatar{width:48px;height:48px;border-radius:16px;background:linear-gradient(145deg,#5568ff,#9b6cff);display:grid;place-items:center;font-weight:800;font-size:20px}.top h1{font-size:20px;margin:0}.muted{color:var(--muted);font-size:13px}.hero{background:linear-gradient(145deg,rgba(91,140,255,.24),rgba(155,108,255,.12));border:1px solid rgba(130,145,255,.24);border-radius:22px;padding:18px;margin-bottom:14px}.heroRow{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.pill{padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.09);font-size:12px;font-weight:700}.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.stat{background:rgba(0,0,0,.15);border-radius:16px;padding:13px}.stat b{display:block;font-size:20px}.section{margin:18px 0 8px;font-weight:800}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:15px}.connector{display:flex;flex-direction:column;gap:10px;min-height:138px}.connector .icon{font-size:25px}.status{font-size:12px;color:var(--muted)}button,.btn{border:0;border-radius:13px;padding:11px 13px;font-weight:750;background:var(--accent);color:var(--accentText);cursor:pointer;text-decoration:none;text-align:center}.secondary{background:rgba(255,255,255,.08);color:var(--text)}button:disabled{opacity:.5}.page{display:none}.page.active{display:block}.nav{position:fixed;bottom:0;left:0;right:0;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr);z-index:10}.nav button{background:transparent;color:var(--muted);padding:8px 2px;font-size:11px}.nav button.active{color:var(--text)}.nav span{display:block;font-size:19px;margin-bottom:2px}.planCard{margin-bottom:10px}.planHead{display:flex;align-items:center;justify-content:space-between}.planPrice{font-weight:900;font-size:18px}.setting{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px 0;border-bottom:1px solid var(--line)}select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px}.switch{width:48px;height:28px;border-radius:999px;background:#485260;position:relative;cursor:pointer}.switch:after{content:"";position:absolute;width:22px;height:22px;border-radius:50%;background:white;top:3px;left:3px;transition:.2s}.switch.on{background:var(--accent)}.switch.on:after{left:23px}.empty{padding:34px 18px;text-align:center;color:var(--muted)}#toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);background:#111827;color:white;padding:10px 14px;border-radius:12px;opacity:0;pointer-events:none;transition:.2s;max-width:88%;z-index:20}#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media(max-width:420px){.grid{grid-template-columns:1fr}.connector{min-height:auto}.wrap{padding-left:13px;padding-right:13px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div class="avatar" id="avatar">T</div><div><h1>Tivals AI</h1><div class="muted" id="who">Telegram dashboard</div></div></div>
+
+  <section id="home" class="page active">
+    <div class="hero">
+      <div class="heroRow"><div><div class="muted">Current plan</div><h2 id="planName" style="margin:5px 0 0">Loading…</h2></div><div class="pill" id="planBadge">—</div></div>
+      <div class="stats">
+        <div class="stat"><span class="muted">AI messages today</span><b id="aiUsage">—</b></div>
+        <div class="stat"><span class="muted">Images today</span><b id="imageUsage">—</b></div>
+      </div>
+    </div>
+    <div class="section">Quick actions</div>
+    <div class="grid">
+      <div class="card"><b>Connect apps</b><p class="muted">Link Gmail, GitHub, TikTok and your website account.</p><button onclick="go('connectors')">Open connectors</button></div>
+      <div class="card"><b>Upgrade plan</b><p class="muted">Unlock higher AI and image limits with Telegram Stars.</p><button onclick="go('plans')">View plans</button></div>
+    </div>
+  </section>
+
+  <section id="connectors" class="page">
+    <div class="section">Available connectors</div>
+    <div class="grid" id="connectorGrid"></div>
+  </section>
+
+  <section id="plans" class="page">
+    <div class="section">Subscription plans</div>
+    <div class="card planCard"><div class="planHead"><b>Free</b><span class="planPrice">0 ⭐</span></div><p class="muted">20 AI messages/day · 1 image/day</p></div>
+    <div class="card planCard"><div class="planHead"><b>Basic</b><span class="planPrice">100 ⭐ / month</span></div><p class="muted">200 AI messages/day · 10 images/day</p><button onclick="subscribe('basic')">Choose Basic</button></div>
+    <div class="card planCard"><div class="planHead"><b>Pro</b><span class="planPrice">250 ⭐ / month</span></div><p class="muted">1000 AI messages/day · 50 images/day</p><button onclick="subscribe('pro')">Choose Pro</button></div>
+  </section>
+
+  <section id="settings" class="page">
+    <div class="section">Bot settings</div>
+    <div class="card">
+      <div class="setting"><div><b>Response style</b><div class="muted">Controls how detailed AI replies are.</div></div><select id="style"><option value="concise">Concise</option><option value="balanced">Balanced</option><option value="detailed">Detailed</option></select></div>
+      <div class="setting"><div><b>Notifications</b><div class="muted">Allow bot service notifications.</div></div><div class="switch" id="notifications" onclick="toggle(this)"></div></div>
+      <div class="setting"><div><b>Tool suggestions</b><div class="muted">Show helpful connector/tool hints.</div></div><div class="switch" id="tools" onclick="toggle(this)"></div></div>
+      <button style="width:100%;margin-top:16px" onclick="saveSettings()">Save settings</button>
+    </div>
+  </section>
+</div>
+<div class="nav">
+  <button class="active" data-page="home" onclick="go('home')"><span>⌂</span>Home</button>
+  <button data-page="connectors" onclick="go('connectors')"><span>◫</span>Connectors</button>
+  <button data-page="plans" onclick="go('plans')"><span>★</span>Plans</button>
+  <button data-page="settings" onclick="go('settings')"><span>⚙</span>Settings</button>
+</div>
+<div id="toast"></div>
+<script>
+const tg=window.Telegram?.WebApp;
+const API="https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-miniapp";
+let state=null;
+if(tg){tg.ready();tg.expand();try{tg.setHeaderColor("bg_color");tg.setBackgroundColor("bg_color")}catch{}}
+function toast(s){const el=document.getElementById("toast");el.textContent=s;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2600)}
+async function api(action,extra={}){
+  const r=await fetch(API,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,init_data:tg?.initData||"",...extra})});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error||"Request failed"); return d;
+}
+function go(id){document.querySelectorAll(".page").forEach(x=>x.classList.toggle("active",x.id===id));document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===id));if(id==="connectors") renderConnectors()}
+function toggle(el){el.classList.toggle("on")}
+const names={gmail:["📧","Gmail"],github:["🐙","GitHub"],tiktok:["🎵","TikTok"],website:["🌐","Tivals AI Website"]};
+function renderConnectors(){
+  const g=document.getElementById("connectorGrid");g.innerHTML="";
+  (state?.connectors||[]).forEach(c=>{
+    const [icon,label]=names[c.provider]||["🔌",c.provider];
+    const d=document.createElement("div");d.className="card connector";
+    d.innerHTML='<div class="icon">'+icon+'</div><b>'+label+'</b><div class="status">'+(c.connected?("Connected"+(c.account_label?" · "+c.account_label:"")):"Not connected")+'</div><button class="'+(c.connected?"secondary":"")+'">'+(c.connected?"Reconnect":"Connect")+'</button>';
+    d.querySelector("button").onclick=()=>connect(c.provider);g.appendChild(d);
+  });
+}
+async function connect(provider){try{const d=await api("connector_link",{provider});if(!d.url)throw new Error("No connection link returned.");tg?.openLink?tg.openLink(d.url):location.href=d.url}catch(e){toast(e.message)}}
+async function subscribe(plan){try{const d=await api("subscribe",{plan});if(d.url){if(tg?.openInvoice){tg.openInvoice(d.url,()=>load())}else location.href=d.url}}catch(e){toast(e.message)}}
+async function saveSettings(){try{await api("save_settings",{response_style:document.getElementById("style").value,notifications:document.getElementById("notifications").classList.contains("on"),tool_suggestions:document.getElementById("tools").classList.contains("on")});toast("Settings saved");await load()}catch(e){toast(e.message)}}
+async function load(){
+  try{
+    const d=await api("dashboard");state=d.dashboard;
+    const u=d.user||{};document.getElementById("who").textContent=[u.first_name,u.last_name].filter(Boolean).join(" ")||("@"+(u.username||"Telegram user"));
+    document.getElementById("avatar").textContent=String(u.first_name||u.username||"T").slice(0,1).toUpperCase();
+    const p=state.plan;document.getElementById("planName").textContent=p.label;document.getElementById("planBadge").textContent=p.id==="free"?"FREE":"ACTIVE";
+    document.getElementById("aiUsage").textContent=state.usage.ai+" / "+p.ai;document.getElementById("imageUsage").textContent=state.usage.images+" / "+p.images;
+    const st=state.settings||{};document.getElementById("style").value=st.response_style||"balanced";document.getElementById("notifications").classList.toggle("on",!!st.notifications);document.getElementById("tools").classList.toggle("on",!!st.tool_suggestions);
+    renderConnectors();
+  }catch(e){document.querySelector(".wrap").innerHTML='<div class="empty"><h2>Open in Telegram</h2><p>'+String(e.message||e)+'</p></div>'}
+}
+load();
+</script>
+</body>
+</html>
