@@ -3,6 +3,7 @@
   window.__TIVALS_AI_WIDGET__ = true;
   const script = document.currentScript;
   const config = { widgetId: script?.dataset.widgetId || '', name: script?.dataset.name || 'Tivals AI', position: script?.dataset.position === 'left' ? 'left' : 'right', welcome: script?.dataset.welcome || 'Hi! How can I help?', model: script?.dataset.model || 'auto' };
+  const initWidget = () => {
   const API = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat';
   const WIDGET_API = `${API}?widget=${encodeURIComponent(config.widgetId)}`;
   const side = config.position;
@@ -35,4 +36,7 @@
   input.oninput = () => { input.style.height = '46px'; input.style.height = `${Math.min(input.scrollHeight, 110)}px`; };
   input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } };
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && panel.classList.contains('open')) close(); });
+  };
+  if (document.body) initWidget();
+  else document.addEventListener('DOMContentLoaded', initWidget, { once: true });
 })();
