@@ -178,7 +178,7 @@ async function githubAppInfo() {
 }
 async function githubInstallation(id: string) {
   const r = await fetch(`https://api.github.com/app/installations/${encodeURIComponent(id)}`, {
-    headers: { authorization: `Bearer ${githubAppJwt()}`, accept: "application/vnd.github+json", "user-agent": "Tivals-AI" },
+    headers: { authorization: `Bearer ${await githubAppJwt()}`, accept: "application/vnd.github+json", "user-agent": "Tivals-AI" },
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.message || `GitHub installation lookup failed (${r.status}).`);
