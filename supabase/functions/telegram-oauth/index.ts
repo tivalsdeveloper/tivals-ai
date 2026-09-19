@@ -12,6 +12,7 @@ const STATIC_BASE = "https://ai.tivalsdeveloper.site";
 const TIKTOK_REDIRECT_URI = `${SUPABASE_URL}/functions/v1/telegram-oauth/tiktok/callback`;
 const TIKTOK_SCOPES = Deno.env.get("TIKTOK_SCOPES") || "user.info.basic,user.info.stats,video.list";
 const GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
+const USER_TELEGRAM_WEBHOOK = `${SUPABASE_URL}/functions/v1/tivals-user-telegram`;
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
 
@@ -161,6 +162,57 @@ async function webTikTokConnection(userId: string) {
   if (error) throw error;
   if (!data) throw new Error("TikTok is not connected. Open TikTok tools and connect your account.");
   return data;
+}
+
+async function webTelegramConnection(userId: string) {
+  const { data, error } = await sb.from("tivals_web_oauth_connections")
+    .select("provider,provider_user_id,account_label,access_token_enc,refresh_token_enc,updated_at,metadata")
+    .eq("user_id", userId).eq("provider", "telegram").maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function telegramBotCall(token: string, method: string, payload?: Record<string, unknown>) {
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, payload ? {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  } : undefined);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed (${r.status}).`);
+  return d;
+}
+
+function telegramWebhookSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return b64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function connectWebTelegram(userId: string, rawToken: string) {
+  const token = rawToken.trim();
+  if (!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid Telegram bot token from BotFather.");
+  const me = await telegramBotCall(token, "getMe");
+  if (!me?.result?.is_bot) throw new Error("This token does not belong to a Telegram bot.");
+  const secret = telegramWebhookSecret();
+  await telegramBotCall(token, "setWebhook", {
+    url: `${USER_TELEGRAM_WEBHOOK}?owner=${encodeURIComponent(userId)}`,
+    secret_token: secret,
+    allowed_updates: ["message"],
+    drop_pending_updates: false,
+  });
+  const bot = me.result;
+  const { error } = await sb.from("tivals_web_oauth_connections").upsert({
+    user_id: userId,
+    provider: "telegram",
+    provider_user_id: String(bot.id || ""),
+    account_label: bot.username ? `@${bot.username}` : String(bot.first_name || "Telegram bot"),
+    access_token_enc: await encrypt(token),
+    refresh_token_enc: await encrypt(secret),
+    token_type: "Bot",
+    scope: "messages",
+    metadata: { username: bot.username || null, first_name: bot.first_name || null, can_join_groups: Boolean(bot.can_join_groups) },
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id,provider" });
+  if (error) throw error;
+  return { connected: true, account_label: bot.username ? `@${bot.username}` : String(bot.first_name || "Telegram bot"), username: bot.username || null };
 }
 
 async function webTikTokProfile(userId: string) {
@@ -620,6 +672,25 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       return json({ ok:true });
     } catch (e) { return json({ error:String((e as Error)?.message || e) }, 400); }
+  }
+  if (["web_telegram_connect", "web_telegram_status", "web_telegram_test", "web_telegram_disconnect"].includes(action)) {
+    const user = await webUser(req);
+    if (!user) return json({ error: "Sign in to Tivals AI first." }, 401);
+    try {
+      if (action === "web_telegram_connect") return json(await connectWebTelegram(user.id, String(body.bot_token || "")));
+      const conn = await webTelegramConnection(user.id);
+      if (action === "web_telegram_status") return json({ connected: Boolean(conn), connection: conn ? { account_label: conn.account_label, updated_at: conn.updated_at, metadata: conn.metadata } : null });
+      if (!conn) throw new Error("No Telegram bot is connected.");
+      const token = await decrypt(String(conn.access_token_enc || ""));
+      if (action === "web_telegram_test") {
+        const info = await telegramBotCall(token, "getWebhookInfo");
+        return json({ ok: true, account_label: conn.account_label, webhook: { pending_updates: Number(info?.result?.pending_update_count || 0), last_error: info?.result?.last_error_message || null } });
+      }
+      await telegramBotCall(token, "deleteWebhook", { drop_pending_updates: false });
+      const { error } = await sb.from("tivals_web_oauth_connections").delete().eq("user_id", user.id).eq("provider", "telegram");
+      if (error) throw error;
+      return json({ ok: true });
+    } catch (e) { return json({ error: String((e as Error)?.message || e) }, 400); }
   }
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
