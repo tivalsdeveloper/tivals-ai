@@ -509,7 +509,7 @@ async function callOpenRouter(key: string, prompt: any[]) {
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
-  keys: { bazaar: string; app: string; apinex: string; open: string }
+  keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }
 ) {
   const { provider, model } = selected;
   if (inCooldown(provider)) throw new Error("cooldown");
@@ -535,9 +535,19 @@ async function callSpecificModel(
       return { reply, route: `appmix:${model}`, model };
     }
     if (provider === "apinex") {
-      const reply = await callProvider(`${APINEX_BASE}/chat/completions`, key, model, prompt, {}, 9000);
-      apinexWorkingModel = model;
-      return { reply, route: `apinex:${model}`, model };
+      const apinexKeys = [keys.apinex, keys.apinexBackup].filter(Boolean);
+      if (!apinexKeys.length) throw new Error("provider_not_configured");
+      let lastError: unknown = new Error("provider_not_configured");
+      for (let i = 0; i < apinexKeys.length; i++) {
+        try {
+          const reply = await callProvider(`${APINEX_BASE}/chat/completions`, apinexKeys[i], model, prompt, {}, 9000);
+          apinexWorkingModel = model;
+          return { reply, route: `apinex${i === 0 ? "" : "-backup"}:${model}`, model };
+        } catch (e) {
+          lastError = e;
+        }
+      }
+      throw lastError;
     }
     return await callOpenRouter(key, prompt);
   } catch (e) {
@@ -547,7 +557,7 @@ async function callSpecificModel(
   }
 }
 
-async function providerStatus(keys: { bazaar: string; app: string; apinex: string; open: string }) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }) {
   const providers: any[] = [];
 
   if (keys.bazaar) {
@@ -573,14 +583,37 @@ async function providerStatus(keys: { bazaar: string; app: string; apinex: strin
     }
   } else providers.push({ name: "AppMix", configured: false });
 
-  if (keys.apinex) {
-    try {
-      const models = (await listModels(APINEX_BASE, keys.apinex, 3000)).ids.filter(id => id.startsWith("free/"));
-      providers.push({ name: "Apinex", configured: true, free_models_visible: models.length, cooldown_ms: Math.max(0, cooldownUntil.apinex - Date.now()) });
-    } catch (e) {
-      providers.push({ name: "Apinex", configured: true, error: safeErr(e) });
+  if (keys.apinex || keys.apinexBackup) {
+    let primaryOk = false;
+    let backupOk = false;
+    let visible = 0;
+    let lastError = "";
+    if (keys.apinex) {
+      try {
+        const models = (await listModels(APINEX_BASE, keys.apinex, 3000)).ids.filter(id => id.startsWith("free/"));
+        visible = Math.max(visible, models.length);
+        primaryOk = true;
+      } catch (e) { lastError = safeErr(e); }
     }
-  } else providers.push({ name: "Apinex", configured: false });
+    if (keys.apinexBackup) {
+      try {
+        const models = (await listModels(APINEX_BASE, keys.apinexBackup, 3000)).ids.filter(id => id.startsWith("free/"));
+        visible = Math.max(visible, models.length);
+        backupOk = true;
+      } catch (e) { if (!lastError) lastError = safeErr(e); }
+    }
+    providers.push({
+      name: "Apinex",
+      configured: true,
+      primary_configured: Boolean(keys.apinex),
+      backup_configured: Boolean(keys.apinexBackup),
+      primary_ok: primaryOk,
+      backup_ok: backupOk,
+      free_models_visible: visible,
+      cooldown_ms: Math.max(0, cooldownUntil.apinex - Date.now()),
+      ...(primaryOk || backupOk || !lastError ? {} : { error: lastError })
+    });
+  } else providers.push({ name: "Apinex", configured: false, backup_configured: false });
 
   providers.push(keys.open
     ? { name: "OpenRouter", configured: true, cooldown_ms: Math.max(0, cooldownUntil.openrouter - Date.now()) }
@@ -608,6 +641,7 @@ Deno.serve(async (req: Request) => {
     bazaar: Deno.env.get("BAZAARLINK_API_KEY") || "",
     app: Deno.env.get("APPMIX_API_KEY") || "",
     apinex: Deno.env.get("APINEX_API_KEY") || "",
+    apinexBackup: Deno.env.get("APINEX_API_KEY_BACKUP") || "",
     open: Deno.env.get("OPENROUTER_API_KEY") || ""
   };
 
@@ -615,7 +649,7 @@ Deno.serve(async (req: Request) => {
     const u = url;
 
     if (u.searchParams.get("models") === "1") {
-      const models = await getPublicModels(keys.apinex, keys.open, keys.app, keys.bazaar);
+      const models = await getPublicModels(keys.apinex || keys.apinexBackup, keys.open, keys.app, keys.bazaar);
       return json({ ok: true, version: VERSION, models, count: models.length });
     }
 
@@ -642,7 +676,7 @@ Deno.serve(async (req: Request) => {
       configured_providers: [
         ...(keys.bazaar ? ["BazaarLink"] : []),
         ...(keys.app ? ["AppMix"] : []),
-        ...(keys.apinex ? ["Apinex"] : []),
+        ...(keys.apinex || keys.apinexBackup ? ["Apinex"] : []),
         ...(keys.open ? ["OpenRouter"] : [])
       ]
     });
@@ -694,11 +728,20 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "AppMix", error: safeErr(e) }); }
   }
 
-  if (keys.apinex) {
-    try {
-      const result = await callApinex(keys.apinex, prompt, excluded.apinex || []);
-      return json({ reply: result.reply, model: result.model, provider: "Apinex", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
-    } catch (e) { failures.push({ provider: "Apinex", error: safeErr(e) }); }
+  if (keys.apinex || keys.apinexBackup) {
+    if (keys.apinex) {
+      try {
+        const result = await callApinex(keys.apinex, prompt, excluded.apinex || []);
+        return json({ reply: result.reply, model: result.model, provider: "Apinex", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
+      } catch (e) { failures.push({ provider: "Apinex primary", error: safeErr(e) }); }
+    }
+    if (keys.apinexBackup) {
+      try {
+        cooldownUntil.apinex = 0;
+        const result = await callApinex(keys.apinexBackup, prompt, excluded.apinex || []);
+        return json({ reply: result.reply, model: result.model, provider: "Apinex Backup", route: result.route.replace("apinex:", "apinex-backup:"), fallback: true }, 200, widget ? origin : "");
+      } catch (e) { failures.push({ provider: "Apinex backup", error: safeErr(e) }); }
+    }
   }
 
   if (keys.open) {
@@ -708,7 +751,7 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
   }
 
-  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.open) {
+  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open) {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
