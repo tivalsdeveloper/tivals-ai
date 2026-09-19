@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import jwt from "npm:jsonwebtoken@9";
+import { SignJWT, importPKCS8, importJWK } from "https://deno.land/x/jose@v4.15.5/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -109,15 +109,68 @@ async function saveConnection(row: any, provider: string, info: any) {
   if (error) throw error;
   await sb.from("telegram_oauth_states").delete().eq("state", row.state);
 }
-function githubAppJwt() {
+function ghB64u(b: Uint8Array) {
+  let x = "";
+  for (const v of b) x += String.fromCharCode(v);
+  return btoa(x).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function ghReadLen(b: Uint8Array, o: number) {
+  let l = b[o++];
+  if (!(l & 128)) return { length: l, offset: o };
+  const c = l & 127;
+  l = 0;
+  for (let i = 0; i < c; i++) l = (l << 8) | b[o++];
+  return { length: l, offset: o };
+}
+function ghReadInt(b: Uint8Array, o: number) {
+  if (b[o++] !== 2) throw new Error("Invalid RSA private key.");
+  const r = ghReadLen(b, o);
+  o = r.offset;
+  let v = b.slice(o, o + r.length);
+  o += r.length;
+  while (v.length > 1 && v[0] === 0) v = v.slice(1);
+  return { value: v, offset: o };
+}
+async function githubPrivateKey() {
+  const pem = GITHUB_PRIVATE_KEY.trim();
+  if (!pem) throw new Error("GITHUB_PRIVATE_KEY is missing.");
+  if (pem.includes("BEGIN PRIVATE KEY")) return importPKCS8(pem, "RS256");
+  if (!pem.includes("BEGIN RSA PRIVATE KEY")) throw new Error("Unsupported GitHub private key format.");
+
+  const bin = atob(pem.replace("-----BEGIN RSA PRIVATE KEY-----", "").replace("-----END RSA PRIVATE KEY-----", "").replace(/\s/g, ""));
+  const b = Uint8Array.from(bin, c => c.charCodeAt(0));
+  let o = 0;
+  if (b[o++] !== 48) throw new Error("Invalid PKCS#1 RSA key.");
+  o = ghReadLen(b, o).offset;
+  o = ghReadInt(b, o).offset;
+  const n = ghReadInt(b, o); o = n.offset;
+  const e = ghReadInt(b, o); o = e.offset;
+  const d = ghReadInt(b, o); o = d.offset;
+  const p = ghReadInt(b, o); o = p.offset;
+  const q = ghReadInt(b, o); o = q.offset;
+  const dp = ghReadInt(b, o); o = dp.offset;
+  const dq = ghReadInt(b, o); o = dq.offset;
+  const qi = ghReadInt(b, o);
+  return importJWK({
+    kty: "RSA", alg: "RS256",
+    n: ghB64u(n.value), e: ghB64u(e.value), d: ghB64u(d.value),
+    p: ghB64u(p.value), q: ghB64u(q.value), dp: ghB64u(dp.value),
+    dq: ghB64u(dq.value), qi: ghB64u(qi.value)
+  }, "RS256");
+}
+async function githubAppJwt() {
   if (!GITHUB_APP_ID) throw new Error("GITHUB_APP_ID is missing.");
-  if (!GITHUB_PRIVATE_KEY) throw new Error("GITHUB_PRIVATE_KEY is missing.");
   const now = Math.floor(Date.now() / 1000);
-  return jwt.sign({ iat: now - 60, exp: now + 540, iss: GITHUB_APP_ID }, GITHUB_PRIVATE_KEY, { algorithm: "RS256", noTimestamp: true });
+  return new SignJWT({})
+    .setProtectedHeader({ alg: "RS256", typ: "JWT" })
+    .setIssuedAt(now - 60)
+    .setExpirationTime(now + 540)
+    .setIssuer(GITHUB_APP_ID)
+    .sign(await githubPrivateKey());
 }
 async function githubAppInfo() {
   const r = await fetch("https://api.github.com/app", {
-    headers: { authorization: `Bearer ${githubAppJwt()}`, accept: "application/vnd.github+json", "user-agent": "Tivals-AI" },
+    headers: { authorization: `Bearer ${await githubAppJwt()}`, accept: "application/vnd.github+json", "user-agent": "Tivals-AI" },
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.message || `GitHub App lookup failed (${r.status}).`);
