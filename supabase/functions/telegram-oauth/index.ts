@@ -119,6 +119,40 @@ async function webUser(req: Request) {
   return data.user;
 }
 
+async function createTelegramWebsiteLink(tg: number) {
+  if (!Number.isSafeInteger(tg) || tg <= 0) throw new Error("Invalid Telegram user.");
+  const state = "site_" + randomState();
+  await sb.from("telegram_web_link_states").delete().lt("expires_at", new Date().toISOString());
+  await sb.from("telegram_web_link_states").delete().eq("telegram_user_id", tg);
+  const { error } = await sb.from("telegram_web_link_states").insert({
+    state, telegram_user_id: tg,
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  });
+  if (error) throw error;
+  return { url: STATIC_BASE + "/?telegram_link=" + encodeURIComponent(state) };
+}
+
+async function completeTelegramWebsiteLink(user: any, state: string) {
+  if (!state) throw new Error("Website connection code is missing.");
+  const { data: row, error } = await sb.from("telegram_web_link_states")
+    .select("*").eq("state", state).maybeSingle();
+  if (error || !row || new Date(row.expires_at).getTime() < Date.now()) throw new Error("This Telegram website connection link is invalid or expired. Run /connect in Telegram again.");
+  const label = String(user?.user_metadata?.username || user?.user_metadata?.full_name || user?.email || "Tivals AI account");
+  const { error: upsertError } = await sb.from("telegram_web_links").upsert({
+    telegram_user_id: row.telegram_user_id, user_id: user.id, account_label: label,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "telegram_user_id" });
+  if (upsertError) throw upsertError;
+  await sb.from("telegram_web_link_states").delete().eq("state", state);
+  return { ok:true, telegram_user_id:row.telegram_user_id, account_label:label };
+}
+
+async function telegramWebsiteLink(tg: number) {
+  const { data, error } = await sb.from("telegram_web_links")
+    .select("telegram_user_id,user_id,account_label,updated_at").eq("telegram_user_id", tg).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
 async function webStateRow(state: string, provider: string) {
   const { data, error } = await sb.from("tivals_web_oauth_states")
     .select("*").eq("state", state).eq("provider", provider).maybeSingle();
@@ -646,6 +680,19 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  if (action === "complete_telegram_website_link") {
+    const user = await webUser(req);
+    if (!user) return json({ error:"Sign in to Tivals AI to finish connecting Telegram." }, 401);
+    try { return json(await completeTelegramWebsiteLink(user, String(body.state || ""))); }
+    catch (e) { return json({ error:String((e as Error)?.message || e) }, 400); }
+  }
+
+  if (action === "web_telegram_link_status") {
+    const user = await webUser(req);
+    if (!user) return json({ error:"Sign in to Tivals AI first." }, 401);
+    const { data, error } = await sb.from("telegram_web_links").select("telegram_user_id,account_label,updated_at").eq("user_id",user.id).maybeSingle();
+    return error ? json({ error:error.message },500) : json({ connected:Boolean(data), connection:data || null });
+  }
   if (action === "create_web_tiktok_link") {
     const user = await webUser(req);
     if (!user) return json({ error: "Sign in to Tivals AI first." }, 401);
@@ -692,6 +739,11 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true });
     } catch (e) { return json({ error: String((e as Error)?.message || e) }, 400); }
   }
+  if (action === "create_website_link") {
+    if (!internal(req)) return json({ error:"Unauthorized" },401);
+    try { return json(await createTelegramWebsiteLink(tg)); }
+    catch (e) { return json({ error:String((e as Error)?.message || e) },400); }
+  }
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
 
@@ -699,7 +751,11 @@ Deno.serve(async (req: Request) => {
     const { data, error } = await sb.from("telegram_oauth_connections")
       .select("provider,account_label,scope,expires_at,updated_at,metadata")
       .eq("telegram_user_id", tg);
-    return error ? json({ error: error.message }, 500) : json({ connections: data || [] });
+    if (error) return json({ error:error.message },500);
+    const website = await telegramWebsiteLink(tg);
+    const connections = [...(data || [])];
+    if (website) connections.push({ provider:"website", account_label:website.account_label || "Tivals AI website", updated_at:website.updated_at, metadata:{ user_id:website.user_id } });
+    return json({ connections });
   }
   if (action === "gmail_messages") {
     try {
@@ -726,6 +782,10 @@ Deno.serve(async (req: Request) => {
     }
   }
   if (action === "disconnect") {
+    if (provider === "website") {
+      const { error } = await sb.from("telegram_web_links").delete().eq("telegram_user_id", tg);
+      return error ? json({ error:error.message },500) : json({ ok:true });
+    }
     if (!["gmail", "github", "tiktok"].includes(provider)) return json({ error: "Invalid provider" }, 400);
     const { error } = await sb.from("telegram_oauth_connections").delete().eq("telegram_user_id", tg).eq("provider", provider);
     return error ? json({ error: error.message }, 500) : json({ ok: true });
