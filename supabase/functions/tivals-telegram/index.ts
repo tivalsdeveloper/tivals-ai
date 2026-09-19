@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const TIVALS_AI_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat";
@@ -7,6 +8,17 @@ const PIXAZO_STUDIO_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1
 const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-oauth";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+
+const SUBSCRIPTION_PERIOD = 2592000;
+const PLAN_CONFIG = {
+  free:  { label: "Free",  stars: 0,   ai: 20,   images: 1 },
+  basic: { label: "Basic", stars: 100, ai: 200,  images: 10 },
+  pro:   { label: "Pro",   stars: 250, ai: 1000, images: 50 }
+} as const;
+
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -88,6 +100,117 @@ async function telegram(method: string, payload: Record<string, unknown>) {
   return d;
 }
 
+type PlanName = "free" | "basic" | "pro";
+
+async function subscriptionState(tg: number) {
+  const { data, error } = await sb.from("telegram_subscriptions")
+    .select("plan,status,stars_amount,is_recurring,telegram_payment_charge_id,subscription_expiration_date,updated_at")
+    .eq("telegram_user_id", tg).maybeSingle();
+  if (error) throw error;
+  if (!data) return { plan: "free" as PlanName, active: false, row: null };
+  const expires = new Date(data.subscription_expiration_date).getTime();
+  const active = data.status === "active" && expires > Date.now();
+  if (!active && data.status === "active") {
+    await sb.from("telegram_subscriptions").update({ status: "expired", updated_at: new Date().toISOString() }).eq("telegram_user_id", tg);
+  }
+  return { plan: active ? data.plan as PlanName : "free" as PlanName, active, row: data };
+}
+
+async function todayUsage(tg: number) {
+  const today = new Date().toISOString().slice(0,10);
+  const { data, error } = await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id", tg).eq("usage_date", today).maybeSingle();
+  if (error) throw error;
+  return { today, ai: Number(data?.ai_messages || 0), images: Number(data?.image_generations || 0) };
+}
+
+async function consumeUsage(tg: number, kind: "ai" | "image") {
+  const sub = await subscriptionState(tg);
+  const cfg = PLAN_CONFIG[sub.plan];
+  const usage = await todayUsage(tg);
+  const used = kind === "ai" ? usage.ai : usage.images;
+  const limit = kind === "ai" ? cfg.ai : cfg.images;
+  if (used >= limit) return { ok:false, plan:sub.plan, used, limit };
+  const { error } = await sb.from("telegram_daily_usage").upsert({
+    telegram_user_id: tg, usage_date: usage.today,
+    ai_messages: kind === "ai" ? usage.ai + 1 : usage.ai,
+    image_generations: kind === "image" ? usage.images + 1 : usage.images,
+    updated_at: new Date().toISOString()
+  }, { onConflict: "telegram_user_id,usage_date" });
+  if (error) throw error;
+  return { ok:true, plan:sub.plan, used:used+1, limit };
+}
+
+async function createSubscriptionLink(plan: "basic" | "pro") {
+  const cfg = PLAN_CONFIG[plan];
+  const d = await telegram("createInvoiceLink", {
+    title: "Tivals AI " + cfg.label,
+    description: cfg.label + " plan for Tivals AI — renews every 30 days until cancelled.",
+    payload: "tivals-sub:" + plan,
+    currency: "XTR",
+    prices: [{ label: cfg.label + " monthly subscription", amount: cfg.stars }],
+    subscription_period: SUBSCRIPTION_PERIOD
+  });
+  const url = d?.result;
+  if (!url) throw new Error("Telegram did not return a subscription link.");
+  return url;
+}
+
+async function subscriptionMenu(chatId: number|string, business?: string) {
+  const [basic, pro] = await Promise.all([createSubscriptionLink("basic"), createSubscriptionLink("pro")]);
+  const p:any = {
+    chat_id: chatId,
+    text: "⭐ <b>Tivals AI subscriptions</b>\n\nFree — 20 AI messages/day, 1 image/day\nBasic — 100 ⭐/month, 200 AI messages/day, 10 images/day\nPro — 250 ⭐/month, 1000 AI messages/day, 50 images/day\n\nSubscriptions renew every 30 days through Telegram Stars.",
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [
+      [{ text: "⭐ Basic — 100 Stars/month", url: basic }],
+      [{ text: "🚀 Pro — 250 Stars/month", url: pro }]
+    ] }
+  };
+  if (business) p.business_connection_id = business;
+  await telegram("sendMessage", p);
+}
+
+async function planStatus(chatId: number|string, tg: number, business?: string) {
+  const sub = await subscriptionState(tg);
+  const usage = await todayUsage(tg);
+  const cfg = PLAN_CONFIG[sub.plan];
+  const expires = sub.active && sub.row?.subscription_expiration_date ? new Date(sub.row.subscription_expiration_date).toLocaleString("en-ZA", { timeZone:"Africa/Johannesburg" }) : "";
+  const lines = ["⭐ **Your Tivals AI plan**", "", "**Plan:** " + cfg.label, "**AI usage today:** " + usage.ai + "/" + cfg.ai, "**Images today:** " + usage.images + "/" + cfg.images];
+  if (expires) lines.push("**Renews / access valid until:** " + expires);
+  lines.push("", sub.active ? "Use /subscribe to change or renew your plan." : "Use /subscribe to upgrade with Telegram Stars.");
+  await sendFormatted(chatId, lines.join("\n"), business);
+}
+
+async function recordSuccessfulPayment(tg: number, payment: any) {
+  if (!tg || payment?.currency !== "XTR") throw new Error("Invalid Telegram Stars payment.");
+  const payload = String(payment?.invoice_payload || "");
+  const m = payload.match(/^tivals-sub:(basic|pro)$/);
+  if (!m) throw new Error("Unknown subscription payment.");
+  const plan = m[1] as "basic" | "pro";
+  const cfg = PLAN_CONFIG[plan];
+  if (Number(payment?.total_amount || 0) !== cfg.stars) throw new Error("Subscription amount does not match the selected plan.");
+  const chargeId = String(payment?.telegram_payment_charge_id || "");
+  if (!chargeId) throw new Error("Telegram payment charge ID is missing.");
+  const expSeconds = Number(payment?.subscription_expiration_date || 0);
+  const expiresAt = new Date(expSeconds > 0 ? expSeconds * 1000 : Date.now() + SUBSCRIPTION_PERIOD * 1000).toISOString();
+  const { error: payError } = await sb.from("telegram_subscription_payments").upsert({
+    telegram_payment_charge_id: chargeId, telegram_user_id: tg, plan, currency: "XTR", total_amount: cfg.stars,
+    is_recurring: Boolean(payment?.is_recurring), is_first_recurring: Boolean(payment?.is_first_recurring), subscription_expiration_date: expiresAt
+  }, { onConflict: "telegram_payment_charge_id" });
+  if (payError) throw payError;
+  const { error } = await sb.from("telegram_subscriptions").upsert({
+    telegram_user_id: tg, plan, status: "active", stars_amount: cfg.stars, is_recurring: Boolean(payment?.is_recurring),
+    telegram_payment_charge_id: chargeId, subscription_expiration_date: expiresAt, updated_at: new Date().toISOString()
+  }, { onConflict: "telegram_user_id" });
+  if (error) throw error;
+  return { plan, expiresAt };
+}
+
+async function sendLimitReached(chatId: number|string, plan:PlanName, kind:"ai"|"image", business?:string) {
+  const cfg = PLAN_CONFIG[plan];
+  const limit = kind === "ai" ? cfg.ai : cfg.images;
+  await sendFormatted(chatId, "⚠️ **Daily " + (kind === "ai" ? "AI message" : "image") + " limit reached**\n\nYour **" + cfg.label + "** plan limit is " + limit + " per day. Use /subscribe to upgrade.", business);
+}
 async function sendHtml(chatId: number|string, html: string, business?: string) {
   for (const part of splitText(html)) {
     const p: any = { chat_id: chatId, text: part, parse_mode: "HTML", link_preview_options: { is_disabled: true } };
@@ -328,6 +451,11 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
       await sendFormatted(chatId, "Usage: `@image describe the image you want`", business);
       return "image-help";
     }
+    const quota = await consumeUsage(tg, "image");
+    if (!quota.ok) {
+      await sendLimitReached(chatId, quota.plan as PlanName, "image", business);
+      return "image-limit";
+    }
     await telegram("sendChatAction", { chat_id: chatId, action: "upload_photo", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
     await sendPhoto(chatId, await generateImage(request), request, business);
     return "image";
@@ -337,6 +465,11 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
     if (!request) {
       await sendFormatted(chatId, "Usage: `@ai ask your question`", business);
       return "ai-help";
+    }
+    const quota = await consumeUsage(tg, "ai");
+    if (!quota.ok) {
+      await sendLimitReached(chatId, quota.plan as PlanName, "ai", business);
+      return "ai-limit";
     }
     await sendFormatted(chatId, await askTivalsAI(request), business);
     return "ai";
@@ -510,7 +643,7 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, formatting: "html-code-blocks" });
+  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars" });
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
@@ -523,6 +656,17 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Invalid Telegram update." }, 400);
   }
 
+  if (update?.pre_checkout_query) {
+    const q = update.pre_checkout_query;
+    const payload = String(q?.invoice_payload || "");
+    const valid = /^tivals-sub:(basic|pro)$/.test(payload) && q?.currency === "XTR";
+    await telegram("answerPreCheckoutQuery", {
+      pre_checkout_query_id: q.id, ok: valid,
+      ...(valid ? {} : { error_message: "This Tivals AI subscription invoice is invalid." })
+    });
+    return json({ ok:true, route:"pre-checkout", accepted:valid });
+  }
+
   if (update?.business_connection) return json({ ok: true });
   const bm = update?.business_message;
   const message = bm || update?.message;
@@ -531,6 +675,18 @@ Deno.serve(async (req: Request) => {
   const tg = Number(message?.from?.id || 0);
   if (!chatId) return json({ ok: true, ignored: true });
 
+  if (message?.successful_payment) {
+    try {
+      const paid = await recordSuccessfulPayment(tg, message.successful_payment);
+      const cfg = PLAN_CONFIG[paid.plan];
+      await sendFormatted(chatId, "✅ **Subscription activated**\n\nYour **" + cfg.label + "** plan is active.\n\nAI messages/day: " + cfg.ai + "\nImages/day: " + cfg.images + "\n\nUse /plan anytime to check your subscription.", business);
+      return json({ ok:true, route:"successful-payment", plan:paid.plan });
+    } catch (e) {
+      await sendFormatted(chatId, "⚠️ Payment was received, but the subscription could not be activated automatically. Please contact support.", business).catch(()=>{});
+      return json({ ok:false, route:"payment-error", error:String((e as Error)?.message || e) });
+    }
+  }
+
   const text = String(message?.text || "").trim();
   const caption = String(message?.caption || "").trim();
   const photos = Array.isArray(message?.photo) ? message.photo : [];
@@ -538,6 +694,12 @@ Deno.serve(async (req: Request) => {
 
   try {
     if (photos.length || doc) {
+      if (!tg) throw new Error("Telegram user ID is unavailable.");
+      const quota = await consumeUsage(tg, "ai");
+      if (!quota.ok) {
+        await sendLimitReached(chatId, quota.plan as PlanName, "ai", business);
+        return json({ok:true,route:"vision-limit"});
+      }
       const fileId = doc?.file_id || photos[photos.length-1]?.file_id;
       await telegram("sendChatAction", { chat_id: chatId, action: "typing", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
       const reply = await analyzeImage(await telegramImageDataUrl(fileId), caption);
@@ -558,6 +720,8 @@ Deno.serve(async (req: Request) => {
         "• See available tools: `/tools`",
         "• Connect Gmail, GitHub, TikTok, or the Tivals AI Website: `/connect`",
         "• View connected accounts: `/accounts`",
+        "• Upgrade with Telegram Stars: `/subscribe`",
+        "• Check your plan: `/plan`",
         "",
         "**Available tools**",
         "• `@tiktok check my TikTok account`",
@@ -587,10 +751,20 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
       return json({ok:true});
     }
 
+    if (text === "/subscribe") {
+      await subscriptionMenu(chatId,business);
+      return json({ok:true,route:"subscribe"});
+    }
+
+    if (text === "/plan") {
+      if (!tg) throw new Error("Telegram user ID is unavailable.");
+      await planStatus(chatId,tg,business);
+      return json({ok:true,route:"plan"});
+    }
     if (text === "/tools") {
       await sendFormatted(chatId, toolsHelpText(), business);
       return json({ok:true,route:"tools"});
