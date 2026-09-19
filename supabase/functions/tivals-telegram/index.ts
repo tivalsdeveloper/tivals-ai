@@ -8,6 +8,7 @@ const PIXAZO_STUDIO_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1
 const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-oauth";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
+const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -241,6 +242,34 @@ async function oauthCall(action: string, tg: number, provider = "", extra: Recor
   return d;
 }
 
+async function openMiniAppButton(chatId: number|string, business?: string) {
+  const p:any = {
+    chat_id: chatId,
+    text: "📱 <b>Tivals AI App</b>\n\nOpen your dashboard to manage your plan, usage, connectors and bot settings.",
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [[{ text: "Open Tivals AI App", web_app: { url: TELEGRAM_APP_URL } }]] }
+  };
+  if (business) p.business_connection_id = business;
+  await telegram("sendMessage", p);
+}
+
+async function setMiniAppMenu(chatId: number|string) {
+  try {
+    await telegram("setChatMenuButton", {
+      chat_id: chatId,
+      menu_button: { type:"web_app", text:"Tivals AI", web_app:{ url:TELEGRAM_APP_URL } }
+    });
+  } catch {}
+}
+
+async function telegramSettings(tg:number) {
+  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true };
+  const { data } = await sb.from("telegram_user_settings")
+    .select("response_style,notifications,tool_suggestions")
+    .eq("telegram_user_id",tg).maybeSingle();
+  return data || { response_style:"balanced", notifications:true, tool_suggestions:true };
+}
+
 async function connectMenu(chatId: number|string, tg: number, business?: string) {
   const rows: any[][] = [];
   const failed: string[] = [];
@@ -471,7 +500,7 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
       await sendLimitReached(chatId, quota.plan as PlanName, "ai", business);
       return "ai-limit";
     }
-    await sendFormatted(chatId, await askTivalsAI(request), business);
+    await sendFormatted(chatId, await askTivalsAI(request, tg), business);
     return "ai";
   }
 
@@ -479,14 +508,20 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
   return "unknown-tool";
 }
 
-async function askTivalsAI(message: string) {
+async function askTivalsAI(message: string, tg = 0) {
   const c = new AbortController();
   const timer = setTimeout(() => c.abort(), 15000);
   try {
+    const settings = await telegramSettings(tg);
+    const style = settings.response_style === "concise"
+      ? "Reply concisely and focus on the essential answer."
+      : settings.response_style === "detailed"
+      ? "Give a detailed, well-structured answer with useful explanation."
+      : "Give a balanced, clear answer with enough detail to be useful.";
     const r = await fetch(TIVALS_AI_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "user", content: message }] }),
+      body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "user", content: message + "\n\nPreference: " + style }] }),
       signal: c.signal
     });
     const d = await r.json().catch(() => ({}));
@@ -643,7 +678,7 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars" });
+  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
@@ -710,6 +745,7 @@ Deno.serve(async (req: Request) => {
     if (!text) return json({ ok:true, ignored:true });
 
     if (text === "/start" || text.startsWith("/start ")) {
+      await setMiniAppMenu(chatId);
       await sendFormatted(chatId, [
         "👋 **Welcome to Tivals AI**",
         "",
@@ -722,6 +758,7 @@ Deno.serve(async (req: Request) => {
         "• View connected accounts: `/accounts`",
         "• Upgrade with Telegram Stars: `/subscribe`",
         "• Check your plan: `/plan`",
+        "• Open dashboard: `/app`",
         "",
         "**Available tools**",
         "• `@tiktok check my TikTok account`",
@@ -751,8 +788,14 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
       return json({ok:true});
+    }
+
+    if (text === "/app" || text === "/dashboard" || text === "/settings") {
+      await setMiniAppMenu(chatId);
+      await openMiniAppButton(chatId,business);
+      return json({ok:true,route:"miniapp"});
     }
 
     if (text === "/subscribe") {
@@ -813,12 +856,24 @@ Deno.serve(async (req: Request) => {
 
     const img = imagePrompt(text);
     if (img) {
+      if (!tg) throw new Error("Telegram user ID is unavailable.");
+      const quota = await consumeUsage(tg, "image");
+      if (!quota.ok) {
+        await sendLimitReached(chatId, quota.plan as PlanName, "image", business);
+        return json({ok:true,route:"image-limit-normal"});
+      }
       await telegram("sendChatAction", { chat_id: chatId, action: "upload_photo", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
       await sendPhoto(chatId,await generateImage(img),img,business);
       return json({ok:true,route:"image-generation"});
     }
 
-    await sendFormatted(chatId,await askTivalsAI(text),business);
+    if (!tg) throw new Error("Telegram user ID is unavailable.");
+    const aiQuota = await consumeUsage(tg, "ai");
+    if (!aiQuota.ok) {
+      await sendLimitReached(chatId, aiQuota.plan as PlanName, "ai", business);
+      return json({ok:true,route:"ai-limit-normal"});
+    }
+    await sendFormatted(chatId,await askTivalsAI(text,tg),business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
