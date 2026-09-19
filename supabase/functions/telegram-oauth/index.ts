@@ -198,6 +198,24 @@ async function webTikTokConnection(userId: string) {
   return data;
 }
 
+async function webTelegramPaidAccess(userId:string) {
+  const {data:link,error}=await sb.from("telegram_web_links")
+    .select("telegram_user_id")
+    .eq("user_id",userId).maybeSingle();
+  if(error) throw error;
+  if(!link?.telegram_user_id) return {allowed:false,reason:"Connect your Telegram account to Tivals AI first."};
+  const tg=Number(link.telegram_user_id);
+  const {data:admin}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
+  if(admin) return {allowed:true,owner:true,telegram_user_id:tg};
+  const {data:sub}=await sb.from("telegram_subscriptions")
+    .select("plan,status,subscription_expiration_date")
+    .eq("telegram_user_id",tg).maybeSingle();
+  const active=Boolean(sub && sub.status==="active" && ["basic","pro"].includes(sub.plan) && new Date(sub.subscription_expiration_date).getTime()>Date.now());
+  return active
+    ? {allowed:true,owner:false,telegram_user_id:tg,plan:sub.plan}
+    : {allowed:false,reason:"A paid Basic or Pro Telegram subscription is required to connect your own bot."};
+}
+
 async function webTelegramConnection(userId: string) {
   const { data, error } = await sb.from("tivals_web_oauth_connections")
     .select("provider,provider_user_id,account_label,access_token_enc,refresh_token_enc,updated_at,metadata")
@@ -724,7 +742,11 @@ Deno.serve(async (req: Request) => {
     const user = await webUser(req);
     if (!user) return json({ error: "Sign in to Tivals AI first." }, 401);
     try {
-      if (action === "web_telegram_connect") return json(await connectWebTelegram(user.id, String(body.bot_token || "")));
+      if (action === "web_telegram_connect") {
+        const access=await webTelegramPaidAccess(user.id);
+        if(!access.allowed) throw new Error(access.reason || "A paid subscription is required.");
+        return json(await connectWebTelegram(user.id, String(body.bot_token || "")));
+      }
       const conn = await webTelegramConnection(user.id);
       if (action === "web_telegram_status") return json({ connected: Boolean(conn), connection: conn ? { account_label: conn.account_label, updated_at: conn.updated_at, metadata: conn.metadata } : null });
       if (!conn) throw new Error("No Telegram bot is connected.");
