@@ -51,8 +51,8 @@ const API='https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat'
 const SUPABASE_URL='https://kxuszpixwfecawdeqkrx.supabase.co';
 const SUPABASE_KEY='sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
 const AI_URL='https://ai.tivalsdeveloper.site/';
-const EMBED='<script src="https://tivalsdeveloper.github.io/tivals-ai/widget.js" data-name="Tivals AI" data-position="right" data-welcome="Hi! How can I help?"><'+'/script>';
-const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+const EMBED='<script src="https://tivalsdeveloper.github.io/tivals-ai/widget.js" data-widget-id="CREATE_IN_DASHBOARD" data-name="Tivals AI" data-position="right" data-welcome="Hi! How can I help?"><'+'/script>';
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);window.sb=sb;
 const authGate=document.querySelector('#authGate'),appShell=document.querySelector('#appShell'),authForm=document.querySelector('#authForm'),authEmail=document.querySelector('#authEmail'),authPassword=document.querySelector('#authPassword'),authName=document.querySelector('#authName'),authUsername=document.querySelector('#authUsername'),authConfirm=document.querySelector('#authConfirm'),authTerms=document.querySelector('#authTerms'),authMessage=document.querySelector('#authMessage');let authMode='login';
 function authNotice(text,ok=false){authMessage.textContent=text;authMessage.classList.toggle('ok',ok)}
 function setAuthMode(mode){authMode=mode;const signup=mode==='signup',reset=mode==='reset';authGate.classList.toggle('signup',signup);document.querySelector('#nameField').hidden=!signup;document.querySelector('#forgotPassword').hidden=signup||reset;authConfirm.required=signup;authTerms.required=signup;document.querySelector('#loginTab').classList.toggle('active',mode==='login');document.querySelector('#signupTab').classList.toggle('active',signup);document.querySelector('.authTabs').hidden=reset;document.querySelector('#authTitle').innerHTML=reset?'Choose a new <span>password</span>':signup?'Create your <span>account</span>':'Welcome <span>back</span>';document.querySelector('#authLead').textContent=reset?'Enter a secure new password for your account.':signup?'Join Tivals AI and start learning, creating and achieving your goals.':'Sign in to continue your conversations.';document.querySelector('#authSubmit').textContent=reset?'Update password →':signup?'Create account →':'Sign in →';authPassword.autocomplete=signup||reset?'new-password':'current-password';authPassword.placeholder=signup?'Create a strong password':reset?'Create a new password':'Enter your password';authNotice('')}
@@ -126,5 +126,6 @@ if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch
 <script src="./tivals-image-generator.js?v=20260914-ui-fix" defer></script>
 <script src="./tivals-chat-media.js?v=20260914-ui-fix" defer></script>
 <script src="tivals-github-agent.js"></script>\n<script src="./tivals-account-tools.js?v=20260919-tools"></script>
+<script src="./tivals-widget-dashboard.js?v=20260919-domain-lock"></script>
 </body>
 </html>
