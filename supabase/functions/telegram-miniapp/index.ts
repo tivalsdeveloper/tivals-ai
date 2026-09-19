@@ -5,6 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
+const OWNED_BOT_WEBHOOK = `${SUPABASE_URL}/functions/v1/tivals-user-telegram`;
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
 
 const cors = {
@@ -23,6 +24,81 @@ function hex(bytes: ArrayBuffer) {
 async function hmac(key: Uint8Array | ArrayBuffer, data: string) {
   const k = await crypto.subtle.importKey("raw", key, {name:"HMAC", hash:"SHA-256"}, false, ["sign"]);
   return crypto.subtle.sign("HMAC", k, new TextEncoder().encode(data));
+}
+const enc = new TextEncoder();
+
+function b64(bytes: Uint8Array) {
+  let out="";
+  for (let i=0;i<bytes.length;i+=0x8000) out += String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
+  return btoa(out);
+}
+async function aesKey() {
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(SERVICE_KEY));
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt","decrypt"]);
+}
+async function encrypt(value:string) {
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const cipher=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv},await aesKey(),enc.encode(value)));
+  const out=new Uint8Array(iv.length+cipher.length); out.set(iv); out.set(cipher,iv.length);
+  return b64(out);
+}
+function randomSecret() {
+  const bytes=crypto.getRandomValues(new Uint8Array(32));
+  return b64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
+}
+async function isAdmin(tg:number) {
+  const {data}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
+  return Boolean(data);
+}
+async function paidAccess(tg:number) {
+  if (await isAdmin(tg)) return {allowed:true,owner:true,plan:"owner"};
+  const {data}=await sb.from("telegram_subscriptions")
+    .select("plan,status,subscription_expiration_date")
+    .eq("telegram_user_id",tg).maybeSingle();
+  const active=Boolean(data && data.status==="active" && new Date(data.subscription_expiration_date).getTime()>Date.now() && ["basic","pro"].includes(data.plan));
+  return {allowed:active,owner:false,plan:active?data.plan:"free"};
+}
+async function ownedBot(tg:number) {
+  const {data,error}=await sb.from("telegram_owned_bots")
+    .select("bot_id,username,account_label,is_active,connected_at,updated_at")
+    .eq("telegram_user_id",tg).maybeSingle();
+  if(error) throw error;
+  return data;
+}
+async function botApi(token:string, method:string, payload?:Record<string,unknown>) {
+  const r=await fetch(`https://api.telegram.org/bot${token}/${method}`, payload ? {
+    method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)
+  } : undefined);
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok || d?.ok===false) throw new Error(d?.description || `Telegram ${method} failed.`);
+  return d?.result;
+}
+async function connectOwnedBot(tg:number,rawToken:string) {
+  const access=await paidAccess(tg);
+  if(!access.allowed) throw new Error("A paid Basic or Pro subscription is required to connect your own Telegram bot.");
+  const token=String(rawToken||"").trim();
+  if(!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid BotFather token.");
+  const me=await botApi(token,"getMe");
+  if(!me?.is_bot) throw new Error("This token does not belong to a Telegram bot.");
+  const secret=randomSecret();
+  await botApi(token,"setWebhook",{
+    url:`${OWNED_BOT_WEBHOOK}?tg_owner=${encodeURIComponent(String(tg))}`,
+    secret_token:secret,
+    allowed_updates:["message"],
+    drop_pending_updates:false
+  });
+  const {error}=await sb.from("telegram_owned_bots").upsert({
+    telegram_user_id:tg,
+    bot_id:Number(me.id),
+    username:me.username||null,
+    account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot"),
+    token_enc:await encrypt(token),
+    webhook_secret_enc:await encrypt(secret),
+    is_active:true,
+    updated_at:new Date().toISOString()
+  },{onConflict:"telegram_user_id"});
+  if(error) throw error;
+  return {connected:true,account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot")};
 }
 async function validateInitData(initData: string) {
   if (!BOT_TOKEN || !initData) return null;
@@ -72,19 +148,26 @@ const plans = {
 
 async function getDashboard(tg:number) {
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},connections] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},connections,admin,bot] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
-    oauth("status",tg)
+    oauth("status",tg),
+    isAdmin(tg),
+    ownedBot(tg)
   ]);
   const active = Boolean(sub && sub.status==="active" && new Date(sub.subscription_expiration_date).getTime() > Date.now());
-  const plan = active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
+  const plan = admin ? "owner" : active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
   const list = Array.isArray(connections?.connections) ? connections.connections : [];
+  const planData = admin
+    ? {id:"owner",label:"Owner",stars:0,ai:null,images:null,active:true,expiration:null}
+    : { id:plan, ...plans[plan as "free"|"basic"|"pro"], active, expiration:active ? sub.subscription_expiration_date : null };
   return {
-    plan:{ id:plan, ...plans[plan], active, expiration:active ? sub.subscription_expiration_date : null },
+    owner:admin,
+    plan:planData,
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
+    bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:admin||active },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
       return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
@@ -114,6 +197,32 @@ Deno.serve(async req => {
       return json({ok:true,url:d?.url||""});
     }
 
+    if (action==="connect_own_bot") {
+      const d=await connectOwnedBot(tg,String(body?.bot_token||""));
+      return json({ok:true,...d});
+    }
+
+    if (action==="own_bot_status") {
+      const access=await paidAccess(tg);
+      return json({ok:true,access,bot:await ownedBot(tg)});
+    }
+
+    if (action==="disconnect_own_bot") {
+      const {data}=await sb.from("telegram_owned_bots").select("token_enc").eq("telegram_user_id",tg).maybeSingle();
+      if(data?.token_enc){
+        try{
+          const raw=atob(String(data.token_enc)); const bytes=new Uint8Array(raw.length);
+          for(let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+          const iv=bytes.slice(0,12),cipher=bytes.slice(12);
+          const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv},await aesKey(),cipher);
+          await botApi(new TextDecoder().decode(plain),"deleteWebhook",{drop_pending_updates:false});
+        }catch{}
+      }
+      const {error}=await sb.from("telegram_owned_bots").delete().eq("telegram_user_id",tg);
+      if(error) throw error;
+      return json({ok:true});
+    }
+
     if (action==="save_settings") {
       const style = ["concise","balanced","detailed"].includes(String(body?.response_style)) ? String(body.response_style) : "balanced";
       const row = {
@@ -129,6 +238,7 @@ Deno.serve(async req => {
     }
 
     if (action==="subscribe") {
+      if (await isAdmin(tg)) return json({ok:false,owner:true,error:"Owner accounts do not need to pay for Tivals AI."},400);
       const plan=String(body?.plan||"");
       if (plan!=="basic" && plan!=="pro") return json({error:"Choose Basic or Pro."},400);
       const cfg=plans[plan];
