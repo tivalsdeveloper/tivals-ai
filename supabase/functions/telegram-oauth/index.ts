@@ -158,6 +158,40 @@ async function createLink(req: Request, provider: string, tg: number) {
   }
 }
 
+async function tiktokConnection(tg: number) {
+  const { data, error } = await sb.from("telegram_oauth_connections")
+    .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata")
+    .eq("telegram_user_id", tg).eq("provider", "tiktok").maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("TikTok is not connected. Use /connect first.");
+  return data;
+}
+
+async function tiktokProfile(tg: number) {
+  const conn = await tiktokConnection(tg);
+  const token = await decrypt(String(conn.access_token_enc || ""));
+  if (!token) throw new Error("TikTok access token is missing. Reconnect TikTok with /connect.");
+  const fields = new URLSearchParams({ fields: "open_id,union_id,avatar_url,display_name" });
+  const r = await fetch(`https://open.tiktokapis.com/v2/user/info/?${fields.toString()}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) {
+    throw new Error("TikTok permission has expired or is no longer valid. Use /disconnect_tiktok, then /connect to reconnect.");
+  }
+  if (!r.ok) throw new Error(d?.error?.message || `TikTok request failed (${r.status}).`);
+  const user = d?.data?.user || {};
+  return {
+    account: conn.account_label || user.display_name || "TikTok account",
+    scope: conn.scope || "",
+    profile: {
+      display_name: user.display_name || conn.account_label || "TikTok account",
+      avatar_url: user.avatar_url || conn?.metadata?.avatar_url || null,
+      open_id: user.open_id || conn?.metadata?.open_id || null,
+      union_id: user.union_id || conn?.metadata?.union_id || null,
+    },
+  };
+}
 async function gmailConnection(tg: number) {
   const { data, error } = await sb.from("telegram_oauth_connections")
     .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata")
@@ -362,6 +396,14 @@ Deno.serve(async (req: Request) => {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
       return json(await gmailMessages(tg, String(body.query || ""), Number(body.max_results || 5)));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
+  if (action === "tiktok_profile") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await tiktokProfile(tg));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
