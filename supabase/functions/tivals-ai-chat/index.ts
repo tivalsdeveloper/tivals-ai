@@ -1,3 +1,5 @@
+import { createClient } from "npm:@supabase/supabase-js@2";
+
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -9,7 +11,20 @@ const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
-const VERSION = 24;
+const VERSION = 25;
+
+type WidgetConfig = {
+  public_key: string;
+  business_name: string;
+  business_description: string;
+  services: string;
+  contact_details: string;
+  faq: string;
+  instructions: string;
+  welcome_message: string;
+  allowed_domains: string[];
+  is_active: boolean;
+};
 
 const APPMIX_FREE_MODELS = [
   "anthropic/claude-sonnet-4-6-free",
@@ -38,8 +53,59 @@ let appMixWorkingModel = "";
 let apinexWorkingModel = "";
 let bazaarWorkingModel = "";
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: cors });
+function responseHeaders(origin = "") {
+  return { ...cors, "Access-Control-Allow-Origin": origin || "*", "Vary": "Origin" };
+}
+
+function json(data: unknown, status = 200, origin = "") {
+  return new Response(JSON.stringify(data), { status, headers: responseHeaders(origin) });
+}
+
+function normalizeHost(value: string) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try { return new URL(raw.includes("://") ? raw : `https://${raw}`).host.replace(/^www\./, ""); }
+  catch { return raw.replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, ""); }
+}
+
+function domainAllowed(origin: string, domains: string[]) {
+  if (!origin) return false;
+  let host = "";
+  try { host = normalizeHost(new URL(origin).host); } catch { return false; }
+  return (domains || []).some(value => {
+    const domain = normalizeHost(value);
+    if (!domain) return false;
+    if (domain.startsWith("*.")) return host.endsWith(domain.slice(1)) && host !== domain.slice(2);
+    return host === domain;
+  });
+}
+
+function adminClient() {
+  const url = Deno.env.get("SUPABASE_URL") || "";
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  return url && key ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
+}
+
+async function loadWidget(publicKey: string) {
+  if (!publicKey) return null;
+  const admin = adminClient();
+  if (!admin) throw new Error("Widget configuration service is unavailable.");
+  const { data, error } = await admin.from("widget_configs").select("public_key,business_name,business_description,services,contact_details,faq,instructions,welcome_message,allowed_domains,is_active").eq("public_key", publicKey).maybeSingle();
+  if (error) throw error;
+  return data as WidgetConfig | null;
+}
+
+function widgetSystem(config: WidgetConfig) {
+  return [
+    `You are the website assistant for ${config.business_name || "this business"}.`,
+    "Use the verified business information below as the source of truth. Never invent prices, policies, contact details, services, availability, or guarantees. If the answer is not in the business information, say you do not have that detail and suggest contacting the business.",
+    config.business_description && `ABOUT: ${config.business_description}`,
+    config.services && `PRODUCTS OR SERVICES: ${config.services}`,
+    config.contact_details && `CONTACT DETAILS: ${config.contact_details}`,
+    config.faq && `FAQ: ${config.faq}`,
+    config.instructions && `OWNER INSTRUCTIONS: ${config.instructions}`,
+    "Keep answers concise, friendly, and suitable for website visitors."
+  ].filter(Boolean).join("\n\n").slice(0, 14000);
 }
 
 function cleanMessages(v: unknown) {
@@ -524,7 +590,19 @@ async function providerStatus(keys: { bazaar: string; app: string; apinex: strin
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  const url = new URL(req.url);
+  const widgetKey = url.searchParams.get("widget") || "";
+  const origin = req.headers.get("Origin") || "";
+  let widget: WidgetConfig | null = null;
+
+  if (widgetKey) {
+    try { widget = await loadWidget(widgetKey); }
+    catch { return json({ error: "Widget configuration could not be loaded." }, 503, origin); }
+    if (!widget || !widget.is_active) return json({ error: "This widget is inactive or invalid." }, 403, origin);
+    if (!domainAllowed(origin, widget.allowed_domains)) return json({ error: "This domain is not authorized to use this Tivals AI widget.", code: "DOMAIN_NOT_ALLOWED" }, 403, origin);
+  }
+
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: responseHeaders(widget ? origin : "") });
 
   const keys = {
     bazaar: Deno.env.get("BAZAARLINK_API_KEY") || "",
@@ -534,7 +612,7 @@ Deno.serve(async (req: Request) => {
   };
 
   if (req.method === "GET") {
-    const u = new URL(req.url);
+    const u = url;
 
     if (u.searchParams.get("models") === "1") {
       const models = await getPublicModels(keys.apinex, keys.open, keys.app, keys.bazaar);
@@ -582,9 +660,10 @@ Deno.serve(async (req: Request) => {
 
   const system = {
     role: "system",
-    content: "You are Tivals AI, a capable general-purpose assistant. Give accurate, direct, phone-friendly answers. Use Markdown. For learning requests, teach one focused lesson at a time and include a short practice task."
+    content: widget ? widgetSystem(widget) : "You are Tivals AI, a capable general-purpose assistant. Give accurate, direct, phone-friendly answers. Use Markdown. For learning requests, teach one focused lesson at a time and include a short practice task."
   };
   const prompt = [system, ...messages.filter((m:any) => m.role !== "system")];
+  if (widget) adminClient()?.rpc("record_widget_request", { p_public_key: widget.public_key }).then(() => {}).catch(() => {});
   const selected = parseSelectedModel(body?.model);
   const failures: { provider: string; error: string }[] = [];
   const excluded: Partial<Record<ProviderName,string[]>> = {};
@@ -592,7 +671,7 @@ Deno.serve(async (req: Request) => {
   if (selected) {
     try {
       const result = await callSpecificModel(selected, prompt, keys);
-      return json({ reply: result.reply, model: selected.model, provider: providerLabel(selected.provider), route: result.route, selected: true });
+      return json({ reply: result.reply, model: selected.model, provider: providerLabel(selected.provider), route: result.route, selected: true }, 200, widget ? origin : "");
     } catch (e) {
       failures.push({ provider: `${providerLabel(selected.provider)}:${selected.model}`, error: safeErr(e) });
       excluded[selected.provider] = [selected.model];
@@ -604,28 +683,28 @@ Deno.serve(async (req: Request) => {
   if (keys.bazaar) {
     try {
       const result = await callBazaarLink(keys.bazaar, prompt, excluded.bazaarlink || []);
-      return json({ reply: result.reply, model: result.model, provider: "BazaarLink", route: result.route, fallback: !!selected });
+      return json({ reply: result.reply, model: result.model, provider: "BazaarLink", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
     } catch (e) { failures.push({ provider: "BazaarLink", error: safeErr(e) }); }
   }
 
   if (keys.app) {
     try {
       const result = await callAppMix(keys.app, prompt, excluded.appmix || []);
-      return json({ reply: result.reply, model: result.model, provider: "AppMix", route: result.route, fallback: !!selected });
+      return json({ reply: result.reply, model: result.model, provider: "AppMix", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
     } catch (e) { failures.push({ provider: "AppMix", error: safeErr(e) }); }
   }
 
   if (keys.apinex) {
     try {
       const result = await callApinex(keys.apinex, prompt, excluded.apinex || []);
-      return json({ reply: result.reply, model: result.model, provider: "Apinex", route: result.route, fallback: !!selected });
+      return json({ reply: result.reply, model: result.model, provider: "Apinex", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
     } catch (e) { failures.push({ provider: "Apinex", error: safeErr(e) }); }
   }
 
   if (keys.open) {
     try {
       const result = await callOpenRouter(keys.open, prompt);
-      return json({ reply: result.reply, model: result.model, provider: "OpenRouter", route: result.route, fallback: !!selected });
+      return json({ reply: result.reply, model: result.model, provider: "OpenRouter", route: result.route, fallback: !!selected }, 200, widget ? origin : "");
     } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
   }
 
