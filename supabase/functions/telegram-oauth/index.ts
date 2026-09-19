@@ -281,6 +281,25 @@ Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const u = new URL(req.url);
 
+  if (req.method === "GET" && u.pathname.endsWith("/github/health")) {
+    try {
+      const app = await githubAppInfo();
+      return json({
+        ok: true,
+        app_slug: app?.slug || null,
+        app_name: app?.name || null,
+        app_id_configured: Boolean(GITHUB_APP_ID),
+        private_key_configured: Boolean(GITHUB_PRIVATE_KEY),
+      });
+    } catch (e) {
+      return json({
+        ok: false,
+        error: String((e as Error)?.message || e),
+        app_id_configured: Boolean(GITHUB_APP_ID),
+        private_key_configured: Boolean(GITHUB_PRIVATE_KEY),
+      }, 200);
+    }
+  }
   if (req.method === "GET" && u.pathname.endsWith("/github/setup")) {
     const state = u.searchParams.get("state") || "";
     const installationId = u.searchParams.get("installation_id") || "";
