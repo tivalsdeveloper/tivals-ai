@@ -103,6 +103,12 @@ async function telegram(method: string, payload: Record<string, unknown>) {
 
 type PlanName = "free" | "basic" | "pro";
 
+async function isOwnerAccount(tg:number) {
+  const {data,error}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
+  if(error) throw error;
+  return Boolean(data);
+}
+
 async function subscriptionState(tg: number) {
   const { data, error } = await sb.from("telegram_subscriptions")
     .select("plan,status,stars_amount,is_recurring,telegram_payment_charge_id,subscription_expiration_date,updated_at")
@@ -125,6 +131,7 @@ async function todayUsage(tg: number) {
 }
 
 async function consumeUsage(tg: number, kind: "ai" | "image") {
+  if (await isOwnerAccount(tg)) return { ok:true, plan:"pro" as PlanName, used:0, limit:Number.MAX_SAFE_INTEGER, owner:true, unlimited:true };
   const sub = await subscriptionState(tg);
   const cfg = PLAN_CONFIG[sub.plan];
   const usage = await todayUsage(tg);
@@ -172,6 +179,10 @@ async function subscriptionMenu(chatId: number|string, business?: string) {
 }
 
 async function planStatus(chatId: number|string, tg: number, business?: string) {
+  if (await isOwnerAccount(tg)) {
+    await sendFormatted(chatId, "👑 **Owner account**\n\n**Plan:** Owner\n**AI usage:** Unlimited\n**Images:** Unlimited\n**Bot connector:** Included\n\nYou do not need to buy a Tivals AI subscription.", business);
+    return;
+  }
   const sub = await subscriptionState(tg);
   const usage = await todayUsage(tg);
   const cfg = PLAN_CONFIG[sub.plan];
@@ -788,17 +799,21 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n/connectbot — Connect your own Telegram bot\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
       return json({ok:true});
     }
 
-    if (text === "/app" || text === "/dashboard" || text === "/settings") {
+    if (text === "/app" || text === "/dashboard" || text === "/settings" || text === "/connectbot") {
       await setMiniAppMenu(chatId);
       await openMiniAppButton(chatId,business);
       return json({ok:true,route:"miniapp"});
     }
 
     if (text === "/subscribe") {
+      if (tg && await isOwnerAccount(tg)) {
+        await sendFormatted(chatId, "👑 **Owner account**\n\nYou do not need to pay for Tivals AI. Your owner access includes unlimited AI usage and the Telegram bot connector.", business);
+        return json({ok:true,route:"owner-subscribe"});
+      }
       await subscriptionMenu(chatId,business);
       return json({ok:true,route:"subscribe"});
     }
