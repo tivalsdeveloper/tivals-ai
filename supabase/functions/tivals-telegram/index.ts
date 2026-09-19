@@ -120,7 +120,7 @@ async function oauthCall(action: string, tg: number, provider = "", extra: Recor
 
 async function connectMenu(chatId: number|string, tg: number, business?: string) {
   const rows: any[][] = [];
-  for (const [provider,label] of [["gmail","📧 Connect Gmail"],["github","🐙 Connect GitHub"]] as const) {
+  for (const [provider,label] of [["gmail","📧 Connect Gmail"],["github","🐙 Connect GitHub"],["tiktok","🎵 Connect TikTok"]] as const) {
     try {
       const d = await oauthCall("create_link", tg, provider);
       if (d?.url) rows.push([{ text: label, url: d.url }]);
@@ -140,9 +140,9 @@ async function connectMenu(chatId: number|string, tg: number, business?: string)
 async function accountStatus(chatId: number|string, tg: number, business?: string) {
   const d = await oauthCall("status", tg);
   const list = Array.isArray(d?.connections) ? d.connections : [];
-  if (!list.length) return sendFormatted(chatId, "**Connected accounts**\n\nNo Gmail or GitHub account is connected yet. Use /connect.", business);
-  const lines = list.map((x:any) => `• ${x.provider === "gmail" ? "📧 Gmail" : "🐙 GitHub"}: **${x.account_label || "Connected"}**`);
-  return sendFormatted(chatId, `**Connected accounts**\n\n${lines.join("\n")}\n\nDisconnect with /disconnect_gmail or /disconnect_github.`, business);
+  if (!list.length) return sendFormatted(chatId, "**Connected accounts**\n\nNo Gmail, GitHub, or TikTok account is connected yet. Use /connect.", business);
+  const lines = list.map((x:any) => { const label = x.provider === "gmail" ? "📧 Gmail" : x.provider === "github" ? "🐙 GitHub" : x.provider === "tiktok" ? "🎵 TikTok" : String(x.provider || "Account"); return `• ${label}: **${x.account_label || "Connected"}**`; });
+  return sendFormatted(chatId, `**Connected accounts**\n\n${lines.join("\n")}\n\nDisconnect with /disconnect_gmail, /disconnect_github, or /disconnect_tiktok.`, business);
 }
 
 function gmailIntent(text: string): { matched: boolean; query: string; title: string } {
@@ -384,12 +384,12 @@ Deno.serve(async (req: Request) => {
     if (!text) return json({ ok:true, ignored:true });
 
     if (text === "/start" || text.startsWith("/start ")) {
-      await sendFormatted(chatId, "👋 **Hi! I'm Tivals AI.**\n\nAsk questions, check Gmail, search YouTube, generate images, analyze photos, or connect Gmail and GitHub with /connect.", business);
+      await sendFormatted(chatId, "👋 **Hi! I'm Tivals AI.**\n\nAsk questions, check Gmail, search YouTube, generate images, analyze photos, or connect Gmail, GitHub, and TikTok with /connect.", business);
       return json({ok:true});
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail or GitHub\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n\nYou can also say “check my emails”, “emails from SPU”, or “search my emails for application”.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, or TikTok\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n\nYou can also say “check my emails”, “emails from SPU”, or “search my emails for application”.", business);
       return json({ok:true});
     }
 
@@ -405,11 +405,12 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"accounts"});
     }
 
-    if (text === "/disconnect_gmail" || text === "/disconnect_github") {
+    if (text === "/disconnect_gmail" || text === "/disconnect_github" || text === "/disconnect_tiktok") {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
-      const provider = text.endsWith("gmail") ? "gmail" : "github";
+      const provider = text.endsWith("gmail") ? "gmail" : text.endsWith("github") ? "github" : "tiktok";
       await oauthCall("disconnect",tg,provider);
-      await sendFormatted(chatId,`✅ ${provider === "gmail" ? "Gmail" : "GitHub"} disconnected.`,business);
+      const providerLabel = provider === "gmail" ? "Gmail" : provider === "github" ? "GitHub" : "TikTok";
+      await sendFormatted(chatId,`✅ ${providerLabel} disconnected.`,business);
       return json({ok:true,route:"disconnect"});
     }
 
