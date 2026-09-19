@@ -239,10 +239,12 @@ Deno.serve(async (req: Request) => {
     const oauthError = u.searchParams.get("error") || "";
     const oauthDescription = u.searchParams.get("error_description") || "";
 
-    const page = (ok: boolean, title: string, message: string) => new Response(
-      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui;background:#101010;color:#fff;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}.card{max-width:520px;background:#1f1f1f;border:1px solid #333;border-radius:18px;padding:24px}.ok{color:#53e08a}.bad{color:#ff7676}p{line-height:1.5;color:#ccc}</style></head><body><div class="card"><h2 class="${ok ? "ok" : "bad"}">${title}</h2><p>${message}</p><p>You can close this page and return to Telegram.</p></div></body></html>`,
-      { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } }
-    );
+    const page = (ok: boolean, _title: string, message: string, account = "") => {
+      const params = new URLSearchParams({ ok: ok ? "1" : "0" });
+      if (account) params.set("account", account);
+      if (!ok && message) params.set("error", message.slice(0, 300));
+      return Response.redirect(`${STATIC_BASE}/telegram-tiktok.html?${params.toString()}`, 302);
+    };
 
     if (oauthError) return page(false, "TikTok connection failed", oauthDescription || oauthError);
 
@@ -297,7 +299,7 @@ Deno.serve(async (req: Request) => {
         },
       });
 
-      return page(true, "TikTok connected", `Connected as <b>${label.replace(/[<>&]/g, "")}</b>.`);
+      return page(true, "TikTok connected", "Connected.", label);
     } catch (e) {
       return page(false, "TikTok connection failed", String((e)?.message || e).replace(/[<>&]/g, ""));
     }
