@@ -74,12 +74,20 @@ async function stateRow(state: string, provider: string) {
 }
 async function createState(tg: number, provider: string) {
   const state = randomState();
-  await sb.from("telegram_oauth_states").delete().eq("telegram_user_id", tg).eq("provider", provider);
+
+  // Remove only expired OAuth states. Do not delete still-valid states for the
+  // same Telegram user/provider, because older /connect buttons may still be
+  // open on the user's phone and should remain usable until they expire.
+  await sb.from("telegram_oauth_states")
+    .delete()
+    .lt("expires_at", new Date().toISOString());
+
+  const ttlMinutes = provider === "tiktok" ? 60 : 15;
   const { error } = await sb.from("telegram_oauth_states").insert({
     state,
     telegram_user_id: tg,
     provider,
-    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
   });
   if (error) throw error;
   return state;
@@ -233,13 +241,13 @@ Deno.serve(async (req: Request) => {
 
     const page = (ok: boolean, title: string, message: string) => new Response(
       `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui;background:#101010;color:#fff;margin:0;display:grid;place-items:center;min-height:100vh;padding:24px}.card{max-width:520px;background:#1f1f1f;border:1px solid #333;border-radius:18px;padding:24px}.ok{color:#53e08a}.bad{color:#ff7676}p{line-height:1.5;color:#ccc}</style></head><body><div class="card"><h2 class="${ok ? "ok" : "bad"}">${title}</h2><p>${message}</p><p>You can close this page and return to Telegram.</p></div></body></html>`,
-      { status: ok ? 200 : 400, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } }
+      { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } }
     );
 
     if (oauthError) return page(false, "TikTok connection failed", oauthDescription || oauthError);
 
     const st = await stateRow(state, "tiktok");
-    if (!st || !code) return page(false, "TikTok connection expired", "Return to Telegram and run /connect again.");
+    if (!st || !code) return page(false, "TikTok connection link is no longer valid", "Return to Telegram, run /connect again, and tap the newest Connect TikTok button. TikTok links are now kept valid for up to 60 minutes.");
 
     try {
       if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) throw new Error("TikTok app credentials are not configured.");
