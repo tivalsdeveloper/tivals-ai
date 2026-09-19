@@ -120,16 +120,26 @@ async function oauthCall(action: string, tg: number, provider = "", extra: Recor
 
 async function connectMenu(chatId: number|string, tg: number, business?: string) {
   const rows: any[][] = [];
+  const failed: string[] = [];
   for (const [provider,label] of [["gmail","📧 Connect Gmail"],["github","🐙 Connect GitHub"],["tiktok","🎵 Connect TikTok"]] as const) {
     try {
       const d = await oauthCall("create_link", tg, provider);
       if (d?.url) rows.push([{ text: label, url: d.url }]);
-    } catch {}
+      else failed.push(provider);
+    } catch {
+      failed.push(provider);
+    }
   }
   if (!rows.length) return sendFormatted(chatId, "⚠️ Account connections are temporarily unavailable.", business);
+
+  const providerName: Record<string,string> = { gmail: "Gmail", github: "GitHub", tiktok: "TikTok" };
+  const unavailable = failed.length
+    ? "\n\n⚠️ Temporarily unavailable: " + failed.map(x => providerName[x] || x).join(", ")
+    : "";
+
   const p: any = {
     chat_id: chatId,
-    text: "🔐 <b>Connect accounts to Tivals AI</b>\n\nEach connection is private to your Telegram account. You can disconnect it at any time.",
+    text: "🔐 <b>Connect accounts to Tivals AI</b>\n\nEach connection is private to your Telegram account. You can disconnect it at any time." + unavailable,
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: rows }
   };
