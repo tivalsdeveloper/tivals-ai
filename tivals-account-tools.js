@@ -24,19 +24,25 @@
     if(document.querySelector('#accountToolsModal'))return;
 
     var style=document.createElement('style');
-    style.textContent='.connectorModal{width:min(880px,100%)!important}.connectorIntro{margin:6px 0 18px!important}.accountToolsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.accountToolCard{display:grid;grid-template-columns:48px minmax(0,1fr);gap:0 13px;align-content:start;border:1px solid #2c527b;background:linear-gradient(145deg,#0b2749,#091d38);border-radius:18px;padding:16px;min-height:132px}.accountToolIcon{grid-row:1/6;width:48px;height:48px;display:grid;place-items:center;border-radius:15px;background:#173a66;color:#fff;font-size:20px;font-weight:800}.accountToolCard b{display:block;margin:1px 0 4px;font-size:16px}.accountToolCard code{display:block;margin-top:5px;font-size:12px;color:#a9c9ec;white-space:normal}.accountToolActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.accountToolActions button{border:1px solid #466c96;background:#15395f;color:#fff;border-radius:10px;padding:9px 12px;font-weight:700}.accountToolActions .primary{background:#168eea;border-color:#168eea}.accountToolStatus{margin:6px 0 0;color:#9eb0c5;font-size:12px;line-height:1.45}.tiktokTool{border-color:#365e83!important}@media(max-width:650px){.connectorModal{padding:18px!important}.accountToolsGrid{grid-template-columns:1fr}.accountToolCard{min-height:0}.connectorIntro{font-size:14px}}';
+    style.textContent='.connectorModal{width:min(880px,100%)!important}.connectorIntro{margin:6px 0 18px!important}.connectorHeading{grid-column:1/-1;margin:8px 2px 0;color:#85a7ca;font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.accountToolsGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.accountToolCard{display:grid;grid-template-columns:48px minmax(0,1fr);gap:0 13px;align-content:start;border:1px solid #2c527b;background:linear-gradient(145deg,#0b2749,#091d38);border-radius:18px;padding:16px;min-height:142px}.accountToolIcon{grid-row:1/7;width:48px;height:48px;display:grid;place-items:center;border-radius:15px;background:#173a66;color:#fff;font-size:20px;font-weight:800}.accountToolCard b{display:block;margin:1px 0 4px;font-size:16px}.accountToolCard code{display:block;margin-top:5px;font-size:12px;color:#a9c9ec;white-space:normal}.accountToolActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.accountToolActions button{border:1px solid #466c96;background:#15395f;color:#fff;border-radius:10px;padding:9px 12px;font-weight:700}.accountToolActions .primary{background:#168eea;border-color:#168eea}.accountToolStatus{margin:6px 0 0;color:#9eb0c5;font-size:12px;line-height:1.45}.connectorInput{grid-column:2;width:100%;min-height:42px;margin-top:10px;padding:10px 12px;border:1px solid #3b6893;border-radius:10px;background:#06182f;color:#fff}.tiktokTool,.telegramTool{border-color:#365e83!important}@media(max-width:650px){.connectorModal{padding:18px!important}.accountToolsGrid{grid-template-columns:1fr}.accountToolCard{min-height:0}.connectorHeading{grid-column:auto}.connectorIntro{font-size:14px}}';
     document.head.appendChild(style);
 
     var modal=document.createElement('div');
     modal.className='modalBack';
     modal.id='accountToolsModal';
-    modal.innerHTML='<div class="modal connectorModal"><div class="modalTop"><div><h2>Apps & connectors</h2><p class="connectorIntro">Manage everything Tivals AI can use from one place.</p></div><button class="closeModal" id="closeAccountTools" aria-label="Close apps and connectors">×</button></div><div class="accountToolsGrid"><div class="accountToolCard tiktokTool"><span class="accountToolIcon">♪</span><b>TikTok</b><div class="accountToolStatus" id="webTikTokStatus">Checking connection…</div><code>@tiktok show my stats</code><div class="accountToolActions"><button class="primary" id="webTikTokConnect">Connect</button><button id="webTikTokDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard"><span class="accountToolIcon">✉</span><b>Gmail & monitor</b><div class="accountToolStatus">Read, find and send email with your permission.</div><code>@gmail check my latest emails</code></div><div class="accountToolCard"><span class="accountToolIcon">⌘</span><b>GitHub</b><div class="accountToolStatus">Inspect repositories and work with code.</div><code>@github list my repositories</code></div><div class="accountToolCard"><span class="accountToolIcon">▧</span><b>Image generator</b><div class="accountToolStatus">Create images directly from the chat.</div><code>@image futuristic AI robot</code></div><div class="accountToolCard"><span class="accountToolIcon">▶</span><b>YouTube</b><div class="accountToolStatus">Find helpful videos without leaving Tivals AI.</div><code>@youtube Python tutorial</code></div><div class="accountToolCard"><span class="accountToolIcon">AI</span><b>Website AI</b><div class="accountToolStatus">Business knowledge, domain security and embed settings.</div><code>Open Website AI from the sidebar</code></div></div></div>';
+    modal.innerHTML='<div class="modal connectorModal"><div class="modalTop"><div><h2>Apps & connectors</h2><p class="connectorIntro">Connect your accounts and open Tivals AI tools from one place.</p></div><button class="closeModal" id="closeAccountTools" aria-label="Close apps and connectors">×</button></div><div class="accountToolsGrid"><div class="connectorHeading">Connected accounts</div><div class="accountToolCard telegramTool"><span class="accountToolIcon">✈</span><b>Telegram bot</b><div class="accountToolStatus" id="webTelegramStatus">Checking connection…</div><input class="connectorInput" id="webTelegramToken" type="password" autocomplete="off" placeholder="Paste BotFather token"><div class="accountToolActions"><button class="primary" id="webTelegramConnect">Connect bot</button><button id="webTelegramTest" hidden>Test</button><button id="webTelegramDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard tiktokTool"><span class="accountToolIcon">♪</span><b>TikTok</b><div class="accountToolStatus" id="webTikTokStatus">Checking connection…</div><code>@tiktok show my stats</code><div class="accountToolActions"><button class="primary" id="webTikTokConnect">Connect</button><button id="webTikTokDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard"><span class="accountToolIcon">✉</span><b>Gmail & monitor</b><div class="accountToolStatus">Read, find and send email with your permission.</div><code>@gmail check my latest emails</code><div class="accountToolActions"><button class="primary" id="openGmailConnector">Open Gmail</button></div></div><div class="accountToolCard"><span class="accountToolIcon">⌘</span><b>GitHub</b><div class="accountToolStatus">Inspect repositories and work with code.</div><code>@github list my repositories</code><div class="accountToolActions"><button class="primary" id="openGithubConnector">Connect GitHub</button></div></div><div class="connectorHeading">Built-in tools</div><div class="accountToolCard"><span class="accountToolIcon">▧</span><b>Image generator</b><div class="accountToolStatus">Create images directly from the chat.</div><code>@image futuristic AI robot</code></div><div class="accountToolCard"><span class="accountToolIcon">▶</span><b>YouTube</b><div class="accountToolStatus">Find helpful videos without leaving Tivals AI.</div><code>@youtube Python tutorial</code></div><div class="accountToolCard"><span class="accountToolIcon">AI</span><b>Website AI</b><div class="accountToolStatus">Business knowledge, domain security and embed settings.</div><div class="accountToolActions"><button class="primary" id="openWebsiteAI">Manage Website AI</button></div></div></div></div>';
     document.body.appendChild(modal);
 
     document.querySelector('#closeAccountTools').onclick=function(){modal.classList.remove('open')};
     modal.onclick=function(e){if(e.target===modal)modal.classList.remove('open')};
     document.querySelector('#webTikTokConnect').onclick=connectTikTok;
     document.querySelector('#webTikTokDisconnect').onclick=disconnectTikTok;
+    document.querySelector('#webTelegramConnect').onclick=connectTelegram;
+    document.querySelector('#webTelegramTest').onclick=testTelegram;
+    document.querySelector('#webTelegramDisconnect').onclick=disconnectTelegram;
+    document.querySelector('#openGmailConnector').onclick=function(){modal.classList.remove('open');document.querySelector('#gmailBtn')?.click()};
+    document.querySelector('#openGithubConnector').onclick=function(){modal.classList.remove('open');document.querySelector('#githubConnect')?.click()};
+    document.querySelector('#openWebsiteAI').onclick=function(){modal.classList.remove('open');window.TivalsWidgetDashboard?.open()};
 
     var side=document.querySelector('.sideTools');
     if(side&&!document.querySelector('#sideAccountTools')){
@@ -73,7 +79,36 @@
     ensureUI();
     document.querySelector('#accountToolsModal')?.classList.add('open');
     closeSide();
-    await refreshTikTok();
+    await Promise.all([refreshTikTok(),refreshTelegram()]);
+  }
+
+  async function refreshTelegram(){
+    ensureUI();
+    var status=document.querySelector('#webTelegramStatus'),connect=document.querySelector('#webTelegramConnect'),test=document.querySelector('#webTelegramTest'),disconnect=document.querySelector('#webTelegramDisconnect'),token=document.querySelector('#webTelegramToken');
+    if(!status)return;
+    try{
+      var d=await api('web_telegram_status');
+      if(d.connected){status.textContent='Connected as '+(d.connection?.account_label||'Telegram bot')+'. The bot webhook is active.';connect.textContent='Replace bot';test.hidden=false;disconnect.hidden=false;token.placeholder='Paste a new BotFather token to replace it'}
+      else{status.textContent='Not connected. Create a bot with @BotFather, then paste its token here.';connect.textContent='Connect bot';test.hidden=true;disconnect.hidden=true}
+    }catch(e){status.textContent=e.message;test.hidden=true;disconnect.hidden=true}
+  }
+
+  async function connectTelegram(){
+    var token=document.querySelector('#webTelegramToken'),status=document.querySelector('#webTelegramStatus'),button=document.querySelector('#webTelegramConnect');
+    if(!token.value.trim()){status.textContent='Paste the bot token you received from @BotFather.';token.focus();return}
+    button.disabled=true;status.textContent='Verifying your bot with Telegram…';
+    try{var d=await api('web_telegram_connect',{bot_token:token.value.trim()});token.value='';status.textContent='Connected as '+(d.account_label||'Telegram bot')+'. Send /start to your bot to test it.';await refreshTelegram()}
+    catch(e){status.textContent=e.message}finally{button.disabled=false}
+  }
+
+  async function testTelegram(){
+    var status=document.querySelector('#webTelegramStatus');status.textContent='Testing the Telegram webhook…';
+    try{var d=await api('web_telegram_test');status.textContent=d.webhook?.last_error?'Telegram reported: '+d.webhook.last_error:'Connection works. Open your bot in Telegram and send /start.'}catch(e){status.textContent=e.message}
+  }
+
+  async function disconnectTelegram(){
+    var status=document.querySelector('#webTelegramStatus');status.textContent='Disconnecting…';
+    try{await api('web_telegram_disconnect');await refreshTelegram()}catch(e){status.textContent=e.message}
   }
 
   async function connectTikTok(){
@@ -184,9 +219,9 @@
       history.replaceState({},'',location.pathname+(q.toString()?'?'+q:'')+location.hash);
       setTimeout(function(){show('ai','### TikTok connected ✓\n\nYour TikTok account is now available to Tivals AI. Try @tiktok show my stats or @tiktok show my latest videos.')},350);
     }
-    setTimeout(refreshTikTok,700);
+    setTimeout(function(){refreshTikTok();refreshTelegram()},700);
   }
 
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-  window.TivalsAccountTools={open:openTools,refreshTikTok:refreshTikTok,connectTikTok:connectTikTok,disconnectTikTok:disconnectTikTok};
+  window.TivalsAccountTools={open:openTools,refreshTikTok:refreshTikTok,connectTikTok:connectTikTok,disconnectTikTok:disconnectTikTok,refreshTelegram:refreshTelegram};
 })();
