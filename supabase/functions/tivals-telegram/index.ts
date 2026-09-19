@@ -181,6 +181,115 @@ async function handleGmail(chatId: number|string, tg: number, intent: {query:str
   const d = await oauthCall("gmail_messages", tg, "gmail", { query: intent.query, max_results: 5 });
   await sendHtml(chatId, formatEmails(d, intent.title), business);
 }
+type ToolRequest = { tool: string; request: string };
+
+function parseToolRequest(text: string): ToolRequest | null {
+  const m = String(text || "").trim().match(/^@([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+  if (!m) return null;
+  return { tool: String(m[1] || "").toLowerCase(), request: String(m[2] || "").trim() };
+}
+
+function toolsHelpText() {
+  return [
+    "**Choose a Tivals AI tool with @tool**",
+    "",
+    "• `@tiktok check my TikTok account`",
+    "• `@gmail check my latest emails`",
+    "• `@github check my GitHub account`",
+    "• `@youtube Python tutorial`",
+    "• `@image futuristic AI robot`",
+    "• `@ai explain recursion`",
+    "",
+    "Connect account tools first with /connect."
+  ].join("\n");
+}
+
+function formatTikTokProfile(data: any) {
+  const p = data?.profile || {};
+  const scope = String(data?.scope || "");
+  const lines = [
+    "🎵 **TikTok account**",
+    "",
+    `**Display name:** ${String(p.display_name || data?.account || "TikTok account")}`,
+  ];
+  if (p.open_id) lines.push(`**Open ID:** ${String(p.open_id)}`);
+  lines.push("", `**Connected permission:** ${scope || "user.info.basic"}`);
+  return lines.join("\n");
+}
+
+async function handleToolRequest(chatId: number|string, tg: number, toolReq: ToolRequest, business?: string) {
+  const tool = toolReq.tool;
+  const request = toolReq.request;
+
+  if (tool === "tools" || tool === "help") {
+    await sendFormatted(chatId, toolsHelpText(), business);
+    return "tools";
+  }
+
+  if (tool === "tiktok") {
+    if (!tg) throw new Error("Telegram user ID is unavailable.");
+    if (/\b(followers?|following|likes?|statistics|stats|video count)\b/i.test(request)) {
+      await sendFormatted(chatId, "🎵 Your current TikTok connection only has `user.info.basic`. TikTok statistics require the `user.info.stats` scope.", business);
+      return "tiktok-scope";
+    }
+    if (/\b(videos?|posts?)\b/i.test(request)) {
+      await sendFormatted(chatId, "🎵 Reading your TikTok videos requires the `video.list` scope. Your current connection only has `user.info.basic`.", business);
+      return "tiktok-scope";
+    }
+    const d = await oauthCall("tiktok_profile", tg, "tiktok");
+    await sendFormatted(chatId, formatTikTokProfile(d), business);
+    return "tiktok";
+  }
+
+  if (tool === "gmail" || tool === "email") {
+    if (!tg) throw new Error("Telegram user ID is unavailable.");
+    const intent = gmailIntent(request || "check my latest emails");
+    const resolved = intent.matched ? intent : { matched: true, query: request, title: request ? `Email search: ${request}` : "Latest emails" };
+    await handleGmail(chatId, tg, resolved, business);
+    return "gmail";
+  }
+
+  if (tool === "github") {
+    if (!tg) throw new Error("Telegram user ID is unavailable.");
+    const d = await oauthCall("status", tg);
+    const list = Array.isArray(d?.connections) ? d.connections : [];
+    const gh = list.find((x:any) => x?.provider === "github");
+    if (!gh) throw new Error("GitHub is not connected. Use /connect first.");
+    await sendFormatted(chatId, `🐙 **GitHub account**\n\nConnected as **${String(gh.account_label || "GitHub account")}**.`, business);
+    return "github";
+  }
+
+  if (tool === "youtube" || tool === "yt") {
+    if (!request) {
+      await sendFormatted(chatId, "Usage: `@youtube what you want to search`", business);
+      return "youtube-help";
+    }
+    await sendHtml(chatId, ytHtml(request, await searchYouTube(request)), business);
+    return "youtube";
+  }
+
+  if (tool === "image" || tool === "picture") {
+    if (!request) {
+      await sendFormatted(chatId, "Usage: `@image describe the image you want`", business);
+      return "image-help";
+    }
+    await telegram("sendChatAction", { chat_id: chatId, action: "upload_photo", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
+    await sendPhoto(chatId, await generateImage(request), request, business);
+    return "image";
+  }
+
+  if (tool === "ai" || tool === "chat") {
+    if (!request) {
+      await sendFormatted(chatId, "Usage: `@ai ask your question`", business);
+      return "ai-help";
+    }
+    await sendFormatted(chatId, await askTivalsAI(request), business);
+    return "ai";
+  }
+
+  await sendFormatted(chatId, `⚠️ Unknown tool **@${tool}**.\n\n${toolsHelpText()}`, business);
+  return "unknown-tool";
+}
 
 async function askTivalsAI(message: string) {
   const c = new AbortController();
@@ -384,15 +493,19 @@ Deno.serve(async (req: Request) => {
     if (!text) return json({ ok:true, ignored:true });
 
     if (text === "/start" || text.startsWith("/start ")) {
-      await sendFormatted(chatId, "👋 **Hi! I'm Tivals AI.**\n\nAsk questions, check Gmail, search YouTube, generate images, analyze photos, or connect Gmail, GitHub, and TikTok with /connect.", business);
+      await sendFormatted(chatId, "👋 **Hi! I'm Tivals AI.**\n\nAsk questions, use explicit tools like `@tiktok`, `@gmail`, or `@youtube`, generate images, analyze photos, or connect Gmail, GitHub, and TikTok with /connect.", business);
       return json({ok:true});
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, or TikTok\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n\nYou can also say “check my emails”, “emails from SPU”, or “search my emails for application”.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, or TikTok\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/tools — Show @tool examples\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
       return json({ok:true});
     }
 
+    if (text === "/tools") {
+      await sendFormatted(chatId, toolsHelpText(), business);
+      return json({ok:true,route:"tools"});
+    }
     if (text === "/connect") {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
       await connectMenu(chatId,tg,business);
@@ -415,6 +528,12 @@ Deno.serve(async (req: Request) => {
     }
 
     await telegram("sendChatAction", { chat_id: chatId, action: "typing", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
+
+    const toolReq = parseToolRequest(text);
+    if (toolReq) {
+      const route = await handleToolRequest(chatId, tg, toolReq, business);
+      return json({ok:true, route:`tool-${route}`});
+    }
 
     const gi = gmailIntent(text);
     if (gi.matched) {
