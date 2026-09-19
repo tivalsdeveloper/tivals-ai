@@ -30,9 +30,72 @@ async function telegram(token: string, method: string, payload: Record<string, u
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed.`);
   return d;
 }
+function esc(v: string) {
+  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function mdToHtml(input: string) {
+  let raw = String(input || "").replace(/\r\n/g, "\n").trim();
+  if (!raw) return "I couldn't generate a response.";
+
+  const codeBlocks: string[] = [];
+  const addCodeBlock = (language: string, code: string) => {
+    const token = `@@TIVALS_CODE_${codeBlocks.length}@@`;
+    const lang = String(language || "").replace(/[^a-zA-Z0-9_+.#-]/g, "");
+    const cls = lang ? ` class="language-${lang}"` : "";
+    codeBlocks.push(`<pre><code${cls}>${esc(String(code || "").trim())}</code></pre>`);
+    return token;
+  };
+
+  raw = raw.replace(/```([a-zA-Z0-9_+.#-]*)\s*\n([\s\S]*?)```/g, (_m, lang, code) => addCodeBlock(lang, code));
+  raw = raw.replace(/```\s*\n?([\s\S]*?)```/g, (_m, code) => addCodeBlock("", code));
+  raw = raw.replace(/```([a-zA-Z0-9_+.#-]*)\s*\n([\s\S]+)$/g, (_m, lang, code) => addCodeBlock(lang, code));
+
+  let t = esc(raw)
+    .replace(/^\s*(?:---+|___+|\*\*\*+)\s*$/gm, "")
+    .replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/__([^_\n]+)__/g, "<b>$1</b>")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/^\s*(\d+)\.\s+/gm, "$1. ")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\n{3,}/g, "\n\n");
+
+  codeBlocks.forEach((block, i) => { t = t.replace(`@@TIVALS_CODE_${i}@@`, block); });
+  return t.trim();
+}
+function splitHtml(text: string, limit = 3500) {
+  if (text.length <= limit) return [text];
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf("\n\n", limit);
+    if (cut < 1800) cut = rest.lastIndexOf("\n", limit);
+    if (cut < 1800) cut = rest.lastIndexOf(" ", limit);
+    if (cut < 1800) cut = limit;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
 async function reply(token: string, chatId: number, text: string) {
-  const clean = String(text || "I could not create a response.").replace(/```/g, "").trim();
-  for (let i = 0; i < clean.length; i += 3800) await telegram(token, "sendMessage", { chat_id: chatId, text: clean.slice(i, i + 3800), link_preview_options: { is_disabled: true } });
+  const html = mdToHtml(text);
+  for (const part of splitHtml(html)) {
+    try {
+      await telegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: part,
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true }
+      });
+    } catch {
+      await telegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: part.replace(/<[^>]+>/g, ""),
+        link_preview_options: { is_disabled: true }
+      });
+    }
+  }
 }
 
 Deno.serve(async (req: Request) => {
