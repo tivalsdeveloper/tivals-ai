@@ -109,6 +109,96 @@ async function saveConnection(row: any, provider: string, info: any) {
   if (error) throw error;
   await sb.from("telegram_oauth_states").delete().eq("state", row.state);
 }
+async function webUser(req: Request) {
+  const auth = req.headers.get("authorization") || "";
+  const token = auth.replace(/^Bearer\s+/i, "");
+  if (!token) return null;
+  const { data, error } = await sb.auth.getUser(token);
+  if (error || !data?.user) return null;
+  return data.user;
+}
+
+async function webStateRow(state: string, provider: string) {
+  const { data, error } = await sb.from("tivals_web_oauth_states")
+    .select("*").eq("state", state).eq("provider", provider).maybeSingle();
+  if (error || !data || new Date(data.expires_at).getTime() < Date.now()) return null;
+  return data;
+}
+
+async function createWebState(userId: string, provider: string) {
+  const state = "web_" + randomState();
+  await sb.from("tivals_web_oauth_states").delete().lt("expires_at", new Date().toISOString());
+  const { error } = await sb.from("tivals_web_oauth_states").insert({
+    state, user_id: userId, provider,
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  });
+  if (error) throw error;
+  return state;
+}
+
+async function saveWebConnection(row: any, provider: string, info: any) {
+  const { error } = await sb.from("tivals_web_oauth_connections").upsert({
+    user_id: row.user_id,
+    provider,
+    provider_user_id: info.providerUserId || null,
+    account_label: info.label || null,
+    access_token_enc: await encrypt(info.access || ""),
+    refresh_token_enc: info.refresh ? await encrypt(info.refresh) : null,
+    token_type: info.tokenType || null,
+    scope: info.scope || null,
+    expires_at: info.expiresAt || null,
+    metadata: info.metadata || {},
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id,provider" });
+  if (error) throw error;
+  await sb.from("tivals_web_oauth_states").delete().eq("state", row.state);
+}
+
+async function webTikTokConnection(userId: string) {
+  const { data, error } = await sb.from("tivals_web_oauth_connections")
+    .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata")
+    .eq("user_id", userId).eq("provider", "tiktok").maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("TikTok is not connected. Open TikTok tools and connect your account.");
+  return data;
+}
+
+async function webTikTokProfile(userId: string) {
+  const conn = await webTikTokConnection(userId);
+  const token = await decrypt(String(conn.access_token_enc || ""));
+  const scope = String(conn.scope || "");
+  const granted = scope.split(",").map((x:string) => x.trim());
+  const fieldsList = ["open_id","union_id","avatar_url","display_name"];
+  if (granted.includes("user.info.stats")) fieldsList.push("follower_count","following_count","likes_count","video_count");
+  const params = new URLSearchParams({ fields: fieldsList.join(",") });
+  const r = await fetch("https://open.tiktokapis.com/v2/user/info/?" + params.toString(), {
+    headers: { authorization: "Bearer " + token },
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error?.message || ("TikTok request failed (" + r.status + ")."));
+  const u = d?.data?.user || {};
+  return {
+    account: conn.account_label || u.display_name || "TikTok account",
+    scope,
+    profile: { display_name: u.display_name || conn.account_label || "TikTok account", avatar_url: u.avatar_url || null },
+    stats: { follower_count:u.follower_count ?? null, following_count:u.following_count ?? null, likes_count:u.likes_count ?? null, video_count:u.video_count ?? null }
+  };
+}
+
+async function webTikTokVideos(userId: string, maxResults = 5) {
+  const conn = await webTikTokConnection(userId);
+  const scope = String(conn.scope || "");
+  if (!scope.split(",").map((x:string)=>x.trim()).includes("video.list")) throw new Error("TikTok video access is not authorized. Reconnect TikTok and approve video.list.");
+  const token = await decrypt(String(conn.access_token_enc || ""));
+  const params = new URLSearchParams({ fields:"id,title,video_description,duration,cover_image_url,embed_link,create_time" });
+  const r = await fetch("https://open.tiktokapis.com/v2/video/list/?" + params.toString(), {
+    method:"POST", headers:{ authorization:"Bearer " + token, "content-type":"application/json" },
+    body:JSON.stringify({ max_count:Math.max(1,Math.min(20,Number(maxResults||5))) }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.error?.message || ("TikTok video request failed (" + r.status + ")."));
+  return { account:conn.account_label || "TikTok account", scope, videos:Array.isArray(d?.data?.videos)?d.data.videos:[], has_more:Boolean(d?.data?.has_more) };
+}
 function ghB64u(b: Uint8Array) {
   let x = "";
   for (const v of b) x += String.fromCharCode(v);
@@ -397,7 +487,8 @@ Deno.serve(async (req: Request) => {
     if (oauthError) return page(false, "TikTok connection failed", oauthDescription || oauthError);
 
     const st = await stateRow(state, "tiktok");
-    if (!st || !code) return page(false, "TikTok connection link is no longer valid", "Return to Telegram, run /connect again, and tap the newest Connect TikTok button. TikTok links are now kept valid for up to 60 minutes.");
+    const webSt = st ? null : await webStateRow(state, "tiktok");
+    if ((!st && !webSt) || !code) return page(false, "TikTok connection link is no longer valid", "The connection link is invalid or expired. Start a new TikTok connection and try again.");
 
     try {
       if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) throw new Error("TikTok app credentials are not configured.");
@@ -430,7 +521,7 @@ Deno.serve(async (req: Request) => {
       const user = profileJson?.data?.user || {};
       const label = String(user.display_name || "TikTok account");
 
-      await saveConnection(st, "tiktok", {
+      const info = {
         providerUserId: String(token.open_id || user.open_id || ""),
         label,
         access: String(token.access_token || ""),
@@ -445,8 +536,14 @@ Deno.serve(async (req: Request) => {
           avatar_url: user.avatar_url || null,
           refresh_expires_in: Number(token.refresh_expires_in || 0) || null,
         },
-      });
+      };
 
+      if (webSt) {
+        await saveWebConnection(webSt, "tiktok", info);
+        return Response.redirect(STATIC_BASE + "/?tiktok=connected", 302);
+      }
+
+      await saveConnection(st, "tiktok", info);
       return page(true, "TikTok connected", "Connected.", label);
     } catch (e) {
       return page(false, "TikTok connection failed", String((e)?.message || e).replace(/[<>&]/g, ""));
@@ -497,6 +594,33 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  if (action === "create_web_tiktok_link") {
+    const user = await webUser(req);
+    if (!user) return json({ error: "Sign in to Tivals AI first." }, 401);
+    try {
+      if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) throw new Error("TikTok connection is not configured yet.");
+      const state = await createWebState(user.id, "tiktok");
+      const params = new URLSearchParams({ client_key:TIKTOK_CLIENT_KEY, response_type:"code", scope:TIKTOK_SCOPES, redirect_uri:TIKTOK_REDIRECT_URI, state });
+      return json({ url:"https://www.tiktok.com/v2/auth/authorize/?" + params.toString() });
+    } catch (e) { return json({ error:String((e as Error)?.message || e) }, 500); }
+  }
+
+  if (action === "web_tiktok_status" || action === "web_tiktok_profile" || action === "web_tiktok_videos" || action === "web_tiktok_disconnect") {
+    const user = await webUser(req);
+    if (!user) return json({ error:"Sign in to Tivals AI first." }, 401);
+    try {
+      if (action === "web_tiktok_status") {
+        const { data, error } = await sb.from("tivals_web_oauth_connections").select("provider,account_label,scope,expires_at,updated_at,metadata").eq("user_id",user.id).eq("provider","tiktok").maybeSingle();
+        if (error) throw error;
+        return json({ connected:Boolean(data), connection:data || null });
+      }
+      if (action === "web_tiktok_profile") return json(await webTikTokProfile(user.id));
+      if (action === "web_tiktok_videos") return json(await webTikTokVideos(user.id, Number(body.max_results || 5)));
+      const { error } = await sb.from("tivals_web_oauth_connections").delete().eq("user_id",user.id).eq("provider","tiktok");
+      if (error) throw error;
+      return json({ ok:true });
+    } catch (e) { return json({ error:String((e as Error)?.message || e) }, 400); }
+  }
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
 
