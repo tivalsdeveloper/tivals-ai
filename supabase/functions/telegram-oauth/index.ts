@@ -10,7 +10,7 @@ const TIKTOK_CLIENT_KEY = Deno.env.get("TIKTOK_CLIENT_KEY") || "";
 const TIKTOK_CLIENT_SECRET = Deno.env.get("TIKTOK_CLIENT_SECRET") || "";
 const STATIC_BASE = "https://ai.tivalsdeveloper.site";
 const TIKTOK_REDIRECT_URI = `${SUPABASE_URL}/functions/v1/telegram-oauth/tiktok/callback`;
-const TIKTOK_SCOPES = Deno.env.get("TIKTOK_SCOPES") || "user.info.basic";
+const TIKTOK_SCOPES = Deno.env.get("TIKTOK_SCOPES") || "user.info.basic,user.info.stats,video.list";
 const GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
@@ -171,25 +171,67 @@ async function tiktokProfile(tg: number) {
   const conn = await tiktokConnection(tg);
   const token = await decrypt(String(conn.access_token_enc || ""));
   if (!token) throw new Error("TikTok access token is missing. Reconnect TikTok with /connect.");
-  const fields = new URLSearchParams({ fields: "open_id,union_id,avatar_url,display_name" });
-  const r = await fetch(`https://open.tiktokapis.com/v2/user/info/?${fields.toString()}`, {
-    headers: { authorization: `Bearer ${token}` },
+
+  const scope = String(conn.scope || "");
+  const granted = scope.split(",").map((x:string) => x.trim());
+  const fieldList = ["open_id", "union_id", "avatar_url", "display_name"];
+  if (granted.includes("user.info.stats")) {
+    fieldList.push("follower_count", "following_count", "likes_count", "video_count");
+  }
+
+  const fields = new URLSearchParams({ fields: fieldList.join(",") });
+  const r = await fetch("https://open.tiktokapis.com/v2/user/info/?" + fields.toString(), {
+    headers: { authorization: "Bearer " + token },
   });
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 || r.status === 403) {
     throw new Error("TikTok permission has expired or is no longer valid. Use /disconnect_tiktok, then /connect to reconnect.");
   }
-  if (!r.ok) throw new Error(d?.error?.message || `TikTok request failed (${r.status}).`);
+  if (!r.ok) throw new Error(d?.error?.message || ("TikTok request failed (" + r.status + ")."));
+
   const user = d?.data?.user || {};
   return {
     account: conn.account_label || user.display_name || "TikTok account",
-    scope: conn.scope || "",
+    scope,
     profile: {
       display_name: user.display_name || conn.account_label || "TikTok account",
       avatar_url: user.avatar_url || conn?.metadata?.avatar_url || null,
       open_id: user.open_id || conn?.metadata?.open_id || null,
       union_id: user.union_id || conn?.metadata?.union_id || null,
     },
+    stats: {
+      follower_count: user.follower_count ?? null,
+      following_count: user.following_count ?? null,
+      likes_count: user.likes_count ?? null,
+      video_count: user.video_count ?? null,
+    },
+  };
+}
+
+async function tiktokVideos(tg: number, maxResults = 5) {
+  const conn = await tiktokConnection(tg);
+  const scope = String(conn.scope || "");
+  const granted = scope.split(",").map((x:string) => x.trim());
+  if (!granted.includes("video.list")) throw new Error("TikTok video access is not authorized yet. Reconnect with /connect and approve video.list.");
+  const token = await decrypt(String(conn.access_token_enc || ""));
+  if (!token) throw new Error("TikTok access token is missing. Reconnect TikTok with /connect.");
+
+  const maxCount = Math.max(1, Math.min(20, Number(maxResults || 5)));
+  const fields = new URLSearchParams({ fields: "id,title,video_description,duration,cover_image_url,embed_link,create_time" });
+  const r = await fetch("https://open.tiktokapis.com/v2/video/list/?" + fields.toString(), {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ max_count: maxCount }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) throw new Error("TikTok video permission has expired or is not authorized. Reconnect TikTok with /connect.");
+  if (!r.ok) throw new Error(d?.error?.message || ("TikTok video request failed (" + r.status + ")."));
+  return {
+    account: conn.account_label || "TikTok account",
+    scope,
+    videos: Array.isArray(d?.data?.videos) ? d.data.videos : [],
+    cursor: d?.data?.cursor ?? null,
+    has_more: Boolean(d?.data?.has_more),
   };
 }
 async function gmailConnection(tg: number) {
@@ -404,6 +446,14 @@ Deno.serve(async (req: Request) => {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
       return json(await tiktokProfile(tg));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
+  if (action === "tiktok_videos") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await tiktokVideos(tg, Number(body.max_results || 5)));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
