@@ -522,7 +522,40 @@ Deno.serve(async (req: Request) => {
     if (!text) return json({ ok:true, ignored:true });
 
     if (text === "/start" || text.startsWith("/start ")) {
-      await sendFormatted(chatId, "👋 **Hi! I'm Tivals AI.**\n\nAsk questions, use explicit tools like `@tiktok`, `@gmail`, or `@youtube`, generate images, analyze photos, or connect Gmail, GitHub, and TikTok with /connect.", business);
+      await sendFormatted(chatId, [
+        "👋 **Welcome to Tivals AI**",
+        "",
+        "Tivals AI is your Telegram AI assistant. You can chat normally, use connected accounts, search, generate images, and choose tools explicitly with `@tool`.",
+        "",
+        "**Quick start**",
+        "• Ask anything normally: `Teach me Python`",
+        "• See available tools: `/tools`",
+        "• Connect Gmail, GitHub, or TikTok: `/connect`",
+        "• View connected accounts: `/accounts`",
+        "",
+        "**Available tools**",
+        "• `@tiktok check my TikTok account`",
+        "• `@tiktok show my stats`",
+        "• `@tiktok show my latest videos`",
+        "• `@gmail check my latest emails`",
+        "• `@github check my GitHub account`",
+        "• `@youtube Python tutorial`",
+        "• `@image futuristic AI robot`",
+        "• `@ai explain recursion`",
+        "",
+        "**Photos & images**",
+        "• Send a photo and Tivals AI can analyze it.",
+        "• Ask `@image ...` to generate an image.",
+        "",
+        "**Account commands**",
+        "• `/connect` — connect accounts",
+        "• `/accounts` — show connected accounts",
+        "• `/disconnect_gmail`",
+        "• `/disconnect_github`",
+        "• `/disconnect_tiktok`",
+        "",
+        "Use `/help` anytime for more commands."
+      ].join("\n"), business);
       return json({ok:true});
     }
 
