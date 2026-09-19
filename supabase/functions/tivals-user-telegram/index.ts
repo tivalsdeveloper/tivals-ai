@@ -98,17 +98,55 @@ async function reply(token: string, chatId: number, text: string) {
   }
 }
 
+async function paidOrOwner(tg:number) {
+  const {data:admin}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
+  if(admin) return true;
+  const {data}=await sb.from("telegram_subscriptions")
+    .select("plan,status,subscription_expiration_date")
+    .eq("telegram_user_id",tg).maybeSingle();
+  return Boolean(data && data.status==="active" && ["basic","pro"].includes(data.plan) && new Date(data.subscription_expiration_date).getTime()>Date.now());
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const owner = new URL(req.url).searchParams.get("owner") || "";
-  if (!/^[0-9a-f-]{36}$/i.test(owner)) return json({ error: "Invalid connector" }, 400);
-  const { data: conn, error } = await sb.from("tivals_web_oauth_connections")
-    .select("access_token_enc,refresh_token_enc,account_label")
-    .eq("user_id", owner).eq("provider", "telegram").maybeSingle();
-  if (error || !conn) return json({ error: "Connector not found" }, 404);
+  const u = new URL(req.url);
+  const owner = u.searchParams.get("owner") || "";
+  const tgOwner = Number(u.searchParams.get("tg_owner") || 0);
+
+  let conn:any=null;
+  let paywallOwner=0;
+
+  if (tgOwner > 0) {
+    const {data,error}=await sb.from("telegram_owned_bots")
+      .select("token_enc,webhook_secret_enc,account_label,is_active")
+      .eq("telegram_user_id",tgOwner).maybeSingle();
+    if(error || !data || !data.is_active) return json({error:"Connector not found"},404);
+    conn={
+      access_token_enc:data.token_enc,
+      refresh_token_enc:data.webhook_secret_enc,
+      account_label:data.account_label
+    };
+    paywallOwner=tgOwner;
+  } else {
+    if (!/^[0-9a-f-]{36}$/i.test(owner)) return json({ error: "Invalid connector" }, 400);
+    const { data, error } = await sb.from("tivals_web_oauth_connections")
+      .select("access_token_enc,refresh_token_enc,account_label")
+      .eq("user_id", owner).eq("provider", "telegram").maybeSingle();
+    if (error || !data) return json({ error: "Connector not found" }, 404);
+    conn=data;
+  }
+
   try {
     const [token, secret] = await Promise.all([decrypt(String(conn.access_token_enc || "")), decrypt(String(conn.refresh_token_enc || ""))]);
     if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
+
+    if (paywallOwner && !(await paidOrOwner(paywallOwner))) {
+      const update = await req.json().catch(()=>({}));
+      const chatId = Number(update?.message?.chat?.id || 0);
+      if (chatId) await reply(token, chatId, "This bot's Tivals AI subscription is inactive. Please ask the bot owner to renew their Tivals AI plan.");
+      return json({ ok:true, route:"subscription-inactive" });
+    }
+
     const update = await req.json();
     const message = update?.message;
     const chatId = Number(message?.chat?.id || 0);
