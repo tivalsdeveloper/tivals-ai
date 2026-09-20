@@ -97,30 +97,26 @@ async function botApi(token:string, method:string, payload?:Record<string,unknow
   return d?.result;
 }
 async function connectOwnedBot(tg:number,rawToken:string) {
-  const access=await paidAccess(tg);
+  await paidAccess(tg);
   const token=String(rawToken||"").trim();
   if(!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid BotFather token.");
   const me=await botApi(token,"getMe");
   if(!me?.is_bot) throw new Error("This token does not belong to a Telegram bot.");
+
+  const botId=Number(me.id);
+  const {data:claimed,error:claimLookupError}=await sb.from("telegram_owned_bots")
+    .select("telegram_user_id")
+    .eq("bot_id",botId)
+    .maybeSingle();
+  if(claimLookupError) throw claimLookupError;
+  if(claimed && Number(claimed.telegram_user_id)!==tg) {
+    throw new Error("This Telegram bot is already connected to another Tivals AI account.");
+  }
+
   const secret=randomSecret();
-  await botApi(token,"setWebhook",{
-    url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
-    secret_token:secret,
-    allowed_updates:["message","business_message","business_connection","callback_query"],
-    drop_pending_updates:false
-  });
-  await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
-  }).catch(()=>null);
-  await botApi(token,"setMyCommands",{commands:[
-    {command:"start",description:"Start Tivals AI"},
-    {command:"app",description:"Open Tivals AI app"},
-    {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
-    {command:"accounts",description:"View connected tools"}
-  ]}).catch(()=>null);
   const {error}=await sb.from("telegram_owned_bots").upsert({
     telegram_user_id:tg,
-    bot_id:Number(me.id),
+    bot_id:botId,
     username:me.username||null,
     account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot"),
     token_enc:await encrypt(token),
@@ -128,7 +124,37 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     is_active:true,
     updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
-  if(error) throw error;
+  if(error) {
+    if(String(error.code||"")==="23505") {
+      throw new Error("This Telegram bot is already connected to another Tivals AI account.");
+    }
+    throw error;
+  }
+
+  try {
+    await botApi(token,"setWebhook",{
+      url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
+      secret_token:secret,
+      allowed_updates:["message","business_message","business_connection","callback_query"],
+      drop_pending_updates:false
+    });
+    await botApi(token,"setChatMenuButton",{
+      menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
+    }).catch(()=>null);
+    await botApi(token,"setMyCommands",{commands:[
+      {command:"start",description:"Start Tivals AI"},
+      {command:"app",description:"Open Tivals AI app"},
+      {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
+      {command:"accounts",description:"View connected tools"}
+    ]}).catch(()=>null);
+  } catch(e) {
+    await sb.from("telegram_owned_bots")
+      .update({is_active:false,updated_at:new Date().toISOString()})
+      .eq("telegram_user_id",tg)
+      .eq("bot_id",botId);
+    throw e;
+  }
+
   return {connected:true,account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot")};
 }
 async function verifyInitData(initData:string,token:string) {
