@@ -81,7 +81,7 @@ async function syncOwnedBotSetup(tg:number) {
   await botApi(token,"setWebhook",{
     url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
     secret_token:secret,
-    allowed_updates:["message","business_message","business_connection"],
+    allowed_updates:["message","business_message","business_connection","callback_query"],
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
@@ -106,7 +106,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
   await botApi(token,"setWebhook",{
     url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
     secret_token:secret,
-    allowed_updates:["message","business_message","business_connection"],
+    allowed_updates:["message","business_message","business_connection","callback_query"],
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
