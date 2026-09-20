@@ -25,7 +25,7 @@ async function syncOwnedBots(){
   for(const row of data||[]){
     try{
       const [token,secret]=await Promise.all([decrypt(String(row.token_enc||"")),decrypt(String(row.webhook_secret_enc||""))]);
-      await botCall(token,"setWebhook",{url:OWNED_WEBHOOK_URL+"?tg_owner="+encodeURIComponent(String(row.telegram_user_id)),secret_token:secret,allowed_updates:["message","business_message","business_connection"],drop_pending_updates:false});
+      await botCall(token,"setWebhook",{url:OWNED_WEBHOOK_URL+"?tg_owner="+encodeURIComponent(String(row.telegram_user_id)),secret_token:secret,allowed_updates:["message","business_message","business_connection","callback_query"],drop_pending_updates:false});
       await botCall(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:APP_URL}}});
       await botCall(token,"setMyCommands",{commands:[
         {command:"start",description:"Start Tivals AI"},
@@ -42,7 +42,7 @@ Deno.serve(async()=>{
   const token=Deno.env.get("TELEGRAM_BOT_TOKEN")||"";
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
   if(!token)return json({ok:false,error:"missing bot token"},500);
-  const allowed_updates=["message","business_message","business_connection"];
+  const allowed_updates=["message","business_message","business_connection","callback_query"];
   const payload:any={url:WEBHOOK_URL,allowed_updates,drop_pending_updates:false};
   if(secret)payload.secret_token=secret;
   const setResult=await botCall(token,"setWebhook",payload);
