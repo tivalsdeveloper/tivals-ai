@@ -120,15 +120,28 @@ async function isMainBotOwner(tg:number) {
   return Boolean(data);
 }
 
-async function mainBusinessConnectionAllowed(businessConnectionId:string) {
-  if (!businessConnectionId) return false;
+async function mainBusinessConnectionOwner(businessConnectionId:string) {
+  if (!businessConnectionId) return 0;
   try {
     const d=await telegram("getBusinessConnection",{business_connection_id:businessConnectionId});
     const businessOwnerId=Number(d?.result?.user?.id||0);
-    return d?.result?.is_enabled!==false && await isMainBotOwner(businessOwnerId);
+    return d?.result?.is_enabled!==false && await isMainBotOwner(businessOwnerId) ? businessOwnerId : 0;
   } catch {
-    return false;
+    return 0;
   }
+}
+
+async function mainBusinessConnectionAllowed(businessConnectionId:string) {
+  return Boolean(await mainBusinessConnectionOwner(businessConnectionId));
+}
+
+async function telegramBusinessProfile(tg:number) {
+  if(!tg) return null;
+  const {data,error}=await sb.from("telegram_business_profiles")
+    .select("business_name,assistant_name,business_details")
+    .eq("telegram_user_id",tg).maybeSingle();
+  if(error) throw error;
+  return data;
 }
 
 async function subscriptionState(tg: number) {
@@ -566,7 +579,7 @@ async function askTivalsAI(message: string, tg = 0) {
   const c = new AbortController();
   const timer = setTimeout(() => c.abort(), 15000);
   try {
-    const settings = await telegramSettings(tg);
+    const [settings,businessProfile] = await Promise.all([telegramSettings(tg),telegramBusinessProfile(tg)]);
     const style = settings.response_style === "concise"
       ? "Reply concisely and focus on the essential answer."
       : settings.response_style === "detailed"
@@ -574,8 +587,8 @@ async function askTivalsAI(message: string, tg = 0) {
       : "Give a balanced, clear answer with enough detail to be useful.";
     const r = await fetch(TIVALS_AI_URL, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "tivals-ai", messages: [{ role: "user", content: message + "\n\nPreference: " + style }] }),
+      headers: { "content-type": "application/json", authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ model: "tivals-ai", business_profile: businessProfile, messages: [{ role: "user", content: message + "\n\nPreference: " + style }] }),
       signal: c.signal
     });
     const d = await r.json().catch(() => ({}));
@@ -785,13 +798,15 @@ Deno.serve(async (req: Request) => {
   if (bm && (bm?.sender_business_bot || bm?.via_bot || bm?.from?.is_bot)) {
     return json({ ok: true, ignored: true, reason: "outgoing-business-message" });
   }
-  if (bm && !(await mainBusinessConnectionAllowed(String(bm?.business_connection_id||"")))) {
+  const businessOwnerId=bm ? await mainBusinessConnectionOwner(String(bm?.business_connection_id||"")) : 0;
+  if (bm && !businessOwnerId) {
     return json({ok:true,route:"business-owner-rejected"});
   }
   const message = bm || update?.message;
   const business = bm?.business_connection_id || undefined;
   const chatId = message?.chat?.id;
   const tg = Number(message?.from?.id || 0);
+  const effectiveTg = businessOwnerId || tg;
   if (!chatId) return json({ ok: true, ignored: true });
 
   if (message?.successful_payment) {
@@ -814,7 +829,7 @@ Deno.serve(async (req: Request) => {
   try {
     if (photos.length || doc) {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
-      const quota = await consumeUsage(tg, "ai");
+      const quota = await consumeUsage(effectiveTg, "ai");
       if (!quota.ok) {
         await sendLimitReached(chatId, quota.plan as PlanName, "ai", business);
         return json({ok:true,route:"vision-limit"});
@@ -930,14 +945,14 @@ Deno.serve(async (req: Request) => {
 
     const toolReq = parseToolRequest(text);
     if (toolReq) {
-      const route = await handleToolRequest(chatId, tg, toolReq, business);
+      const route = await handleToolRequest(chatId, effectiveTg, toolReq, business);
       return json({ok:true, route:`tool-${route}`});
     }
 
     const gi = gmailIntent(text);
     if (gi.matched) {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
-      await handleGmail(chatId,tg,gi,business);
+      await handleGmail(chatId,effectiveTg,gi,business);
       return json({ok:true,route:"gmail"});
     }
 
@@ -950,7 +965,7 @@ Deno.serve(async (req: Request) => {
     const img = imagePrompt(text);
     if (img) {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
-      const quota = await consumeUsage(tg, "image");
+      const quota = await consumeUsage(effectiveTg, "image");
       if (!quota.ok) {
         await sendLimitReached(chatId, quota.plan as PlanName, "image", business);
         return json({ok:true,route:"image-limit-normal"});
@@ -966,7 +981,7 @@ Deno.serve(async (req: Request) => {
       await sendLimitReached(chatId, aiQuota.plan as PlanName, "ai", business);
       return json({ok:true,route:"ai-limit-normal"});
     }
-    await sendFormatted(chatId,await askTivalsAI(text,tg),business);
+    await sendFormatted(chatId,await askTivalsAI(text,effectiveTg),business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
