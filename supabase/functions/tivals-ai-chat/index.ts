@@ -11,7 +11,7 @@ const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
-const VERSION = 26;
+const VERSION = 27;
 
 type WidgetConfig = {
   public_key: string;
@@ -108,6 +108,19 @@ function widgetSystem(config: WidgetConfig) {
     config.instructions && `OWNER INSTRUCTIONS: ${config.instructions}`,
     "Keep answers concise, friendly, and suitable for website visitors."
   ].filter(Boolean).join("\n\n").slice(0, 14000);
+}
+
+function telegramBusinessSystem(value:any) {
+  const businessName=String(value?.business_name||"").trim().slice(0,120);
+  const assistantName=String(value?.assistant_name||"Tivals AI").trim().slice(0,80) || "Tivals AI";
+  const details=String(value?.business_details||"").trim().slice(0,8000);
+  if(!businessName) return "";
+  return [
+    `Your name is ${assistantName}. You are the Telegram business assistant for ${businessName}.`,
+    "Use the verified business details below as the source of truth. Never invent prices, products, services, opening hours, policies, contact details, availability or guarantees. If the answer is missing, say you do not have that detail and suggest contacting the business.",
+    details && `BUSINESS DETAILS: ${details}`,
+    "Be helpful, professional, concise and suitable for Telegram customers."
+  ].filter(Boolean).join("\n\n");
 }
 
 function cleanMessages(v: unknown) {
@@ -690,13 +703,17 @@ Deno.serve(async (req: Request) => {
   try { body = await req.json(); }
   catch { return json({ error: "Invalid JSON request." }, 400); }
 
+  const serviceKey=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+  const internalRequest=Boolean(serviceKey && req.headers.get("authorization")===`Bearer ${serviceKey}`);
+  const telegramBusiness=internalRequest ? telegramBusinessSystem(body?.business_profile) : "";
+
   const messages = cleanMessages(body?.messages);
   if (!messages.length && body?.message) messages.push({ role: "user", content: String(body.message).slice(0,16000) });
   if (!messages.length) return json({ error: "Please enter a message." }, 400);
 
   const system = {
     role: "system",
-    content: widget ? widgetSystem(widget) : "You are Tivals AI, a capable general-purpose assistant. Give accurate, direct, phone-friendly answers. Use Markdown. For learning requests, teach one focused lesson at a time and include a short practice task."
+    content: widget ? widgetSystem(widget) : telegramBusiness || "You are Tivals AI, a capable general-purpose assistant. Give accurate, direct, phone-friendly answers. Use Markdown. For learning requests, teach one focused lesson at a time and include a short practice task."
   };
   const prompt = [system, ...messages.filter((m:any) => m.role !== "system")];
   if (widget) adminClient()?.rpc("record_widget_request", { p_public_key: widget.public_key }).then(() => {}).catch(() => {});
