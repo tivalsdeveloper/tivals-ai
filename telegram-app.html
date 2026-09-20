@@ -34,8 +34,8 @@
   <section id="connectors" class="page">
     <div class="section">Your Telegram bot</div>
     <div class="card" id="ownBotCard">
-      <div class="planHead"><div><b>🤖 Connect your own bot</b><div class="muted" id="ownBotStatus">Loading…</div></div><span class="pill" id="botAccessBadge">PAID</span></div>
-      <p class="muted">Create a bot with @BotFather, then connect it to Tivals AI. The bot token is sent securely to the backend and is never displayed again.</p>
+      <div class="planHead"><div><b>🤖 Connect your own bot</b><div class="muted" id="ownBotStatus">Loading…</div></div><span class="pill" id="botAccessBadge">FREE</span></div>
+      <p class="muted">Create a bot with @BotFather, then connect it to Tivals AI for free. It can reply in its own private chats. To reply to messages sent to your personal Telegram account, also connect the bot in Telegram Business settings. The bot token is sent securely to the backend and is never displayed again.</p>
       <input id="ownBotToken" type="password" autocomplete="off" placeholder="Paste BotFather token" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px;margin:4px 0 10px">
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button id="ownBotConnect" onclick="connectOwnBot()">Connect bot</button><button class="secondary" id="ownBotDisconnect" onclick="disconnectOwnBot()" hidden>Disconnect</button></div>
       <div class="muted" id="botPayHint" style="margin-top:10px"></div>
@@ -100,12 +100,11 @@ function renderOwnBot(){
   disconnectBtn.hidden=!b.connected;
   connectBtn.textContent=b.connected?"Replace bot":"Connect bot";
   connectBtn.disabled=!b.allowed;
-  badge.textContent=owner?"OWNER":(b.allowed?"PAID":"LOCKED");
-  hint.textContent=owner?"Owner access: bot connection is included at no charge.":b.allowed?"Your paid plan includes one connected Telegram bot.":"A paid Basic or Pro plan is required to connect your own Telegram bot.";
+  badge.textContent=owner?"OWNER":"FREE";
+  hint.textContent=owner?"Owner access: one bot connection is included at no charge.":"Free plan: connect one Telegram bot at no charge.";
 }
 async function connect(provider){try{const d=await api("connector_link",{provider});if(!d.url)throw new Error("No connection link returned.");tg?.openLink?tg.openLink(d.url):location.href=d.url}catch(e){toast(e.message)}}
 async function connectOwnBot(){
-  if(!state?.bot_connector?.allowed){toast("A paid Basic or Pro plan is required.");go("plans");return}
   const input=document.getElementById("ownBotToken"),token=input.value.trim();
   if(!token){toast("Paste your BotFather token.");input.focus();return}
   const btn=document.getElementById("ownBotConnect");btn.disabled=true;btn.textContent="Connecting…";
