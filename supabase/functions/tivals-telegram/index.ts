@@ -240,6 +240,27 @@ async function sendHtml(chatId: number|string, html: string, business?: string) 
 async function sendFormatted(chatId: number|string, text: string, business?: string) {
   return sendHtml(chatId, mdToHtml(text), business);
 }
+async function sendToolSuggestions(chatId:number|string,business?:string) {
+  const p:any={
+    chat_id:chatId,
+    text:"Choose a Tivals AI tool:",
+    reply_markup:{inline_keyboard:[
+      [{text:"🎵 TikTok",callback_data:"tool_suggest:tiktok"},{text:"📧 Gmail",callback_data:"tool_suggest:gmail"}],
+      [{text:"🐙 GitHub",callback_data:"tool_suggest:github"},{text:"▶️ YouTube",callback_data:"tool_suggest:youtube"}],
+      [{text:"🎨 Image",callback_data:"tool_suggest:image"},{text:"✨ AI",callback_data:"tool_suggest:ai"}]
+    ]}
+  };
+  if(business)p.business_connection_id=business;
+  await telegram("sendMessage",p);
+}
+const TOOL_SUGGESTION_TEXT:Record<string,string>={
+  tiktok:"🎵 **TikTok**\n\nType: `@tiktok check my TikTok account`\nOr: `@tiktok show my latest videos`",
+  gmail:"📧 **Gmail**\n\nType: `@gmail check my latest emails`\nOr use `/connect` first.",
+  github:"🐙 **GitHub**\n\nType: `@github check my GitHub account`\nOr use `/connect` first.",
+  youtube:"▶️ **YouTube**\n\nType: `@youtube Python tutorial`",
+  image:"🎨 **Image**\n\nType: `@image futuristic AI robot`",
+  ai:"✨ **AI**\n\nType: `@ai explain recursion`"
+};
 
 async function oauthCall(action: string, tg: number, provider = "", extra: Record<string, unknown> = {}) {
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -702,6 +723,19 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Invalid Telegram update." }, 400);
   }
 
+  if (update?.callback_query) {
+    const q=update.callback_query;
+    const data=String(q?.data||"");
+    if(data.startsWith("tool_suggest:")){
+      await telegram("answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+      const tool=data.slice("tool_suggest:".length);
+      const callbackChat=q?.message?.chat?.id;
+      const callbackBusiness=q?.message?.business_connection_id||undefined;
+      if(callbackChat&&TOOL_SUGGESTION_TEXT[tool])await sendFormatted(callbackChat,TOOL_SUGGESTION_TEXT[tool],callbackBusiness);
+      return json({ok:true,route:"tool-suggestion",tool});
+    }
+  }
+
   if (update?.pre_checkout_query) {
     const q = update.pre_checkout_query;
     const payload = String(q?.invoice_payload || "");
@@ -758,6 +792,11 @@ Deno.serve(async (req: Request) => {
     }
 
     if (!text) return json({ ok:true, ignored:true });
+
+    if (text === "@") {
+      await sendToolSuggestions(chatId,business);
+      return json({ok:true,route:"tool-suggestions"});
+    }
 
     if (text === "/start" || text.startsWith("/start ")) {
       await setMiniAppMenu(chatId);
