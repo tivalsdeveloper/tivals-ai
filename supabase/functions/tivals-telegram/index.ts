@@ -808,6 +808,11 @@ Deno.serve(async (req: Request) => {
   const tg = Number(message?.from?.id || 0);
   const effectiveTg = businessOwnerId || tg;
   if (!chatId) return json({ ok: true, ignored: true });
+  // Business messages authored by the account owner are outgoing/manual messages.
+  // Never answer them; only incoming customer messages may trigger automation.
+  if (bm && businessOwnerId && tg === businessOwnerId) {
+    return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
+  }
 
   if (message?.successful_payment) {
     try {
