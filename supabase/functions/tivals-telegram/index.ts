@@ -109,6 +109,28 @@ async function isOwnerAccount(tg:number) {
   return Boolean(data);
 }
 
+async function isMainBotOwner(tg:number) {
+  if (!tg) return false;
+  const {data,error}=await sb.from("telegram_admins")
+    .select("role")
+    .eq("telegram_user_id",tg)
+    .eq("role","owner")
+    .maybeSingle();
+  if(error) throw error;
+  return Boolean(data);
+}
+
+async function mainBusinessConnectionAllowed(businessConnectionId:string) {
+  if (!businessConnectionId) return false;
+  try {
+    const d=await telegram("getBusinessConnection",{business_connection_id:businessConnectionId});
+    const businessOwnerId=Number(d?.result?.user?.id||0);
+    return d?.result?.is_enabled!==false && await isMainBotOwner(businessOwnerId);
+  } catch {
+    return false;
+  }
+}
+
 async function subscriptionState(tg: number) {
   const { data, error } = await sb.from("telegram_subscriptions")
     .select("plan,status,stars_amount,is_recurring,telegram_payment_charge_id,subscription_expiration_date,updated_at")
@@ -731,6 +753,9 @@ Deno.serve(async (req: Request) => {
       const tool=data.slice("tool_suggest:".length);
       const callbackChat=q?.message?.chat?.id;
       const callbackBusiness=q?.message?.business_connection_id||undefined;
+      if (callbackBusiness && !(await mainBusinessConnectionAllowed(String(callbackBusiness)))) {
+        return json({ok:true,route:"business-owner-rejected"});
+      }
       if(callbackChat&&TOOL_SUGGESTION_TEXT[tool])await sendFormatted(callbackChat,TOOL_SUGGESTION_TEXT[tool],callbackBusiness);
       return json({ok:true,route:"tool-suggestion",tool});
     }
@@ -747,11 +772,21 @@ Deno.serve(async (req: Request) => {
     return json({ ok:true, route:"pre-checkout", accepted:valid });
   }
 
-  if (update?.business_connection) return json({ ok: true, route: "business-connection" });
+  if (update?.business_connection) {
+    const businessOwnerId=Number(update.business_connection?.user?.id||0);
+    const allowed=await isMainBotOwner(businessOwnerId);
+    return json({
+      ok:true,
+      route:allowed ? "business-owner-verified" : "business-owner-rejected"
+    });
+  }
   const bm = update?.business_message;
   // Ignore outgoing messages sent by this business bot so it cannot reply to itself.
   if (bm && (bm?.sender_business_bot || bm?.via_bot || bm?.from?.is_bot)) {
     return json({ ok: true, ignored: true, reason: "outgoing-business-message" });
+  }
+  if (bm && !(await mainBusinessConnectionAllowed(String(bm?.business_connection_id||"")))) {
+    return json({ok:true,route:"business-owner-rejected"});
   }
   const message = bm || update?.message;
   const business = bm?.business_connection_id || undefined;
