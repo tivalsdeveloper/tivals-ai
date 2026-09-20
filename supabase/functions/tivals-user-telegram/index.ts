@@ -4,6 +4,8 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
+const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
 
@@ -32,6 +34,29 @@ async function telegram(token: string, method: string, payload: Record<string, u
 }
 function esc(v: string) {
   return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+async function oauth(action:string,tg:number,provider="",extra:Record<string,unknown>={}) {
+  const r=await fetch(OAUTH_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+SERVICE_KEY},body:JSON.stringify({action,telegram_user_id:tg,provider,...extra})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d?.error||"Connector request failed.");
+  return d;
+}
+async function ownerConnectMenu(token:string,chatId:number,tg:number,business="") {
+  const rows:any[][]=[];
+  for(const [provider,label] of [["gmail","📧 Connect Gmail"],["github","🐙 Connect GitHub"],["tiktok","🎵 Connect TikTok"]] as const){
+    try{const d=await oauth("create_link",tg,provider);if(d?.url)rows.push([{text:label,url:d.url}])}catch{}
+  }
+  try{const d=await oauth("create_website_link",tg);if(d?.url)rows.push([{text:"🌐 Connect Tivals AI Website",url:d.url}])}catch{}
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"🔐 <b>Connect tools to your bot</b>\n\nThese connections belong to the bot owner and are never shown to visitors.",parse_mode:"HTML",reply_markup:{inline_keyboard:rows},...(business?{business_connection_id:business}:{})});
+}
+async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
+  const d=await oauth("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];
+  const labels:any={gmail:"📧 Gmail",github:"🐙 GitHub",tiktok:"🎵 TikTok",website:"🌐 Tivals AI Website"};
+  const text=list.length?"<b>Connected tools</b>\n\n"+list.map((x:any)=>"• "+(labels[x.provider]||x.provider)+": <b>"+esc(x.account_label||"Connected")+"</b>").join("\n"):"<b>Connected tools</b>\n\nNo tools connected yet. Use /connect.";
+  await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
+}
+async function ownerApp(token:string,chatId:number,business="") {
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Tivals AI App</b>\n\nOpen the dashboard to connect tools and manage your bot.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Tivals AI App",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
 function mdToHtml(input: string) {
   let raw = String(input || "").replace(/\r\n/g, "\n").trim();
@@ -145,11 +170,24 @@ Deno.serve(async (req: Request) => {
     const update = await req.json();
     const message = update?.business_message || update?.message;
     const chatId = Number(message?.chat?.id || 0);
+    const senderId = Number(message?.from?.id || 0);
     const text = String(message?.text || "").trim();
     const businessConnectionId = String(message?.business_connection_id || "");
-    if (!chatId || !text || message?.from?.is_bot || message?.sender_business_bot) return json({ ok: true });
+    if (!chatId || !text || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
+    if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
+      await ownerApp(token,chatId,businessConnectionId); return json({ok:true,route:"owner-app"});
+    }
+    if (paywallOwner && senderId === paywallOwner && text === "/connect") {
+      await ownerConnectMenu(token,chatId,paywallOwner,businessConnectionId); return json({ok:true,route:"owner-connect"});
+    }
+    if (paywallOwner && senderId === paywallOwner && text === "/accounts") {
+      await ownerAccounts(token,chatId,paywallOwner,businessConnectionId); return json({ok:true,route:"owner-accounts"});
+    }
+    if (paywallOwner && senderId !== paywallOwner && ["/app","/dashboard","/settings","/connect","/accounts"].includes(text)) {
+      await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
+    }
     if (/^\/start(?:\s|$)/i.test(text)) {
-      await reply(token, chatId, `Welcome! I am ${conn.account_label || "your Tivals AI bot"}. Send me a question and I will help you.`, businessConnectionId);
+      await reply(token, chatId, `Welcome! I am ${conn.account_label || "your Tivals AI bot"}. Send me a question and I will help you.${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
     }
     await telegram(token, "sendChatAction", {
