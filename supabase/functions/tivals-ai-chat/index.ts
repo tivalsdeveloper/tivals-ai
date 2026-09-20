@@ -11,11 +11,12 @@ const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
-const VERSION = 25;
+const VERSION = 26;
 
 type WidgetConfig = {
   public_key: string;
   business_name: string;
+  assistant_name: string;
   business_description: string;
   services: string;
   contact_details: string;
@@ -90,14 +91,15 @@ async function loadWidget(publicKey: string) {
   if (!publicKey) return null;
   const admin = adminClient();
   if (!admin) throw new Error("Widget configuration service is unavailable.");
-  const { data, error } = await admin.from("widget_configs").select("public_key,business_name,business_description,services,contact_details,faq,instructions,welcome_message,allowed_domains,is_active").eq("public_key", publicKey).maybeSingle();
+  const { data, error } = await admin.from("widget_configs").select("public_key,business_name,assistant_name,business_description,services,contact_details,faq,instructions,welcome_message,allowed_domains,is_active").eq("public_key", publicKey).maybeSingle();
   if (error) throw error;
   return data as WidgetConfig | null;
 }
 
 function widgetSystem(config: WidgetConfig) {
   return [
-    `You are the website assistant for ${config.business_name || "this business"}.`,
+    `Your name is ${config.assistant_name || "Tivals AI"}. You are the website assistant for ${config.business_name || "this business"}.`,
+    "Use that assistant name when introducing yourself or when a visitor asks your name. Do not claim to be a different business or assistant.",
     "Use the verified business information below as the source of truth. Never invent prices, policies, contact details, services, availability, or guarantees. If the answer is not in the business information, say you do not have that detail and suggest contacting the business.",
     config.business_description && `ABOUT: ${config.business_description}`,
     config.services && `PRODUCTS OR SERVICES: ${config.services}`,
