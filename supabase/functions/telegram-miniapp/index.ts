@@ -56,7 +56,7 @@ async function paidAccess(tg:number) {
     .select("plan,status,subscription_expiration_date")
     .eq("telegram_user_id",tg).maybeSingle();
   const active=Boolean(data && data.status==="active" && new Date(data.subscription_expiration_date).getTime()>Date.now() && ["basic","pro"].includes(data.plan));
-  return {allowed:active,owner:false,plan:active?data.plan:"free"};
+  return {allowed:true,owner:false,plan:active?data.plan:"free"};
 }
 async function ownedBot(tg:number) {
   const {data,error}=await sb.from("telegram_owned_bots")
@@ -75,7 +75,6 @@ async function botApi(token:string, method:string, payload?:Record<string,unknow
 }
 async function connectOwnedBot(tg:number,rawToken:string) {
   const access=await paidAccess(tg);
-  if(!access.allowed) throw new Error("A paid Basic or Pro subscription is required to connect your own Telegram bot.");
   const token=String(rawToken||"").trim();
   if(!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid BotFather token.");
   const me=await botApi(token,"getMe");
@@ -84,7 +83,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
   await botApi(token,"setWebhook",{
     url:`${OWNED_BOT_WEBHOOK}?tg_owner=${encodeURIComponent(String(tg))}`,
     secret_token:secret,
-    allowed_updates:["message"],
+    allowed_updates:["message","business_message","business_connection"],
     drop_pending_updates:false
   });
   const {error}=await sb.from("telegram_owned_bots").upsert({
@@ -167,7 +166,7 @@ async function getDashboard(tg:number) {
     plan:planData,
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
-    bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:admin||active },
+    bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:true },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
       return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
