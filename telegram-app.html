@@ -8,7 +8,7 @@
 <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
 <style>
 :root{color-scheme:dark;--bg:var(--tg-theme-bg-color,#0b0f17);--card:var(--tg-theme-secondary-bg-color,#151b26);--text:var(--tg-theme-text-color,#f4f7fb);--muted:var(--tg-theme-hint-color,#8c98aa);--accent:var(--tg-theme-button-color,#5b8cff);--accentText:var(--tg-theme-button-text-color,#fff);--line:rgba(255,255,255,.09);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);min-height:100vh}.wrap{max-width:760px;margin:auto;padding:18px 16px 96px}.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}.avatar{width:48px;height:48px;border-radius:16px;background:linear-gradient(145deg,#5568ff,#9b6cff);display:grid;place-items:center;font-weight:800;font-size:20px}.top h1{font-size:20px;margin:0}.muted{color:var(--muted);font-size:13px}.hero{background:linear-gradient(145deg,rgba(91,140,255,.24),rgba(155,108,255,.12));border:1px solid rgba(130,145,255,.24);border-radius:22px;padding:18px;margin-bottom:14px}.heroRow{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.pill{padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.09);font-size:12px;font-weight:700}.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.stat{background:rgba(0,0,0,.15);border-radius:16px;padding:13px}.stat b{display:block;font-size:20px}.section{margin:18px 0 8px;font-weight:800}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:15px}.connector{display:flex;flex-direction:column;gap:10px;min-height:138px}.connector .icon{font-size:25px}.status{font-size:12px;color:var(--muted)}button,.btn{border:0;border-radius:13px;padding:11px 13px;font-weight:750;background:var(--accent);color:var(--accentText);cursor:pointer;text-decoration:none;text-align:center}.secondary{background:rgba(255,255,255,.08);color:var(--text)}button:disabled{opacity:.5}.page{display:none}.page.active{display:block}.nav{position:fixed;bottom:0;left:0;right:0;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr);z-index:10}.nav button{background:transparent;color:var(--muted);padding:8px 2px;font-size:11px}.nav button.active{color:var(--text)}.nav span{display:block;font-size:19px;margin-bottom:2px}.planCard{margin-bottom:10px}.planHead{display:flex;align-items:center;justify-content:space-between}.planPrice{font-weight:900;font-size:18px}.setting{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px 0;border-bottom:1px solid var(--line)}select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px}.switch{width:48px;height:28px;border-radius:999px;background:#485260;position:relative;cursor:pointer}.switch:after{content:"";position:absolute;width:22px;height:22px;border-radius:50%;background:white;top:3px;left:3px;transition:.2s}.switch.on{background:var(--accent)}.switch.on:after{left:23px}.empty{padding:34px 18px;text-align:center;color:var(--muted)}#toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);background:#111827;color:white;padding:10px 14px;border-radius:12px;opacity:0;pointer-events:none;transition:.2s;max-width:88%;z-index:20}#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);min-height:100vh}.wrap{max-width:760px;margin:auto;padding:18px 16px 96px}.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}.avatar{width:48px;height:48px;border-radius:16px;background:linear-gradient(145deg,#5568ff,#9b6cff);display:grid;place-items:center;font-weight:800;font-size:20px}.top h1{font-size:20px;margin:0}.muted{color:var(--muted);font-size:13px}.hero{background:linear-gradient(145deg,rgba(91,140,255,.24),rgba(155,108,255,.12));border:1px solid rgba(130,145,255,.24);border-radius:22px;padding:18px;margin-bottom:14px}.heroRow{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.pill{padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.09);font-size:12px;font-weight:700}.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.stat{background:rgba(0,0,0,.15);border-radius:16px;padding:13px}.stat b{display:block;font-size:20px}.section{margin:18px 0 8px;font-weight:800}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:15px}.connector{display:flex;flex-direction:column;gap:10px;min-height:138px}.connector .icon{font-size:25px}.status{font-size:12px;color:var(--muted)}button,.btn{border:0;border-radius:13px;padding:11px 13px;font-weight:750;background:var(--accent);color:var(--accentText);cursor:pointer;text-decoration:none;text-align:center}.secondary{background:rgba(255,255,255,.08);color:var(--text)}button:disabled{opacity:.5}.page{display:none}.page.active{display:block}.nav{position:fixed;bottom:0;left:0;right:0;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(18px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(5,1fr);z-index:10}.nav button{background:transparent;color:var(--muted);padding:8px 2px;font-size:11px}.nav button.active{color:var(--text)}.nav span{display:block;font-size:19px;margin-bottom:2px}.planCard{margin-bottom:10px}.planHead{display:flex;align-items:center;justify-content:space-between}.planPrice{font-weight:900;font-size:18px}.setting{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:14px 0;border-bottom:1px solid var(--line)}select{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:10px}.switch{width:48px;height:28px;border-radius:999px;background:#485260;position:relative;cursor:pointer}.switch:after{content:"";position:absolute;width:22px;height:22px;border-radius:50%;background:white;top:3px;left:3px;transition:.2s}.switch.on{background:var(--accent)}.switch.on:after{left:23px}.empty{padding:34px 18px;text-align:center;color:var(--muted)}#toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%) translateY(20px);background:#111827;color:white;padding:10px 14px;border-radius:12px;opacity:0;pointer-events:none;transition:.2s;max-width:88%;z-index:20}#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}.formField{display:grid;gap:7px;margin-bottom:14px}.formField label{font-size:13px;font-weight:750}.formField input,.formField textarea{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:13px;padding:12px;font:inherit}.formField textarea{min-height:150px;resize:vertical}.formHint{font-size:12px;color:var(--muted);line-height:1.45}
 @media(max-width:420px){.grid{grid-template-columns:1fr}.connector{min-height:auto}.wrap{padding-left:13px;padding-right:13px}}
 </style>
 </head>
@@ -27,7 +27,7 @@
     <div class="section">Quick actions</div>
     <div class="grid">
       <div class="card"><b>Connect apps</b><p class="muted">Link Gmail, GitHub, TikTok and your website account.</p><button onclick="go('connectors')">Open connectors</button></div>
-      <div class="card"><b>Upgrade plan</b><p class="muted">Unlock higher AI and image limits with Telegram Stars.</p><button onclick="go('plans')">View plans</button></div>
+      <div class="card"><b>Business profile</b><p class="muted">Set your business details and the name your AI should use.</p><button onclick="go('business')">Edit profile</button></div><div class="card"><b>Upgrade plan</b><p class="muted">Unlock higher AI and image limits with Telegram Stars.</p><button onclick="go('plans')">View plans</button></div>
     </div>
   </section>
 
@@ -42,6 +42,17 @@
     </div>
     <div class="section">Available connectors</div>
     <div class="grid" id="connectorGrid"></div>
+  </section>
+
+  <section id="business" class="page">
+    <div class="section">Business & AI profile</div>
+    <div class="card">
+      <p class="muted" style="margin-top:0">These details are used by your connected Telegram bot and authorized Chat Automation replies.</p>
+      <div class="formField"><label for="businessName">Business name</label><input id="businessName" maxlength="120" placeholder="Example: Tivalsdeveloper"></div>
+      <div class="formField"><label for="assistantName">Name the AI should use</label><input id="assistantName" maxlength="80" placeholder="Example: Tiva"></div>
+      <div class="formField"><label for="businessDetails">Business details</label><textarea id="businessDetails" maxlength="8000" placeholder="Describe the business, products, services, prices, opening hours, contact details, policies and anything customers should know."></textarea><div class="formHint">The AI will treat these saved details as the source of truth and should not invent missing business information.</div></div>
+      <button style="width:100%" id="saveBusinessButton" onclick="saveBusinessProfile()">Save business profile</button>
+    </div>
   </section>
 
   <section id="plans" class="page">
@@ -64,6 +75,7 @@
 <div class="nav">
   <button class="active" data-page="home" onclick="go('home')"><span>⌂</span>Home</button>
   <button data-page="connectors" onclick="go('connectors')"><span>◫</span>Connectors</button>
+  <button data-page="business" onclick="go('business')"><span>▣</span>Business</button>
   <button data-page="plans" onclick="go('plans')"><span>★</span>Plans</button>
   <button data-page="settings" onclick="go('settings')"><span>⚙</span>Settings</button>
 </div>
@@ -113,6 +125,17 @@ async function connectOwnBot(){
 async function disconnectOwnBot(){
   try{await api("disconnect_own_bot");toast("Bot disconnected");await load();go("connectors")}catch(e){toast(e.message)}
 }
+async function saveBusinessProfile(){
+  const business_name=document.getElementById("businessName").value.trim();
+  const assistant_name=document.getElementById("assistantName").value.trim();
+  const business_details=document.getElementById("businessDetails").value.trim();
+  if(!business_name){toast("Enter your business name.");document.getElementById("businessName").focus();return}
+  if(!assistant_name){toast("Enter the name your AI should use.");document.getElementById("assistantName").focus();return}
+  const button=document.getElementById("saveBusinessButton");button.disabled=true;button.textContent="Saving…";
+  try{const d=await api("save_business_profile",{business_name,assistant_name,business_details});state.business_profile=d.business_profile;toast("Business profile saved");}
+  catch(e){toast(e.message)}
+  finally{button.disabled=false;button.textContent="Save business profile"}
+}
 async function subscribe(plan){try{const d=await api("subscribe",{plan});if(d.url){if(tg?.openInvoice){tg.openInvoice(d.url,()=>load())}else location.href=d.url}}catch(e){toast(e.message)}}
 async function saveSettings(){try{await api("save_settings",{response_style:document.getElementById("style").value,notifications:document.getElementById("notifications").classList.contains("on"),tool_suggestions:document.getElementById("tools").classList.contains("on")});toast("Settings saved");await load()}catch(e){toast(e.message)}}
 async function load(){
@@ -122,6 +145,7 @@ async function load(){
     document.getElementById("avatar").textContent=String(u.first_name||u.username||"T").slice(0,1).toUpperCase();
     const p=state.plan;document.getElementById("planName").textContent=p.label;document.getElementById("planBadge").textContent=p.id==="owner"?"OWNER":(p.id==="free"?"FREE":"ACTIVE");
     document.getElementById("aiUsage").textContent=state.owner?"Unlimited":(state.usage.ai+" / "+p.ai);document.getElementById("imageUsage").textContent=state.owner?"Unlimited":(state.usage.images+" / "+p.images);
+    const profile=state.business_profile||{};document.getElementById("businessName").value=profile.business_name||"";document.getElementById("assistantName").value=profile.assistant_name||"Tivals AI";document.getElementById("businessDetails").value=profile.business_details||"";
     const st=state.settings||{};document.getElementById("style").value=st.response_style||"balanced";document.getElementById("notifications").classList.toggle("on",!!st.notifications);document.getElementById("tools").classList.toggle("on",!!st.tool_suggestions);
     renderConnectors();
   }catch(e){document.querySelector(".wrap").innerHTML='<div class="empty"><h2>Open in Telegram</h2><p>'+String(e.message||e)+'</p></div>'}
