@@ -42,6 +42,13 @@ async function encrypt(value:string) {
   const out=new Uint8Array(iv.length+cipher.length); out.set(iv); out.set(cipher,iv.length);
   return b64(out);
 }
+async function decrypt(value:string) {
+  const raw=atob(String(value||"")); const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+  const iv=bytes.slice(0,12),cipher=bytes.slice(12);
+  const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv},await aesKey(),cipher);
+  return new TextDecoder().decode(plain);
+}
 function randomSecret() {
   const bytes=crypto.getRandomValues(new Uint8Array(32));
   return b64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
@@ -65,6 +72,22 @@ async function ownedBot(tg:number) {
   if(error) throw error;
   return data;
 }
+async function syncOwnedBotSetup(tg:number) {
+  const {data}=await sb.from("telegram_owned_bots")
+    .select("token_enc,webhook_secret_enc,is_active")
+    .eq("telegram_user_id",tg).maybeSingle();
+  if(!data?.is_active||!data?.token_enc||!data?.webhook_secret_enc) return;
+  const [token,secret]=await Promise.all([decrypt(String(data.token_enc)),decrypt(String(data.webhook_secret_enc))]);
+  await botApi(token,"setWebhook",{
+    url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
+    secret_token:secret,
+    allowed_updates:["message","business_message","business_connection"],
+    drop_pending_updates:false
+  });
+  await botApi(token,"setChatMenuButton",{
+    menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
+  }).catch(()=>null);
+}
 async function botApi(token:string, method:string, payload?:Record<string,unknown>) {
   const r=await fetch(`https://api.telegram.org/bot${token}/${method}`, payload ? {
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)
@@ -81,11 +104,20 @@ async function connectOwnedBot(tg:number,rawToken:string) {
   if(!me?.is_bot) throw new Error("This token does not belong to a Telegram bot.");
   const secret=randomSecret();
   await botApi(token,"setWebhook",{
-    url:`${OWNED_BOT_WEBHOOK}?tg_owner=${encodeURIComponent(String(tg))}`,
+    url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
     secret_token:secret,
     allowed_updates:["message","business_message","business_connection"],
     drop_pending_updates:false
   });
+  await botApi(token,"setChatMenuButton",{
+    menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
+  }).catch(()=>null);
+  await botApi(token,"setMyCommands",{commands:[
+    {command:"start",description:"Start Tivals AI"},
+    {command:"app",description:"Open Tivals AI app"},
+    {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
+    {command:"accounts",description:"View connected tools"}
+  ]}).catch(()=>null);
   const {error}=await sb.from("telegram_owned_bots").upsert({
     telegram_user_id:tg,
     bot_id:Number(me.id),
@@ -99,26 +131,29 @@ async function connectOwnedBot(tg:number,rawToken:string) {
   if(error) throw error;
   return {connected:true,account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot")};
 }
-async function validateInitData(initData: string) {
-  if (!BOT_TOKEN || !initData) return null;
-  const p = new URLSearchParams(initData);
-  const hash = p.get("hash") || "";
-  if (!hash) return null;
+async function verifyInitData(initData:string,token:string) {
+  if(!token||!initData) return null;
+  const p=new URLSearchParams(initData);
+  const hash=p.get("hash")||"";
+  if(!hash) return null;
   p.delete("hash");
-  const entries = [...p.entries()].sort(([a],[b])=>a.localeCompare(b));
-  const dataCheck = entries.map(([k,v])=>`${k}=${v}`).join("\n");
-  const secret = await hmac(new TextEncoder().encode("WebAppData"), BOT_TOKEN);
-  const expected = hex(await hmac(secret, dataCheck));
-  if (expected !== hash) return null;
-
-  const authDate = Number(p.get("auth_date") || 0);
-  if (!authDate || Date.now()/1000 - authDate > 86400) return null;
-
-  try {
-    const user = JSON.parse(p.get("user") || "{}");
-    if (!user?.id) return null;
-    return user;
-  } catch { return null; }
+  const dataCheck=[...p.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>k+"="+v).join("\n");
+  const secret=await hmac(new TextEncoder().encode("WebAppData"),token);
+  if(hex(await hmac(secret,dataCheck))!==hash) return null;
+  const authDate=Number(p.get("auth_date")||0);
+  if(!authDate||Date.now()/1000-authDate>86400) return null;
+  try{const user=JSON.parse(p.get("user")||"{}");return user?.id?user:null}catch{return null}
+}
+async function validateInitData(initData:string) {
+  const mainUser=await verifyInitData(initData,BOT_TOKEN);
+  if(mainUser) return mainUser;
+  let candidate:any=null;
+  try{candidate=JSON.parse(new URLSearchParams(initData).get("user")||"{}")}catch{}
+  const tg=Number(candidate?.id||0);
+  if(!tg) return null;
+  const {data}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
+  if(!data?.is_active||!data?.token_enc) return null;
+  try{return await verifyInitData(initData,await decrypt(String(data.token_enc)))}catch{return null}
 }
 async function oauth(action:string, tg:number, provider="", extra:Record<string,unknown>={}) {
   const r = await fetch(OAUTH_URL, {
@@ -146,6 +181,7 @@ const plans = {
 } as const;
 
 async function getDashboard(tg:number) {
+  await syncOwnedBotSetup(tg).catch(()=>{});
   const today = new Date().toISOString().slice(0,10);
   const [{data:sub},{data:usage},{data:settings},connections,admin,bot] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
