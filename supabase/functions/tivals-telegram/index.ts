@@ -713,8 +713,12 @@ Deno.serve(async (req: Request) => {
     return json({ ok:true, route:"pre-checkout", accepted:valid });
   }
 
-  if (update?.business_connection) return json({ ok: true });
+  if (update?.business_connection) return json({ ok: true, route: "business-connection" });
   const bm = update?.business_message;
+  // Ignore outgoing messages sent by this business bot so it cannot reply to itself.
+  if (bm && (bm?.sender_business_bot || bm?.via_bot || bm?.from?.is_bot)) {
+    return json({ ok: true, ignored: true, reason: "outgoing-business-message" });
+  }
   const message = bm || update?.message;
   const business = bm?.business_connection_id || undefined;
   const chatId = message?.chat?.id;
