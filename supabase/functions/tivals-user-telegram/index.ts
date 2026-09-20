@@ -150,6 +150,15 @@ async function reply(token: string, chatId: number, text: string, businessConnec
   }
 }
 
+async function telegramBusinessProfile(tg:number) {
+  if(!tg) return null;
+  const {data,error}=await sb.from("telegram_business_profiles")
+    .select("business_name,assistant_name,business_details")
+    .eq("telegram_user_id",tg).maybeSingle();
+  if(error) throw error;
+  return data;
+}
+
 async function paidOrOwner(tg:number) {
   const {data:admin}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
   if(admin) return true;
@@ -246,7 +255,12 @@ Deno.serve(async (req: Request) => {
       action: "typing",
       ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
     });
-    const ai = await fetch(AI_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: text }] }) });
+    const businessProfile=paywallOwner ? await telegramBusinessProfile(paywallOwner) : null;
+    const ai = await fetch(AI_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ model: "auto", business_profile: businessProfile, messages: [{ role: "user", content: text }] })
+    });
     const result = await ai.json().catch(() => ({}));
     if (!ai.ok || !result?.reply) throw new Error(result?.error || "The AI is temporarily unavailable.");
     await reply(token, chatId, String(result.reply), businessConnectionId);
