@@ -78,7 +78,7 @@ function splitHtml(text: string, limit = 3500) {
   if (rest) out.push(rest);
   return out;
 }
-async function reply(token: string, chatId: number, text: string) {
+async function reply(token: string, chatId: number, text: string, businessConnectionId = "") {
   const html = mdToHtml(text);
   for (const part of splitHtml(html)) {
     try {
@@ -86,13 +86,15 @@ async function reply(token: string, chatId: number, text: string) {
         chat_id: chatId,
         text: part,
         parse_mode: "HTML",
-        link_preview_options: { is_disabled: true }
+        link_preview_options: { is_disabled: true },
+        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
       });
     } catch {
       await telegram(token, "sendMessage", {
         chat_id: chatId,
         text: part.replace(/<[^>]+>/g, ""),
-        link_preview_options: { is_disabled: true }
+        link_preview_options: { is_disabled: true },
+        ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
       });
     }
   }
@@ -140,27 +142,25 @@ Deno.serve(async (req: Request) => {
     const [token, secret] = await Promise.all([decrypt(String(conn.access_token_enc || "")), decrypt(String(conn.refresh_token_enc || ""))]);
     if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
 
-    if (paywallOwner && !(await paidOrOwner(paywallOwner))) {
-      const update = await req.json().catch(()=>({}));
-      const chatId = Number(update?.message?.chat?.id || 0);
-      if (chatId) await reply(token, chatId, "This bot's Tivals AI subscription is inactive. Please ask the bot owner to renew their Tivals AI plan.");
-      return json({ ok:true, route:"subscription-inactive" });
-    }
-
     const update = await req.json();
-    const message = update?.message;
+    const message = update?.business_message || update?.message;
     const chatId = Number(message?.chat?.id || 0);
     const text = String(message?.text || "").trim();
-    if (!chatId || !text) return json({ ok: true });
+    const businessConnectionId = String(message?.business_connection_id || "");
+    if (!chatId || !text || message?.from?.is_bot || message?.sender_business_bot) return json({ ok: true });
     if (/^\/start(?:\s|$)/i.test(text)) {
-      await reply(token, chatId, `Welcome! I am ${conn.account_label || "your Tivals AI bot"}. Send me a question and I will help you.`);
+      await reply(token, chatId, `Welcome! I am ${conn.account_label || "your Tivals AI bot"}. Send me a question and I will help you.`, businessConnectionId);
       return json({ ok: true });
     }
-    await telegram(token, "sendChatAction", { chat_id: chatId, action: "typing" });
+    await telegram(token, "sendChatAction", {
+      chat_id: chatId,
+      action: "typing",
+      ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
+    });
     const ai = await fetch(AI_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: text }] }) });
     const result = await ai.json().catch(() => ({}));
     if (!ai.ok || !result?.reply) throw new Error(result?.error || "The AI is temporarily unavailable.");
-    await reply(token, chatId, String(result.reply));
+    await reply(token, chatId, String(result.reply), businessConnectionId);
     return json({ ok: true });
   } catch (e) {
     return json({ ok: false, error: String((e as Error)?.message || e) }, 200);
