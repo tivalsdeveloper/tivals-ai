@@ -46,6 +46,14 @@ Deno.serve(async()=>{
   const payload:any={url:WEBHOOK_URL,allowed_updates,drop_pending_updates:false};
   if(secret)payload.secret_token=secret;
   const setResult=await botCall(token,"setWebhook",payload);
+  await botCall(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:APP_URL}}});
+  await botCall(token,"setMyCommands",{commands:[
+    {command:"start",description:"Start Tivals AI"},
+    {command:"app",description:"Open Tivals AI app"},
+    {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
+    {command:"accounts",description:"View connected tools"},
+    {command:"tools",description:"Show available AI tools"}
+  ]});
   const info=await botCall(token,"getWebhookInfo");
   const owned=await syncOwnedBots();
   return json({ok:true,allowed_updates,telegram:setResult,webhook_info:info,owned_bots:owned});
