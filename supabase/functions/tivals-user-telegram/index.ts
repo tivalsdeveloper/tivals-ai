@@ -230,6 +230,11 @@ Deno.serve(async (req: Request) => {
     if (paywallOwner && update?.business_message && !(await businessBelongsToOwner(token, businessConnectionId, paywallOwner))) {
       return json({ ok: true, route: "business-owner-rejected" });
     }
+    // A message sent manually by the connected business-account owner is outgoing.
+    // Ignore it so automation never answers the owner while they are talking to a customer.
+    if (paywallOwner && update?.business_message && senderId === paywallOwner) {
+      return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
+    }
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId); return json({ok:true,route:"owner-app"});
     }
