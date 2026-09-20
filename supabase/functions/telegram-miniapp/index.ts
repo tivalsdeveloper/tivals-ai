@@ -209,10 +209,11 @@ const plans = {
 async function getDashboard(tg:number) {
   await syncOwnedBotSetup(tg).catch(()=>{});
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},connections,admin,bot] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},connections,admin,bot] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,updated_at").eq("telegram_user_id",tg).maybeSingle(),
     oauth("status",tg),
     isAdmin(tg),
     ownedBot(tg)
@@ -228,6 +229,7 @@ async function getDashboard(tg:number) {
     plan:planData,
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
+    business_profile: businessProfile || {business_name:"",assistant_name:"Tivals AI",business_details:"",updated_at:null},
     bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:true },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
@@ -282,6 +284,18 @@ Deno.serve(async req => {
       const {error}=await sb.from("telegram_owned_bots").delete().eq("telegram_user_id",tg);
       if(error) throw error;
       return json({ok:true});
+    }
+
+    if (action==="save_business_profile") {
+      const businessName=String(body?.business_name||"").trim().slice(0,120);
+      const assistantName=String(body?.assistant_name||"").trim().slice(0,80);
+      const businessDetails=String(body?.business_details||"").trim().slice(0,8000);
+      if(!businessName) return json({error:"Enter your business name."},400);
+      if(!assistantName) return json({error:"Enter the name your AI should use."},400);
+      const row={telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,updated_at:new Date().toISOString()};
+      const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"}).select("business_name,assistant_name,business_details,updated_at").single();
+      if(error) throw error;
+      return json({ok:true,business_profile:data});
     }
 
     if (action==="save_settings") {
