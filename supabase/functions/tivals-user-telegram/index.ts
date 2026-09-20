@@ -58,6 +58,21 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
 async function ownerApp(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Tivals AI App</b>\n\nOpen the dashboard to connect tools and manage your bot.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Tivals AI App",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
+async function sendToolSuggestions(token:string,chatId:number,business="") {
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
+    [{text:"🎵 TikTok",callback_data:"tool_suggest:tiktok"},{text:"📧 Gmail",callback_data:"tool_suggest:gmail"}],
+    [{text:"🐙 GitHub",callback_data:"tool_suggest:github"},{text:"▶️ YouTube",callback_data:"tool_suggest:youtube"}],
+    [{text:"🎨 Image",callback_data:"tool_suggest:image"},{text:"✨ AI",callback_data:"tool_suggest:ai"}]
+  ]},...(business?{business_connection_id:business}:{})});
+}
+const TOOL_SUGGESTION_TEXT:Record<string,string>={
+  tiktok:"🎵 **TikTok**\n\nType: `@tiktok check my TikTok account`",
+  gmail:"📧 **Gmail**\n\nType: `@gmail check my latest emails`\nBot owner: use `/connect` first.",
+  github:"🐙 **GitHub**\n\nType: `@github check my GitHub account`\nBot owner: use `/connect` first.",
+  youtube:"▶️ **YouTube**\n\nType: `@youtube Python tutorial`",
+  image:"🎨 **Image**\n\nType: `@image futuristic AI robot`",
+  ai:"✨ **AI**\n\nType: `@ai explain recursion`"
+};
 function mdToHtml(input: string) {
   let raw = String(input || "").replace(/\r\n/g, "\n").trim();
   if (!raw) return "I couldn't generate a response.";
@@ -168,6 +183,15 @@ Deno.serve(async (req: Request) => {
     if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
 
     const update = await req.json();
+    if(update?.callback_query){
+      const q=update.callback_query,data=String(q?.data||"");
+      if(data.startsWith("tool_suggest:")){
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        const tool=data.slice("tool_suggest:".length),callbackChat=Number(q?.message?.chat?.id||0),callbackBusiness=String(q?.message?.business_connection_id||"");
+        if(callbackChat&&TOOL_SUGGESTION_TEXT[tool])await reply(token,callbackChat,TOOL_SUGGESTION_TEXT[tool],callbackBusiness);
+        return json({ok:true,route:"tool-suggestion",tool});
+      }
+    }
     const message = update?.business_message || update?.message;
     const chatId = Number(message?.chat?.id || 0);
     const senderId = Number(message?.from?.id || 0);
@@ -185,6 +209,10 @@ Deno.serve(async (req: Request) => {
     }
     if (paywallOwner && senderId !== paywallOwner && ["/app","/dashboard","/settings","/connect","/accounts"].includes(text)) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
+    }
+    if (text === "@") {
+      await sendToolSuggestions(token,chatId,businessConnectionId);
+      return json({ok:true,route:"tool-suggestions"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
       await reply(token, chatId, `Welcome! I am ${conn.account_label || "your Tivals AI bot"}. Send me a question and I will help you.${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
