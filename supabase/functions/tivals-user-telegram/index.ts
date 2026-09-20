@@ -32,6 +32,16 @@ async function telegram(token: string, method: string, payload: Record<string, u
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed.`);
   return d;
 }
+async function businessBelongsToOwner(token: string, businessConnectionId: string, ownerId: number) {
+  if (!businessConnectionId || !ownerId) return false;
+  try {
+    const d = await telegram(token, "getBusinessConnection", { business_connection_id: businessConnectionId });
+    const connection = d?.result;
+    return Number(connection?.user?.id || 0) === ownerId && connection?.is_enabled !== false;
+  } catch {
+    return false;
+  }
+}
 function esc(v: string) {
   return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
@@ -183,11 +193,21 @@ Deno.serve(async (req: Request) => {
     if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
 
     const update = await req.json();
+    if (paywallOwner && update?.business_connection) {
+      const connectionOwner = Number(update.business_connection?.user?.id || 0);
+      return json({
+        ok: true,
+        route: connectionOwner === paywallOwner ? "business-owner-verified" : "business-owner-rejected"
+      });
+    }
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
       if(data.startsWith("tool_suggest:")){
         await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
         const tool=data.slice("tool_suggest:".length),callbackChat=Number(q?.message?.chat?.id||0),callbackBusiness=String(q?.message?.business_connection_id||"");
+        if (paywallOwner && callbackBusiness && !(await businessBelongsToOwner(token, callbackBusiness, paywallOwner))) {
+          return json({ ok: true, route: "business-owner-rejected" });
+        }
         if(callbackChat&&TOOL_SUGGESTION_TEXT[tool])await reply(token,callbackChat,TOOL_SUGGESTION_TEXT[tool],callbackBusiness);
         return json({ok:true,route:"tool-suggestion",tool});
       }
@@ -198,6 +218,9 @@ Deno.serve(async (req: Request) => {
     const text = String(message?.text || "").trim();
     const businessConnectionId = String(message?.business_connection_id || "");
     if (!chatId || !text || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
+    if (paywallOwner && update?.business_message && !(await businessBelongsToOwner(token, businessConnectionId, paywallOwner))) {
+      return json({ ok: true, route: "business-owner-rejected" });
+    }
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId); return json({ok:true,route:"owner-app"});
     }
