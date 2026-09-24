@@ -209,7 +209,7 @@ const plans = {
 async function getDashboard(tg:number) {
   await syncOwnedBotSetup(tg).catch(()=>{});
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
@@ -219,7 +219,8 @@ async function getDashboard(tg:number) {
     sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     oauth("status",tg),
     isAdmin(tg),
-    ownedBot(tg)
+    ownedBot(tg),
+    sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle()
   ]);
   const active = Boolean(sub && sub.status==="active" && new Date(sub.subscription_expiration_date).getTime() > Date.now());
   const plan = admin ? "owner" : active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
@@ -238,6 +239,7 @@ async function getDashboard(tg:number) {
       booking_confirmations:false,booking_instructions:"",updated_at:null
     },
     business_knowledge:{catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]},
+    website_widget:websiteWidget || null,
     bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:true },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
@@ -260,6 +262,31 @@ Deno.serve(async req => {
 
   try {
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
+
+    if (action==="save_website_widget") {
+      const raw=String(body?.domain||"").trim().toLowerCase();
+      let domain="";
+      try { domain=new URL(raw.includes("://")?raw:"https://"+raw).hostname.toLowerCase().replace(/^www\./,""); } catch {}
+      if(!domain || domain.length>253 || !/^[a-z0-9.-]+$/.test(domain) || (!domain.includes(".") && domain!=="localhost")) {
+        return json({error:"Enter a valid website domain, for example example.com."},400);
+      }
+      const welcome=String(body?.welcome_message||"Hi! How can I help?").trim().slice(0,240) || "Hi! How can I help?";
+      const position=body?.position==="left"?"left":"right";
+      const row={telegram_user_id:tg,allowed_domains:[domain],welcome_message:welcome,position,is_active:true,updated_at:new Date().toISOString()};
+      const {data,error}=await sb.from("telegram_website_widgets").upsert(row,{onConflict:"telegram_user_id"})
+        .select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").single();
+      if(error) throw error;
+      return json({ok:true,website_widget:data});
+    }
+
+    if (action==="disconnect_website_widget") {
+      const {data,error}=await sb.from("telegram_website_widgets")
+        .update({is_active:false,updated_at:new Date().toISOString()})
+        .eq("telegram_user_id",tg)
+        .select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").maybeSingle();
+      if(error) throw error;
+      return json({ok:true,website_widget:data||null});
+    }
 
     if (action==="connector_link") {
       const provider=String(body?.provider||"");
