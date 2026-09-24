@@ -115,12 +115,31 @@ function telegramBusinessSystem(value:any) {
   const assistantName=String(value?.assistant_name||"Tivals AI").trim().slice(0,80) || "Tivals AI";
   const details=String(value?.business_details||"").trim().slice(0,8000);
   if(!businessName) return "";
+  const contacts=[
+    value?.email && `Email: ${String(value.email).slice(0,160)}`,
+    value?.phone && `Phone: ${String(value.phone).slice(0,60)}`,
+    value?.address && `Address: ${String(value.address).slice(0,500)}`,
+    value?.website_url && `Website: ${String(value.website_url).slice(0,500)}`,
+    value?.payment_options && `Payment options: ${String(value.payment_options).slice(0,1000)}`
+  ].filter(Boolean).join("\n");
+  const hours=typeof value?.business_hours==="string" ? value.business_hours : String(value?.business_hours?.text||"");
+  const catalog=(Array.isArray(value?.catalog)?value.catalog:[]).slice(0,100).map((x:any)=>`${x.item_type||"item"}: ${x.name||""}${x.price?` — ${x.currency||""} ${x.price}`:""}${x.details?` — ${x.details}`:""}`).join("\n");
+  const specialists=(Array.isArray(value?.specialists)?value.specialists:[]).slice(0,50).map((x:any)=>`${x.first_name||""} ${x.last_name||""}: ${x.about||""}${Array.isArray(x.services)&&x.services.length?` Services: ${x.services.join(", ")}`:""}`).join("\n");
+  const faqs=(Array.isArray(value?.faqs)?value.faqs:[]).slice(0,100).map((x:any)=>`Q: ${x.question||""}\nA: ${x.answer||""}`).join("\n\n");
+  const booking=[
+    value?.booking_reminders ? "Booking reminders are enabled." : "",
+    value?.booking_confirmations ? "Booking confirmations are enabled." : "",
+    value?.booking_instructions ? String(value.booking_instructions).slice(0,2000) : ""
+  ].filter(Boolean).join("\n");
   return [
     `Your name is ${assistantName}. You are the Telegram business assistant for ${businessName}.`,
-    "Use the verified business details below as the source of truth. Never invent prices, products, services, opening hours, policies, contact details, availability or guarantees. If the answer is missing, say you do not have that detail and suggest contacting the business.",
-    details && `BUSINESS DETAILS: ${details}`,
+    "Use only the verified business knowledge below. Never invent prices, products, services, hours, policies, contact details, availability, specialists or guarantees. If information is missing, say you do not have that detail and suggest contacting the business.",
+    details && `ABOUT: ${details}`, contacts && `CONTACT AND PAYMENTS:\n${contacts}`,
+    hours && `BUSINESS HOURS:\n${hours}`, catalog && `CATALOG:\n${catalog}`,
+    specialists && `SPECIALISTS:\n${specialists}`, faqs && `FAQ:\n${faqs}`,
+    booking && `BOOKING RULES:\n${booking}`,
     "Be helpful, professional, concise and suitable for Telegram customers."
-  ].filter(Boolean).join("\n\n");
+  ].filter(Boolean).join("\n\n").slice(0,30000);
 }
 
 function cleanMessages(v: unknown) {
