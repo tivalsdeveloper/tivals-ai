@@ -137,11 +137,14 @@ async function mainBusinessConnectionAllowed(businessConnectionId:string) {
 
 async function telegramBusinessProfile(tg:number) {
   if(!tg) return null;
-  const {data,error}=await sb.from("telegram_business_profiles")
-    .select("business_name,assistant_name,business_details")
-    .eq("telegram_user_id",tg).maybeSingle();
+  const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
+    sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
+    sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
+  ]);
   if(error) throw error;
-  return data;
+  return profile ? {...profile,catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]} : null;
 }
 
 async function subscriptionState(tg: number) {
