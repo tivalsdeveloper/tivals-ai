@@ -209,11 +209,14 @@ const plans = {
 async function getDashboard(tg:number) {
   await syncOwnedBotSetup(tg).catch(()=>{});
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},connections,admin,bot] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_catalog").select("id,item_type,name,price,currency,details,available,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
+    sb.from("telegram_business_specialists").select("id,first_name,last_name,about,services,active,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
+    sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     oauth("status",tg),
     isAdmin(tg),
     ownedBot(tg)
@@ -229,7 +232,12 @@ async function getDashboard(tg:number) {
     plan:planData,
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
-    business_profile: businessProfile || {business_name:"",assistant_name:"Tivals AI",business_details:"",updated_at:null},
+    business_profile: businessProfile || {
+      business_name:"",assistant_name:"Tivals AI",business_details:"",email:"",phone:"",address:"",
+      website_url:"",payment_options:"",business_hours:{},booking_reminders:false,
+      booking_confirmations:false,booking_instructions:"",updated_at:null
+    },
+    business_knowledge:{catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]},
     bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:true },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
@@ -290,12 +298,73 @@ Deno.serve(async req => {
       const businessName=String(body?.business_name||"").trim().slice(0,120);
       const assistantName=String(body?.assistant_name||"").trim().slice(0,80);
       const businessDetails=String(body?.business_details||"").trim().slice(0,8000);
+      const websiteUrl=String(body?.website_url||"").trim().slice(0,500);
       if(!businessName) return json({error:"Enter your business name."},400);
       if(!assistantName) return json({error:"Enter the name your AI should use."},400);
-      const row={telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,updated_at:new Date().toISOString()};
-      const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"}).select("business_name,assistant_name,business_details,updated_at").single();
+      if(websiteUrl && !/^https?:\/\//i.test(websiteUrl)) return json({error:"Website must start with https:// or http://."},400);
+      const hours=body?.business_hours && typeof body.business_hours==="object" && !Array.isArray(body.business_hours) ? body.business_hours : {};
+      if(JSON.stringify(hours).length>5000) return json({error:"Business hours are too long."},400);
+      const row={
+        telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,
+        email:String(body?.email||"").trim().slice(0,160),phone:String(body?.phone||"").trim().slice(0,60),
+        address:String(body?.address||"").trim().slice(0,500),website_url:websiteUrl,
+        payment_options:String(body?.payment_options||"").trim().slice(0,1000),business_hours:hours,
+        booking_reminders:Boolean(body?.booking_reminders),booking_confirmations:Boolean(body?.booking_confirmations),
+        booking_instructions:String(body?.booking_instructions||"").trim().slice(0,2000),updated_at:new Date().toISOString()
+      };
+      const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"})
+        .select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").single();
       if(error) throw error;
       return json({ok:true,business_profile:data});
+    }
+
+    if (action==="save_catalog_item") {
+      const id=String(body?.id||"");
+      if(id && !/^[0-9a-f-]{36}$/i.test(id)) return json({error:"Invalid catalog item."},400);
+      const itemType=body?.item_type==="service"?"service":"product";
+      const name=String(body?.name||"").trim().slice(0,160);
+      if(!name) return json({error:"Enter the product or service name."},400);
+      const row={telegram_user_id:tg,item_type:itemType,name,price:String(body?.price||"").trim().slice(0,80),currency:String(body?.currency||"ZAR").trim().toUpperCase().slice(0,8)||"ZAR",details:String(body?.details||"").trim().slice(0,4000),available:body?.available!==false,updated_at:new Date().toISOString()};
+      const q=id?sb.from("telegram_business_catalog").update(row).eq("id",id).eq("telegram_user_id",tg):sb.from("telegram_business_catalog").insert(row);
+      const {data,error}=await q.select("id,item_type,name,price,currency,details,available,sort_order").single();
+      if(error) throw error;
+      return json({ok:true,item:data});
+    }
+
+    if (action==="save_specialist") {
+      const id=String(body?.id||"");
+      if(id && !/^[0-9a-f-]{36}$/i.test(id)) return json({error:"Invalid specialist."},400);
+      const firstName=String(body?.first_name||"").trim().slice(0,80);
+      if(!firstName) return json({error:"Enter the specialist's first name."},400);
+      const services=Array.isArray(body?.services)?body.services.map((x:any)=>String(x).trim().slice(0,160)).filter(Boolean).slice(0,30):[];
+      const row={telegram_user_id:tg,first_name:firstName,last_name:String(body?.last_name||"").trim().slice(0,80),about:String(body?.about||"").trim().slice(0,3000),services,active:body?.active!==false,updated_at:new Date().toISOString()};
+      const q=id?sb.from("telegram_business_specialists").update(row).eq("id",id).eq("telegram_user_id",tg):sb.from("telegram_business_specialists").insert(row);
+      const {data,error}=await q.select("id,first_name,last_name,about,services,active,sort_order").single();
+      if(error) throw error;
+      return json({ok:true,specialist:data});
+    }
+
+    if (action==="save_faq") {
+      const id=String(body?.id||"");
+      if(id && !/^[0-9a-f-]{36}$/i.test(id)) return json({error:"Invalid FAQ."},400);
+      const question=String(body?.question||"").trim().slice(0,500);
+      const answer=String(body?.answer||"").trim().slice(0,4000);
+      if(!question||!answer) return json({error:"Enter both the question and answer."},400);
+      const row={telegram_user_id:tg,question,answer,updated_at:new Date().toISOString()};
+      const q=id?sb.from("telegram_business_faqs").update(row).eq("id",id).eq("telegram_user_id",tg):sb.from("telegram_business_faqs").insert(row);
+      const {data,error}=await q.select("id,question,answer,sort_order").single();
+      if(error) throw error;
+      return json({ok:true,faq:data});
+    }
+
+    if (action==="delete_business_item") {
+      const id=String(body?.id||"");
+      const kind=String(body?.kind||"");
+      const tables:any={catalog:"telegram_business_catalog",specialist:"telegram_business_specialists",faq:"telegram_business_faqs"};
+      if(!tables[kind]||!/^[0-9a-f-]{36}$/i.test(id)) return json({error:"Invalid item."},400);
+      const {error}=await sb.from(tables[kind]).delete().eq("id",id).eq("telegram_user_id",tg);
+      if(error) throw error;
+      return json({ok:true});
     }
 
     if (action==="save_settings") {
