@@ -25,6 +25,8 @@ type WidgetConfig = {
   welcome_message: string;
   allowed_domains: string[];
   is_active: boolean;
+  source?: "web" | "telegram";
+  request_count?: number;
 };
 
 const APPMIX_FREE_MODELS = [
@@ -91,9 +93,41 @@ async function loadWidget(publicKey: string) {
   if (!publicKey) return null;
   const admin = adminClient();
   if (!admin) throw new Error("Widget configuration service is unavailable.");
-  const { data, error } = await admin.from("widget_configs").select("public_key,business_name,assistant_name,business_description,services,contact_details,faq,instructions,welcome_message,allowed_domains,is_active").eq("public_key", publicKey).maybeSingle();
+  const columns="public_key,business_name,assistant_name,business_description,services,contact_details,faq,instructions,welcome_message,allowed_domains,is_active,request_count";
+  const { data, error } = await admin.from("widget_configs").select(columns).eq("public_key", publicKey).maybeSingle();
   if (error) throw error;
-  return data as WidgetConfig | null;
+  if (data) return { ...data, source:"web" } as WidgetConfig;
+
+  const {data:telegramWidget,error:telegramError}=await admin.from("telegram_website_widgets")
+    .select("telegram_user_id,public_key,allowed_domains,welcome_message,is_active,request_count")
+    .eq("public_key",publicKey).maybeSingle();
+  if(telegramError) throw telegramError;
+  if(!telegramWidget) return null;
+
+  const tg=Number(telegramWidget.telegram_user_id);
+  const [{data:profile},{data:catalog},{data:specialists},{data:faqs}]=await Promise.all([
+    admin.from("telegram_business_profiles").select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    admin.from("telegram_business_catalog").select("item_type,name,price,currency,details").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
+    admin.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
+    admin.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
+  ]);
+  const hours=typeof profile?.business_hours==="string"?profile.business_hours:String(profile?.business_hours?.text||"");
+  const catalogText=(catalog||[]).map((x:any)=>`${x.item_type||"item"}: ${x.name||""}${x.price?` — ${x.currency||""} ${x.price}`:""}${x.details?` — ${x.details}`:""}`).join("\n");
+  const specialistText=(specialists||[]).map((x:any)=>`Specialist: ${x.first_name||""} ${x.last_name||""}. ${x.about||""}${Array.isArray(x.services)&&x.services.length?` Services: ${x.services.join(", ")}`:""}`).join("\n");
+  const contactText=[
+    profile?.email&&`Email: ${profile.email}`,profile?.phone&&`Phone: ${profile.phone}`,
+    profile?.address&&`Address: ${profile.address}`,profile?.website_url&&`Website: ${profile.website_url}`,
+    profile?.payment_options&&`Payment options: ${profile.payment_options}`,hours&&`Hours: ${hours}`
+  ].filter(Boolean).join("\n");
+  return {
+    public_key:String(telegramWidget.public_key),business_name:String(profile?.business_name||"this business"),
+    assistant_name:String(profile?.assistant_name||"Tivals AI"),business_description:String(profile?.business_details||""),
+    services:[catalogText,specialistText].filter(Boolean).join("\n"),contact_details:contactText,
+    faq:(faqs||[]).map((x:any)=>`Q: ${x.question||""}\nA: ${x.answer||""}`).join("\n\n"),
+    instructions:String(profile?.booking_instructions||""),welcome_message:String(telegramWidget.welcome_message||"Hi! How can I help?"),
+    allowed_domains:Array.isArray(telegramWidget.allowed_domains)?telegramWidget.allowed_domains:[],
+    is_active:Boolean(telegramWidget.is_active),source:"telegram",request_count:Number(telegramWidget.request_count||0)
+  } as WidgetConfig;
 }
 
 function widgetSystem(config: WidgetConfig) {
@@ -735,7 +769,7 @@ Deno.serve(async (req: Request) => {
     content: widget ? widgetSystem(widget) : telegramBusiness || "You are Tivals AI, a capable general-purpose assistant. Give accurate, direct, phone-friendly answers. Use Markdown. For learning requests, teach one focused lesson at a time and include a short practice task."
   };
   const prompt = [system, ...messages.filter((m:any) => m.role !== "system")];
-  if (widget) adminClient()?.rpc("record_widget_request", { p_public_key: widget.public_key }).then(() => {}).catch(() => {});
+  if (widget) { const admin=adminClient(); if(widget.source==="telegram") admin?.from("telegram_website_widgets").update({request_count:Number(widget.request_count||0)+1,last_used_at:new Date().toISOString()}).eq("public_key",widget.public_key).then(()=>{}).catch(()=>{}); else admin?.rpc("record_widget_request",{p_public_key:widget.public_key}).then(()=>{}).catch(()=>{}); }
   const selected = parseSelectedModel(body?.model);
   const failures: { provider: string; error: string }[] = [];
   const excluded: Partial<Record<ProviderName,string[]>> = {};
