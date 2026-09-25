@@ -485,6 +485,259 @@ function githubModelData(data: any) {
   return toolText(lines.join("\n"), 2600);
 }
 
+function normalizedRepoName(value: unknown) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function selectGithubRepository(request: string, data: any) {
+  const repos = Array.isArray(data?.repositories) ? data.repositories : [];
+  const requestNorm = normalizedRepoName(request);
+  const exact = repos.find((repo:any) => {
+    const full = String(repo?.full_name || "").toLowerCase();
+    const name = String(repo?.name || "").toLowerCase();
+    return request.toLowerCase().includes(full) || (normalizedRepoName(name).length >= 4 && requestNorm.includes(normalizedRepoName(name)));
+  });
+  return exact?.full_name || (repos.length === 1 ? repos[0]?.full_name : "");
+}
+
+function githubContextModelData(data: any) {
+  const repo = data?.repository || {};
+  const files = Array.isArray(data?.root_files) ? data.root_files : [];
+  const commits = Array.isArray(data?.recent_commits) ? data.recent_commits : [];
+  const issues = Array.isArray(data?.open_issues) ? data.open_issues : [];
+  const lines = [
+    `Repository: ${toolText(repo?.full_name, 200)}`,
+    `Description: ${toolText(repo?.description || "No description", 500)}`,
+    `Visibility: ${repo?.private ? "private" : "public"}`,
+    `Default branch: ${toolText(repo?.default_branch || "Unknown", 100)}`,
+    `Primary language: ${toolText(repo?.language || "Unknown", 100)}`,
+    `Updated: ${toolText(repo?.updated_at || "Unknown", 120)}`,
+    `Root files: ${files.slice(0, 30).map((x:any) => `${x?.type || "file"}:${x?.path || x?.name || ""}`).join(", ") || "none"}`,
+    "Recent commits:",
+    ...commits.slice(0, 5).map((x:any) => `- ${toolText(x?.sha, 20)} ${toolText(x?.message, 300)} (${toolText(x?.author, 100)})`),
+    "Open issues:",
+    ...(issues.length ? issues.slice(0, 8).map((x:any) => `- #${x?.number}: ${toolText(x?.title, 240)}`) : ["- none returned"]),
+    "README excerpt:",
+    toolText(data?.readme || "No README returned", 4200),
+  ];
+  return toolText(lines.join("\n"), 7000);
+}
+
+function githubIssueIntent(text: string) {
+  return /\b(?:create|open|add|report)\s+(?:an?\s+)?(?:github\s+)?issue\b/i.test(String(text || ""));
+}
+
+function parseGithubIssueDraft(value: string, allowedRepositories: string[]) {
+  const start = value.indexOf("{");
+  const end = value.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("I could not prepare the GitHub issue. Include a repository, title, and description.");
+  let draft:any;
+  try { draft = JSON.parse(value.slice(start, end + 1)); }
+  catch { throw new Error("I could not prepare the GitHub issue. Try: `@github create issue in owner/repository about ...`"); }
+  const requested = String(draft?.repository || "").trim().toLowerCase();
+  const repository = allowedRepositories.find(x => x.toLowerCase() === requested) || "";
+  const title = String(draft?.title || "").replace(/[\r\n]+/g, " ").trim().slice(0, 240);
+  const body = String(draft?.body || "").trim().slice(0, 20000);
+  if (!repository) throw new Error("Choose one connected GitHub repository by its exact name.");
+  if (!title || !body) throw new Error("The GitHub issue needs a title and description.");
+  return { repository, title, body };
+}
+
+async function createGithubIssueDraftWithAI(request: string, tg: number, repositories: string[]) {
+  const prompt = [
+    "Prepare a GitHub issue draft. Do not claim the issue was created.",
+    "Return only valid JSON with exactly these string fields: repository, title, body.",
+    "The repository must exactly match one item from ACCESSIBLE REPOSITORIES. Never invent one.",
+    "Keep the title under 240 characters. Make the body clear and actionable.",
+    "",
+    `ACCESSIBLE REPOSITORIES: ${repositories.join(", ")}`,
+    "",
+    "USER REQUEST:",
+    toolText(request, 1800),
+  ].join("\n");
+  return parseGithubIssueDraft(await askTivalsAI(prompt, tg), repositories);
+}
+
+async function showGithubIssueConfirmation(chatId: number|string, tg: number, request: string, repositoriesData: any) {
+  const repositories = (Array.isArray(repositoriesData?.repositories) ? repositoriesData.repositories : [])
+    .map((x:any) => String(x?.full_name || "")).filter(Boolean);
+  if (!repositories.length) throw new Error("No connected GitHub repositories are available.");
+  const draft = await createGithubIssueDraftWithAI(request, tg, repositories);
+  await sb.from("telegram_pending_github_actions").delete().lt("expires_at", new Date().toISOString());
+  const id = crypto.randomUUID();
+  const { error } = await sb.from("telegram_pending_github_actions").insert({
+    id, telegram_user_id:tg, chat_id:Number(chatId), action:"create_issue", repository:draft.repository,
+    payload:{ title:draft.title, body:draft.body }, status:"pending",
+    expires_at:new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+  });
+  if (error) throw error;
+  const preview = draft.body.length > 2300 ? draft.body.slice(0, 2299) + "…" : draft.body;
+  await telegram("sendMessage", {
+    chat_id:chatId,
+    text:`🐙 <b>Confirm GitHub issue</b>\n\n<b>Repository:</b> ${esc(draft.repository)}\n<b>Title:</b> ${esc(draft.title)}\n\n${esc(preview)}\n\n<i>This action expires in 10 minutes. Nothing is created until you confirm.</i>`,
+    parse_mode:"HTML",
+    reply_markup:{ inline_keyboard:[[
+      { text:"✅ Create issue", callback_data:`github_issue:${id}` },
+      { text:"❌ Cancel", callback_data:`github_cancel:${id}` },
+    ]] },
+  });
+}
+
+async function handleGithubConfirmation(q:any, action:"issue"|"cancel", id:string) {
+  const tg=Number(q?.from?.id || 0), chatId=q?.message?.chat?.id;
+  if(!tg || !chatId || q?.message?.business_connection_id) {
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"GitHub confirmation is available only in your direct bot chat.",show_alert:true}).catch(()=>{});
+    return "github-confirm-rejected";
+  }
+  const {data:pending,error}=await sb.from("telegram_pending_github_actions")
+    .select("id,repository,payload,status,expires_at").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",Number(chatId)).maybeSingle();
+  if(error) throw error;
+  if(!pending || pending.status!=="pending" || new Date(pending.expires_at).getTime()<=Date.now()) {
+    if(pending?.id) await sb.from("telegram_pending_github_actions").delete().eq("id",pending.id).eq("telegram_user_id",tg);
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"This GitHub action expired or was already used.",show_alert:true}).catch(()=>{});
+    return "github-confirm-expired";
+  }
+  if(action==="cancel") {
+    await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"GitHub action cancelled."}).catch(()=>{});
+    await telegram("editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+    await sendFormatted(chatId,"❌ **GitHub action cancelled.** Nothing was changed.");
+    return "github-cancelled";
+  }
+  const {data:claimed,error:claimError}=await sb.from("telegram_pending_github_actions")
+    .update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending")
+    .gt("expires_at",new Date().toISOString()).select("id,repository,payload").maybeSingle();
+  if(claimError) throw claimError;
+  if(!claimed) {
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"This GitHub action is already being processed.",show_alert:true}).catch(()=>{});
+    return "github-confirm-duplicate";
+  }
+  await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Creating GitHub issue…"}).catch(()=>{});
+  await telegram("editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+  try {
+    const result=await oauthCall("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload?.title,issue_body:claimed.payload?.body});
+    await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+    await sendFormatted(chatId,`✅ **GitHub issue created**\n\n${claimed.repository} #${result?.number || ""}\n${result?.title || claimed.payload?.title}${result?.html_url ? `\n${result.html_url}` : ""}`);
+    return "github-issue-created";
+  } catch(actionError) {
+    await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+    await sendFormatted(chatId,"⚠️ The GitHub issue could not be confirmed as created. Check the repository before trying again.\n\n"+String((actionError as Error)?.message||actionError));
+    return "github-action-failed";
+  }
+}
+
+function gmailSendIntent(text: string) {
+  const value = String(text || "").trim();
+  return /^\/sendemail(?:\s|$)/i.test(value) || /\b(?:send|compose|write)\s+(?:an?\s+)?e-?mail\b/i.test(value);
+}
+
+function parseEmailDraft(value: string) {
+  const start = value.indexOf("{");
+  const end = value.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("I could not prepare that email. Include the recipient, subject, and message.");
+  let draft: any;
+  try { draft = JSON.parse(value.slice(start, end + 1)); }
+  catch { throw new Error("I could not prepare that email. Try: `@gmail send email to name@example.com about ...`"); }
+  const recipient = String(draft?.to || "").trim();
+  const subject = String(draft?.subject || "").replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+  const body = String(draft?.body || "").trim().slice(0, 10000);
+  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipient) || /[\r\n]/.test(recipient)) {
+    throw new Error("Please include one valid recipient email address.");
+  }
+  if (!subject || !body) throw new Error("Please include enough information for the email subject and message.");
+  return { recipient, subject, body };
+}
+
+async function createEmailDraftWithAI(request: string, tg: number) {
+  const prompt = [
+    "Prepare an email draft from the user's request. Do not claim it was sent.",
+    "Return only valid JSON with exactly these string fields: to, subject, body.",
+    "Never invent a recipient address. If no exact email address is supplied, use an empty to field.",
+    "Keep the subject under 200 characters and the body under 10000 characters.",
+    "",
+    "USER REQUEST:",
+    toolText(request, 1800),
+  ].join("\n");
+  return parseEmailDraft(await askTivalsAI(prompt, tg));
+}
+
+async function showEmailConfirmation(chatId: number|string, tg: number, request: string) {
+  if (!await connectedToolQuota(chatId, tg)) return false;
+  const draft = await createEmailDraftWithAI(request, tg);
+  await sb.from("telegram_pending_emails").delete().lt("expires_at", new Date().toISOString());
+  const id = crypto.randomUUID();
+  const { error } = await sb.from("telegram_pending_emails").insert({
+    id,
+    telegram_user_id: tg,
+    chat_id: Number(chatId),
+    recipient: draft.recipient,
+    subject: draft.subject,
+    body: draft.body,
+    status: "pending",
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+  });
+  if (error) throw error;
+  const preview = draft.body.length > 2400 ? draft.body.slice(0, 2399) + "…" : draft.body;
+  await telegram("sendMessage", {
+    chat_id: chatId,
+    text: `📧 <b>Confirm email</b>\n\n<b>To:</b> ${esc(draft.recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(preview)}\n\n<i>This draft expires in 10 minutes. Nothing is sent until you confirm.</i>`,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [[
+      { text: "✅ Send email", callback_data: `gmail_send:${id}` },
+      { text: "❌ Cancel", callback_data: `gmail_cancel:${id}` },
+    ]] },
+  });
+  return true;
+}
+
+async function handleEmailConfirmation(q: any, action: "send" | "cancel", id: string) {
+  const tg = Number(q?.from?.id || 0);
+  const chatId = q?.message?.chat?.id;
+  if (!tg || !chatId || q?.message?.business_connection_id) {
+    await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "Email confirmation is available only in your direct bot chat.", show_alert: true }).catch(()=>{});
+    return "gmail-confirm-rejected";
+  }
+  const { data: pending, error } = await sb.from("telegram_pending_emails")
+    .select("id,telegram_user_id,chat_id,recipient,subject,body,status,expires_at")
+    .eq("id", id).eq("telegram_user_id", tg).eq("chat_id", Number(chatId)).maybeSingle();
+  if (error) throw error;
+  if (!pending || pending.status !== "pending" || new Date(pending.expires_at).getTime() <= Date.now()) {
+    if (pending?.id) await sb.from("telegram_pending_emails").delete().eq("id", pending.id).eq("telegram_user_id", tg);
+    await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "This email draft expired or was already used.", show_alert: true }).catch(()=>{});
+    return "gmail-confirm-expired";
+  }
+  if (action === "cancel") {
+    await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
+    await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "Email cancelled." }).catch(()=>{});
+    await telegram("editMessageReplyMarkup", { chat_id: chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(()=>{});
+    await sendFormatted(chatId, "❌ **Email cancelled.** Nothing was sent.");
+    return "gmail-cancelled";
+  }
+
+  const { data: claimed, error: claimError } = await sb.from("telegram_pending_emails")
+    .update({ status: "sending" })
+    .eq("id", id).eq("telegram_user_id", tg).eq("status", "pending")
+    .gt("expires_at", new Date().toISOString())
+    .select("id,recipient,subject,body").maybeSingle();
+  if (claimError) throw claimError;
+  if (!claimed) {
+    await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "This email is already being processed.", show_alert: true }).catch(()=>{});
+    return "gmail-confirm-duplicate";
+  }
+  await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "Sending email…" }).catch(()=>{});
+  await telegram("editMessageReplyMarkup", { chat_id: chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(()=>{});
+  try {
+    await oauthCall("gmail_send", tg, "gmail", { recipient: claimed.recipient, subject: claimed.subject, email_body: claimed.body });
+    await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
+    await sendFormatted(chatId, `✅ **Email sent**\n\nTo: ${claimed.recipient}\nSubject: ${claimed.subject}`);
+    return "gmail-sent";
+  } catch (sendError) {
+    await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
+    await sendFormatted(chatId, "⚠️ The email could not be confirmed as sent. Check Gmail Sent before trying again.\n\n" + String((sendError as Error)?.message || sendError));
+    return "gmail-send-failed";
+  }
+}
+
 async function connectedToolQuota(chatId: number|string, tg: number, business?: string) {
   const quota = await consumeUsage(tg, "ai");
   if (quota.ok) return true;
@@ -529,7 +782,10 @@ function toolsHelpText() {
     "• `@tiktok show my stats`",
     "• `@tiktok show my latest videos`",
     "• `@gmail check my latest emails`",
+    "• `@gmail send email to name@example.com about ...`",
     "• `@github check my GitHub account`",
+    "• `@github inspect tivalsdeveloper/tivals-ai`",
+    "• `@github create issue in owner/repository about ...`",
     "• `@website check my website account`",
     "• `@youtube Python tutorial`",
     "• `@image futuristic AI robot`",
@@ -607,6 +863,11 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
 
   if (tool === "gmail" || tool === "email") {
     if (!tg) throw new Error("Telegram user ID is unavailable.");
+    if (business) throw new Error("Connected Gmail is available only in the account owner's direct Tivals AI chat.");
+    if (gmailSendIntent(request)) {
+      await showEmailConfirmation(chatId, tg, request);
+      return "gmail-email-draft";
+    }
     const intent = gmailIntent(request || "check my latest emails");
     const resolved = intent.matched ? intent : { matched: true, query: request, title: request ? `Email search: ${request}` : "Latest emails" };
     await handleGmail(chatId, tg, resolved, business);
@@ -617,7 +878,17 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
     if (!tg) throw new Error("Telegram user ID is unavailable.");
     if (business) throw new Error("Connected account tools are available only in the account owner's direct Tivals AI chat.");
     if (!await connectedToolQuota(chatId, tg, business)) return "github-limit";
-    const d = await oauthCall("github_repositories", tg, "github", { max_results: 10 });
+    const d = await oauthCall("github_repositories", tg, "github", { max_results: 20 });
+    if (githubIssueIntent(request)) {
+      await showGithubIssueConfirmation(chatId, tg, request, d);
+      return "github-issue-draft";
+    }
+    const selectedRepository = selectGithubRepository(request, d);
+    if (selectedRepository) {
+      const context = await oauthCall("github_repository_context", tg, "github", { repository:selectedRepository });
+      await answerWithConnectedTool(chatId, tg, "GitHub repository", request || `Inspect ${selectedRepository}`, githubContextModelData(context), business);
+      return "github-repository";
+    }
     await answerWithConnectedTool(chatId, tg, "GitHub", request || "Review my connected GitHub repositories", githubModelData(d), business);
     return "github";
   }
@@ -845,7 +1116,7 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
+  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, gmail_sending: true, email_confirmation: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
@@ -864,6 +1135,30 @@ Deno.serve(async (req: Request) => {
   if (update?.callback_query) {
     const q=update.callback_query;
     const data=String(q?.data||"");
+    const emailAction = data.match(/^gmail_(send|cancel):([0-9a-f-]{36})$/i);
+    if (emailAction) {
+      try {
+        const route = await handleEmailConfirmation(q, emailAction[1].toLowerCase() as "send" | "cancel", emailAction[2].toLowerCase());
+        return json({ ok:true, route });
+      } catch (e) {
+        const message = String((e as Error)?.message || e);
+        await telegram("answerCallbackQuery", { callback_query_id:q.id, text:"Email action failed.", show_alert:true }).catch(()=>{});
+        console.error("Tivals Gmail confirmation error", message);
+        return json({ ok:false, route:"gmail-confirm-error", error:message }, 200);
+      }
+    }
+    const githubAction=data.match(/^github_(issue|cancel):([0-9a-f-]{36})$/i);
+    if(githubAction) {
+      try {
+        const route=await handleGithubConfirmation(q,githubAction[1].toLowerCase() as "issue"|"cancel",githubAction[2].toLowerCase());
+        return json({ok:true,route});
+      } catch(e) {
+        const message=String((e as Error)?.message||e);
+        await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"GitHub action failed.",show_alert:true}).catch(()=>{});
+        console.error("Tivals GitHub confirmation error",message);
+        return json({ok:false,route:"github-confirm-error",error:message},200);
+      }
+    }
     if(data.startsWith("tool_suggest:")){
       await telegram("answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
       const tool=data.slice("tool_suggest:".length);
@@ -1003,7 +1298,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n/connectbot — Connect your own Telegram bot\n\nTry `@tiktok check my TikTok account`, `@gmail check my emails`, or `@youtube Python tutorial`.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/sendemail — Prepare an email for confirmation\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n/connectbot — Connect your own Telegram bot\n\nTry `@gmail send email to name@example.com about ...`. The bot always asks for confirmation before sending.", business);
       return json({ok:true});
     }
 
@@ -1058,6 +1353,12 @@ Deno.serve(async (req: Request) => {
     if (toolReq) {
       const route = await handleToolRequest(chatId, effectiveTg, toolReq, business);
       return json({ok:true, route:`tool-${route}`});
+    }
+
+    if (gmailSendIntent(text) && !business) {
+      if (!tg) throw new Error("Telegram user ID is unavailable.");
+      await showEmailConfirmation(chatId, effectiveTg, text);
+      return json({ok:true,route:"gmail-email-draft"});
     }
 
     const gi = gmailIntent(text);
