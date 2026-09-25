@@ -126,6 +126,7 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="") {
+  await telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}}).catch(()=>{});
   await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Personal Bot Studio</b>\n\nCustomize your bot’s personality, learning subjects, voice and group settings.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Personal Bot Studio",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
 async function sendToolSuggestions(token:string,chatId:number,business="") {
