@@ -50,7 +50,7 @@
     var modal=document.createElement('div');
     modal.className='modalBack';
     modal.id='accountToolsModal';
-    modal.innerHTML='<div class="modal connectorModal"><div class="modalTop"><div><h2>Apps & connectors</h2><p class="connectorIntro">Connect your accounts and open Tivals AI tools from one place.</p></div><button class="closeModal" id="closeAccountTools" aria-label="Close apps and connectors">×</button></div><div class="accountToolsGrid"><div class="connectorHeading">Connected accounts</div><div class="accountToolCard telegramTool"><span class="accountToolIcon">✈</span><b>Telegram bot</b><div class="accountToolStatus" id="webTelegramStatus">Checking connection…</div><input class="connectorInput" id="webTelegramToken" type="password" autocomplete="off" placeholder="Paste BotFather token"><div class="accountToolActions"><button class="primary" id="webTelegramConnect">Connect bot</button><button id="webTelegramTest" hidden>Test</button><button id="webTelegramDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard tiktokTool"><span class="accountToolIcon">♪</span><b>TikTok</b><div class="accountToolStatus" id="webTikTokStatus">Checking connection…</div><code>@tiktok show my stats</code><div class="accountToolActions"><button class="primary" id="webTikTokConnect">Connect</button><button id="webTikTokDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard"><span class="accountToolIcon">✉</span><b>Gmail & monitor</b><div class="accountToolStatus">Read, find and send email with your permission.</div><code>@gmail check my latest emails</code><div class="accountToolActions"><button class="primary" id="openGmailConnector">Open Gmail</button></div></div><div class="accountToolCard"><span class="accountToolIcon">⌘</span><b>GitHub</b><div class="accountToolStatus">Inspect repositories and work with code.</div><code>@github list my repositories</code><div class="accountToolActions"><button class="primary" id="openGithubConnector">Connect GitHub</button></div></div><div class="connectorHeading">Built-in tools</div><div class="accountToolCard"><span class="accountToolIcon">▧</span><b>Image generator</b><div class="accountToolStatus">Create images directly from the chat.</div><code>@image futuristic AI robot</code></div><div class="accountToolCard"><span class="accountToolIcon">▶</span><b>YouTube</b><div class="accountToolStatus">Find helpful videos without leaving Tivals AI.</div><code>@youtube Python tutorial</code></div><div class="accountToolCard"><span class="accountToolIcon">AI</span><b>Website AI</b><div class="accountToolStatus">Business knowledge, domain security and embed settings.</div><div class="accountToolActions"><button class="primary" id="openWebsiteAI">Manage Website AI</button></div></div></div></div>';
+    modal.innerHTML='<div class="modal connectorModal"><div class="modalTop"><div><h2>Apps & connectors</h2><p class="connectorIntro">Connect once, then use Gmail, GitHub and TikTok with any AI model you select.</p></div><button class="closeModal" id="closeAccountTools" aria-label="Close apps and connectors">×</button></div><div class="accountToolsGrid"><div class="connectorHeading">Connected accounts</div><div class="accountToolCard telegramTool"><span class="accountToolIcon">✈</span><b>Telegram bot</b><div class="accountToolStatus" id="webTelegramStatus">Checking connection…</div><input class="connectorInput" id="webTelegramToken" type="password" autocomplete="off" placeholder="Paste BotFather token"><div class="accountToolActions"><button class="primary" id="webTelegramConnect">Connect bot</button><button id="webTelegramTest" hidden>Test</button><button id="webTelegramDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard tiktokTool"><span class="accountToolIcon">♪</span><b>TikTok</b><div class="accountToolStatus" id="webTikTokStatus">Checking connection…</div><code>@tiktok show my stats</code><div class="accountToolActions"><button class="primary" id="webTikTokConnect">Connect</button><button id="webTikTokDisconnect" hidden>Disconnect</button></div></div><div class="accountToolCard"><span class="accountToolIcon">✉</span><b>Gmail & monitor</b><div class="accountToolStatus">Read, find and send email with your permission.</div><code>@gmail check my latest emails</code><div class="accountToolActions"><button class="primary" id="openGmailConnector">Open Gmail</button></div></div><div class="accountToolCard"><span class="accountToolIcon">⌘</span><b>GitHub</b><div class="accountToolStatus">Inspect repositories and work with code.</div><code>@github list my repositories</code><div class="accountToolActions"><button class="primary" id="openGithubConnector">Connect GitHub</button></div></div><div class="connectorHeading">Built-in tools</div><div class="accountToolCard"><span class="accountToolIcon">▧</span><b>Image generator</b><div class="accountToolStatus">Create images directly from the chat.</div><code>@image futuristic AI robot</code></div><div class="accountToolCard"><span class="accountToolIcon">▶</span><b>YouTube</b><div class="accountToolStatus">Find helpful videos without leaving Tivals AI.</div><code>@youtube Python tutorial</code></div><div class="accountToolCard"><span class="accountToolIcon">AI</span><b>Website AI</b><div class="accountToolStatus">Business knowledge, domain security and embed settings.</div><div class="accountToolActions"><button class="primary" id="openWebsiteAI">Manage Website AI</button></div></div></div></div>';
     document.body.appendChild(modal);
 
     document.querySelector('#closeAccountTools').onclick=function(){modal.classList.remove('open')};
@@ -165,6 +165,20 @@
     }).join('\n\n');
   }
 
+  function tiktokIntent(text){
+    return /^\s*@tiktok\b/i.test(text)||(/\btiktok\b/i.test(text)&&/\b(show|check|stats?|profile|followers?|videos?|posts?|latest|recent|summari[sz]e|analy[sz]e)\b/i.test(text));
+  }
+
+  async function prepareForModel(raw){
+    if(!tiktokIntent(raw))return null;
+    var request=String(raw||'').replace(/^\s*@tiktok\s*/i,'').trim()||'Show my TikTok account statistics';
+    var d=/\b(videos?|posts?|latest videos?|recent videos?)\b/i.test(request)
+      ? await api('web_tiktok_videos',{max_results:5})
+      : await api('web_tiktok_profile');
+    var verified=Array.isArray(d?.videos)?fmtVideos(d):fmtProfile(d);
+    return{tool:'tiktok',prompt:request+'\n\nThe user explicitly asked to use their connected TikTok account. Use only the verified TikTok data below. Never invent account statistics or videos.\n\nVERIFIED TIKTOK DATA:\n'+verified};
+  }
+
   async function handleTikTok(raw,request){
     show('user',raw);
     var wait=show('ai','Using TikTok tools…');
@@ -205,13 +219,6 @@
     var p=parse(raw);
     if(!p)return;
 
-    if(p.tool==='tiktok'){
-      e.preventDefault();e.stopImmediatePropagation();
-      input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));
-      handleTikTok(raw,p.request);
-      return;
-    }
-
     if(p.tool==='tools'||p.tool==='help'){
       e.preventDefault();e.stopImmediatePropagation();
       input.value='';openTools();
@@ -245,5 +252,5 @@
 
   window.addEventListener('tivals:auth-ui',function(e){if(e?.detail?.signedIn)completeTelegramWebsiteLink()});
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-  window.TivalsAccountTools={open:openTools,refreshTikTok:refreshTikTok,connectTikTok:connectTikTok,disconnectTikTok:disconnectTikTok,refreshTelegram:refreshTelegram};
+  window.TivalsAccountTools={open:openTools,refreshTikTok:refreshTikTok,connectTikTok:connectTikTok,disconnectTikTok:disconnectTikTok,refreshTelegram:refreshTelegram,prepareForModel:prepareForModel};
 })();
