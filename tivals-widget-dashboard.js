@@ -1,6 +1,6 @@
 /* Tivals AI widget dashboard — account-owned business context and domain-locked embed code. */
 (()=>{
-  const SCRIPT='https://tivalsdeveloper.github.io/tivals-ai/widget.js';
+  const SCRIPT='https://ai.tivalsdeveloper.site/widget.js';
   let config=null,loading=false;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const normalizeDomain=value=>{let raw=String(value||'').trim().toLowerCase();if(!raw)return'';const wildcard=raw.startsWith('*.');if(wildcard)raw=raw.slice(2);try{raw=new URL(raw.includes('://')?raw:`https://${raw}`).host}catch{raw=raw.replace(/^https?:\/\//,'').split('/')[0]}raw=raw.replace(/^www\./,'');return(wildcard?'*.':'')+raw};
