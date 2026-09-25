@@ -378,6 +378,60 @@ async function githubInstallation(id: string) {
   if (!r.ok) throw new Error(d?.message || `GitHub installation lookup failed (${r.status}).`);
   return d;
 }
+async function githubConnection(tg: number) {
+  const { data, error } = await sb.from("telegram_oauth_connections")
+    .select("provider,account_label,scope,metadata")
+    .eq("telegram_user_id", tg).eq("provider", "github").maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("GitHub is not connected. Use /connect first.");
+  return data;
+}
+async function githubRepositories(tg: number, maxResults = 10) {
+  const conn = await githubConnection(tg);
+  const installationId = Number(conn?.metadata?.installation_id || 0);
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new Error("The GitHub connection is incomplete. Disconnect GitHub, then use /connect again.");
+  }
+
+  const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${await githubAppJwt()}`,
+      accept: "application/vnd.github+json",
+      "user-agent": "Tivals-AI",
+    },
+  });
+  const tokenData = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok || !tokenData?.token) {
+    throw new Error(tokenData?.message || `GitHub access failed (${tokenRes.status}). Reconnect GitHub with /connect.`);
+  }
+
+  const limit = Math.max(1, Math.min(20, Number(maxResults || 10)));
+  const repoRes = await fetch(`https://api.github.com/installation/repositories?per_page=${limit}`, {
+    headers: {
+      authorization: `Bearer ${tokenData.token}`,
+      accept: "application/vnd.github+json",
+      "user-agent": "Tivals-AI",
+    },
+  });
+  const repoData = await repoRes.json().catch(() => ({}));
+  if (!repoRes.ok) throw new Error(repoData?.message || `GitHub repository lookup failed (${repoRes.status}).`);
+  const repositories = (Array.isArray(repoData?.repositories) ? repoData.repositories : []).slice(0, limit).map((repo: any) => ({
+    name: String(repo?.name || ""),
+    full_name: String(repo?.full_name || repo?.name || ""),
+    private: Boolean(repo?.private),
+    description: String(repo?.description || ""),
+    html_url: String(repo?.html_url || ""),
+    default_branch: String(repo?.default_branch || ""),
+    updated_at: repo?.updated_at || null,
+  }));
+  return {
+    account: conn.account_label || conn?.metadata?.account_login || "GitHub account",
+    repository_selection: conn?.metadata?.repository_selection || null,
+    total_count: Number(repoData?.total_count || repositories.length),
+    repositories,
+  };
+}
 async function createLink(req: Request, provider: string, tg: number) {
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
   if (!["gmail", "github", "tiktok"].includes(provider) || !Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid request" }, 400);
@@ -783,6 +837,14 @@ Deno.serve(async (req: Request) => {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
       return json(await gmailMessages(tg, String(body.query || ""), Number(body.max_results || 5)));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
+  if (action === "github_repositories") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await githubRepositories(tg, Number(body.max_results || 10)));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
