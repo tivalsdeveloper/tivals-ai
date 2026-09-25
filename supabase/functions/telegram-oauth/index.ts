@@ -386,13 +386,12 @@ async function githubConnection(tg: number) {
   if (!data) throw new Error("GitHub is not connected. Use /connect first.");
   return data;
 }
-async function githubRepositories(tg: number, maxResults = 10) {
+async function githubInstallationAccess(tg: number) {
   const conn = await githubConnection(tg);
   const installationId = Number(conn?.metadata?.installation_id || 0);
   if (!Number.isSafeInteger(installationId) || installationId <= 0) {
     throw new Error("The GitHub connection is incomplete. Disconnect GitHub, then use /connect again.");
   }
-
   const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
     method: "POST",
     headers: {
@@ -405,17 +404,26 @@ async function githubRepositories(tg: number, maxResults = 10) {
   if (!tokenRes.ok || !tokenData?.token) {
     throw new Error(tokenData?.message || `GitHub access failed (${tokenRes.status}). Reconnect GitHub with /connect.`);
   }
-
-  const limit = Math.max(1, Math.min(20, Number(maxResults || 10)));
-  const repoRes = await fetch(`https://api.github.com/installation/repositories?per_page=${limit}`, {
+  return { conn, token: String(tokenData.token), permissions: tokenData?.permissions || conn?.metadata?.permissions || {} };
+}
+async function githubJson(token: string, url: string, init?: RequestInit) {
+  const r = await fetch(url, {
+    ...init,
     headers: {
-      authorization: `Bearer ${tokenData.token}`,
+      authorization: `Bearer ${token}`,
       accept: "application/vnd.github+json",
       "user-agent": "Tivals-AI",
+      ...(init?.headers || {}),
     },
   });
-  const repoData = await repoRes.json().catch(() => ({}));
-  if (!repoRes.ok) throw new Error(repoData?.message || `GitHub repository lookup failed (${repoRes.status}).`);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d?.message || `GitHub request failed (${r.status}).`);
+  return d;
+}
+async function githubRepositories(tg: number, maxResults = 10) {
+  const { conn, token } = await githubInstallationAccess(tg);
+  const limit = Math.max(1, Math.min(20, Number(maxResults || 10)));
+  const repoData = await githubJson(token, `https://api.github.com/installation/repositories?per_page=${limit}`);
   const repositories = (Array.isArray(repoData?.repositories) ? repoData.repositories : []).slice(0, limit).map((repo: any) => ({
     name: String(repo?.name || ""),
     full_name: String(repo?.full_name || repo?.name || ""),
@@ -431,6 +439,61 @@ async function githubRepositories(tg: number, maxResults = 10) {
     total_count: Number(repoData?.total_count || repositories.length),
     repositories,
   };
+}
+function githubRepositoryName(value: string) {
+  const name = value.trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) throw new Error("Choose a valid connected repository.");
+  return name;
+}
+async function githubRepositoryContext(tg: number, repository: string) {
+  const fullName = githubRepositoryName(repository);
+  const { token, permissions } = await githubInstallationAccess(tg);
+  const base = `https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}`;
+  const [repo, root, commits, issues, readmeResponse] = await Promise.all([
+    githubJson(token, base),
+    githubJson(token, `${base}/contents`).catch(() => []),
+    githubJson(token, `${base}/commits?per_page=5`).catch(() => []),
+    githubJson(token, `${base}/issues?state=open&per_page=8`).catch(() => []),
+    fetch(`${base}/readme`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github.raw+json", "user-agent": "Tivals-AI" } }).catch(() => null),
+  ]);
+  const readme = readmeResponse?.ok ? (await readmeResponse.text()).slice(0, 7000) : "";
+  return {
+    repository: {
+      full_name: repo?.full_name || fullName,
+      description: repo?.description || "",
+      private: Boolean(repo?.private),
+      default_branch: repo?.default_branch || "",
+      language: repo?.language || null,
+      stars: Number(repo?.stargazers_count || 0),
+      open_issues_count: Number(repo?.open_issues_count || 0),
+      updated_at: repo?.updated_at || null,
+      html_url: repo?.html_url || "",
+    },
+    permissions: { contents: permissions?.contents || null, issues: permissions?.issues || null, pull_requests: permissions?.pull_requests || null },
+    root_files: (Array.isArray(root) ? root : []).slice(0, 40).map((x: any) => ({ name:x?.name || "", path:x?.path || "", type:x?.type || "" })),
+    recent_commits: (Array.isArray(commits) ? commits : []).slice(0, 5).map((x: any) => ({
+      sha: String(x?.sha || "").slice(0, 12), message: String(x?.commit?.message || "").slice(0, 500),
+      author: x?.commit?.author?.name || x?.author?.login || "", date: x?.commit?.author?.date || null,
+    })),
+    open_issues: (Array.isArray(issues) ? issues : []).filter((x: any) => !x?.pull_request).slice(0, 8).map((x: any) => ({
+      number: x?.number, title: String(x?.title || "").slice(0, 300), state: x?.state || "open", html_url: x?.html_url || "",
+    })),
+    readme,
+  };
+}
+async function githubCreateIssue(tg: number, repository: string, title: string, issueBody: string) {
+  const fullName = githubRepositoryName(repository);
+  const safeTitle = title.replace(/[\r\n]+/g, " ").trim().slice(0, 240);
+  const safeBody = issueBody.trim().slice(0, 20000);
+  if (!safeTitle || !safeBody) throw new Error("GitHub issue title and description are required.");
+  const { token, permissions } = await githubInstallationAccess(tg);
+  if (permissions?.issues !== "write") throw new Error("The GitHub App does not have Issues write permission.");
+  const d = await githubJson(token, `https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/issues`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: safeTitle, body: safeBody }),
+  });
+  return { ok:true, number:d?.number || null, html_url:d?.html_url || null, title:d?.title || safeTitle };
 }
 async function createLink(req: Request, provider: string, tg: number) {
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
@@ -549,6 +612,47 @@ async function gmailFetchJson(token: string, url: string) {
   if (r.status === 401 || r.status === 403) throw new Error("Your Gmail permission has expired or is no longer valid. Use /disconnect_gmail, then /connect to reconnect Gmail.");
   if (!r.ok) throw new Error(d?.error?.message || `Gmail request failed (${r.status}).`);
   return d;
+}
+function gmailRawMessage(recipient: string, subject: string, body: string) {
+  const safeRecipient = recipient.trim();
+  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(safeRecipient) || /[\r\n]/.test(safeRecipient)) {
+    throw new Error("Enter one valid recipient email address.");
+  }
+  const safeSubject = subject.replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+  const safeBody = body.replace(/\r?\n/g, "\r\n").slice(0, 10000);
+  if (!safeSubject || !safeBody.trim()) throw new Error("Email subject and message are required.");
+  const subjectBytes = new TextEncoder().encode(safeSubject);
+  const encodedSubject = b64(subjectBytes);
+  const raw = [
+    `To: ${safeRecipient}`,
+    `Subject: =?UTF-8?B?${encodedSubject}?=`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    safeBody,
+  ].join("\r\n");
+  return b64(new TextEncoder().encode(raw)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+async function gmailSend(tg: number, recipient: string, subject: string, body: string) {
+  const conn = await gmailConnection(tg);
+  const scope = String(conn.scope || "");
+  if (!scope.includes("gmail.send") && !scope.includes("mail.google.com")) {
+    throw new Error("Gmail send permission is not authorized. Disconnect Gmail, then use /connect and approve sending permission.");
+  }
+  const token = await decrypt(String(conn.access_token_enc || ""));
+  if (!token) throw new Error("Gmail access token is missing. Reconnect Gmail with /connect.");
+  const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ raw: gmailRawMessage(recipient, subject, body) }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 403) {
+    throw new Error("Your Gmail send permission has expired or is no longer valid. Disconnect Gmail, then use /connect to reconnect.");
+  }
+  if (!r.ok) throw new Error(d?.error?.message || `Gmail send failed (${r.status}).`);
+  return { ok: true, message_id: d?.id || null, thread_id: d?.threadId || null };
 }
 async function gmailMessages(tg: number, query: string, maxResults: number) {
   const conn = await gmailConnection(tg);
@@ -841,10 +945,34 @@ Deno.serve(async (req: Request) => {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
   }
+  if (action === "gmail_send") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await gmailSend(tg, String(body.recipient || ""), String(body.subject || ""), String(body.email_body || "")));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
   if (action === "github_repositories") {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
       return json(await githubRepositories(tg, Number(body.max_results || 10)));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
+  if (action === "github_repository_context") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await githubRepositoryContext(tg, String(body.repository || "")));
+    } catch (e) {
+      return json({ error: String((e as Error)?.message || e) }, 400);
+    }
+  }
+  if (action === "github_create_issue") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
+      return json(await githubCreateIssue(tg, String(body.repository || ""), String(body.title || ""), String(body.issue_body || "")));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
