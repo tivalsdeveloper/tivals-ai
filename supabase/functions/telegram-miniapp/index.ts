@@ -11,7 +11,7 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
 const voiceBuckets = new Map<number,{count:number;resetAt:number}>();
-const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites";
+const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone";
 
 const cors = {
   "Access-Control-Allow-Origin":"https://ai.tivalsdeveloper.site",
@@ -157,6 +157,10 @@ async function syncOwnedBotSetup(tg:number) {
 function botCommands(purpose:string) {
   const base=[
     {command:"start",description:"Start a conversation"},
+    {command:"newchat",description:"Start a fresh private chat"},
+    {command:"chats",description:"Continue a previous private chat"},
+    {command:"remind",description:"Create a personal reminder"},
+    {command:"reminders",description:"View upcoming reminders"},
     {command:"ask",description:"Ask the bot in a group or channel"},
     {command:"app",description:"Open the owner dashboard"},
     {command:"grouphelp",description:"How to use this bot in groups"},
@@ -170,6 +174,10 @@ function botCommands(purpose:string) {
     {command:"practice",description:"Give practice questions"}
   );
   return base;
+}
+
+function validTimezone(value:string) {
+  try{new Intl.DateTimeFormat("en",{timeZone:value}).format(new Date());return true;}catch{return false;}
 }
 
 async function syncBotPresentation(token:string,profile:any) {
@@ -373,7 +381,8 @@ async function getPersonalBotDashboard(tg:number) {
       subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
       teaching_style:bot?.teaching_style||"adaptive",language:bot?.language||"auto",
       welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"voice_messages",
-      group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",owner_only_invites:bot?.owner_only_invites!==false
+      group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",owner_only_invites:bot?.owner_only_invites!==false,
+      timezone:bot?.timezone||"Africa/Johannesburg"
     }
   };
 }
@@ -468,6 +477,8 @@ Deno.serve(async req => {
       if(!botName)return json({error:"Enter a name for your bot."},400);
       const subjects=(Array.isArray(body?.subjects)?body.subjects:String(body?.subjects||"").split(","))
         .map((x:any)=>String(x).trim().slice(0,80)).filter(Boolean).slice(0,20);
+      const timezone=String(body?.timezone||"Africa/Johannesburg").trim().slice(0,80)||"Africa/Johannesburg";
+      if(!validTimezone(timezone))return json({error:"Choose a valid timezone, for example Africa/Johannesburg."},400);
       const row={
         bot_name:botName,
         bot_purpose:purposes.includes(String(body?.bot_purpose))?String(body.bot_purpose):"general",
@@ -480,7 +491,9 @@ Deno.serve(async req => {
         voice_mode:voices.includes(String(body?.voice_mode))?String(body.voice_mode):"voice_messages",
         group_mode:groups.includes(String(body?.group_mode))?String(body.group_mode):"mentions",
         channel_mode:channels.includes(String(body?.channel_mode))?String(body.channel_mode):"commands",
-        owner_only_invites:body?.owner_only_invites!==false,updated_at:new Date().toISOString()
+        owner_only_invites:body?.owner_only_invites!==false,
+        timezone,
+        updated_at:new Date().toISOString()
       };
       const {data:current,error:currentError}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
       if(currentError)throw currentError;if(!current?.is_active||!current?.token_enc)return json({error:"Connect your Telegram bot first."},400);
