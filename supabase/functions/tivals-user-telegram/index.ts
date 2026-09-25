@@ -272,6 +272,9 @@ function personalBotSystem(profile:any) {
     `Your name is ${name}. Speak naturally, warmly and conversationally, like a thoughtful human assistant.`,
     `Personality: ${String(profile?.personality||"Friendly, natural and helpful").slice(0,1000)}.`,
     `Use ${String(profile?.language||"the user's language").slice(0,60)==="auto"?"the same language as the user":String(profile.language).slice(0,60)}.`,
+    "Sound natural and genuinely conversational: vary sentence rhythm, use contractions when appropriate, respond to what was actually said, and avoid repeating greetings, menus, or scripted introductions.",
+    "Use the conversation history to continue the topic naturally. Ask at most one useful follow-up question when important details are missing.",
+    "You are an AI and must never falsely claim to be human, conscious, or physically present.",
     "This is a personal assistant, not a business assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
     "Never invent business details, prices, bookings, contact information, account data, or completed actions.",
     "Never pretend to have done a real-world action you did not do. Be honest when uncertain."
@@ -314,13 +317,14 @@ function remember(key:string,user:string,assistant:string) {
   conversationMemory.set(key,{messages:[...memoryMessages(key),{role:"user",content:user.slice(0,3000)},{role:"assistant",content:assistant.slice(0,3000)}].slice(-8),expires:Date.now()+30*60_000});
   if(conversationMemory.size>2000)for(const [k,v] of conversationMemory)if(v.expires<=Date.now())conversationMemory.delete(k);
 }
-async function personalAi(profile:any,memoryKey:string,userText:string) {
+async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>) {
   const prompt=commandPrompt(userText);
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25_000);
   try {
-    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},...memoryMessages(memoryKey),{role:"user",content:prompt}]}),signal:controller.signal});
+    const history=persistentHistory||memoryMessages(memoryKey);
+    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
     const result=await ai.json().catch(()=>({}));if(!ai.ok||!result?.reply)throw new Error(result?.error||"The AI is temporarily unavailable.");
-    const answer=String(result.reply);remember(memoryKey,prompt,answer);return answer;
+    const answer=String(result.reply);if(!persistentHistory)remember(memoryKey,prompt,answer);return answer;
   } finally { clearTimeout(timer); }
 }
 
@@ -338,6 +342,78 @@ async function consumeOwnerAiUsage(tg:number) {
   const used=Number(usage?.ai_messages||0);if(used>=limit)throw new Error("This bot has reached its daily AI limit. The creator can upgrade the plan in /app.");
   const {error:upsertError}=await sb.from("telegram_daily_usage").upsert({telegram_user_id:tg,usage_date:today,ai_messages:used+1,image_generations:Number(usage?.image_generations||0),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id,usage_date"});
   if(upsertError)throw upsertError;
+}
+
+async function activeConversation(ownerId:number,chatId:number,participantId:number) {
+  const {data,error}=await sb.from("telegram_personal_chats").select("id,title,created_at,updated_at").eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).eq("is_active",true).maybeSingle();
+  if(error)throw error;if(data)return data;
+  const {data:created,error:createError}=await sb.from("telegram_personal_chats").insert({bot_owner_id:ownerId,chat_id:chatId,participant_id:participantId,title:"New chat",is_active:true}).select("id,title,created_at,updated_at").single();
+  if(!createError)return created;
+  const {data:retry,error:retryError}=await sb.from("telegram_personal_chats").select("id,title,created_at,updated_at").eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).eq("is_active",true).maybeSingle();
+  if(retryError||!retry)throw createError;return retry;
+}
+async function startConversation(ownerId:number,chatId:number,participantId:number) {
+  const now=new Date().toISOString();
+  const {error:offError}=await sb.from("telegram_personal_chats").update({is_active:false,updated_at:now}).eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).eq("is_active",true);if(offError)throw offError;
+  const {data,error}=await sb.from("telegram_personal_chats").insert({bot_owner_id:ownerId,chat_id:chatId,participant_id:participantId,title:"New chat",is_active:true,updated_at:now}).select("id,title,created_at,updated_at").single();if(error)throw error;return data;
+}
+async function conversationHistory(conversationId:string) {
+  const {data,error}=await sb.from("telegram_personal_messages").select("role,content,created_at").eq("conversation_id",conversationId).order("created_at",{ascending:false}).limit(14);if(error)throw error;
+  return (data||[]).reverse().map((x:any)=>({role:x.role as "user"|"assistant",content:String(x.content)}));
+}
+async function persistConversation(conversation:any,ownerId:number,chatId:number,participantId:number,userText:string,assistantText:string) {
+  const rows=[{conversation_id:conversation.id,bot_owner_id:ownerId,chat_id:chatId,participant_id:participantId,role:"user",content:userText.slice(0,12000)},{conversation_id:conversation.id,bot_owner_id:ownerId,chat_id:chatId,participant_id:participantId,role:"assistant",content:assistantText.slice(0,12000)}];
+  const {error}=await sb.from("telegram_personal_messages").insert(rows);if(error)throw error;
+  const title=conversation.title==="New chat"?(userText.replace(/^\/\w+\s*/,"").replace(/\s+/g," ").trim().slice(0,72)||"New chat"):conversation.title;
+  await sb.from("telegram_personal_chats").update({title,updated_at:new Date().toISOString()}).eq("id",conversation.id).eq("bot_owner_id",ownerId);
+}
+async function showChats(token:string,chatId:number,ownerId:number,participantId:number) {
+  const {data,error}=await sb.from("telegram_personal_chats").select("id,title,is_active,updated_at").eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).order("updated_at",{ascending:false}).limit(8);if(error)throw error;
+  const rows=(data||[]).map((x:any)=>[{text:`${x.is_active?"✓ ":""}${String(x.title||"New chat").slice(0,48)}`,callback_data:`chat_select:${x.id}`}]);
+  rows.push([{text:"➕ Start new chat",callback_data:"chat_new"}]);
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"💬 <b>Your private chats</b>\n\nOnly you can continue these conversations.",parse_mode:"HTML",reply_markup:{inline_keyboard:rows}});
+}
+async function selectConversation(token:string,q:any,ownerId:number,conversationId:string) {
+  const participantId=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);if(!participantId||!chatId||q?.message?.business_connection_id)return"chat-select-rejected";
+  const {data,error}=await sb.from("telegram_personal_chats").select("id,title").eq("id",conversationId).eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).maybeSingle();if(error)throw error;if(!data){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"That chat is unavailable.",show_alert:true}).catch(()=>{});return"chat-select-missing";}
+  await sb.from("telegram_personal_chats").update({is_active:false}).eq("bot_owner_id",ownerId).eq("chat_id",chatId).eq("participant_id",participantId).eq("is_active",true);
+  await sb.from("telegram_personal_chats").update({is_active:true,updated_at:new Date().toISOString()}).eq("id",conversationId).eq("bot_owner_id",ownerId).eq("participant_id",participantId);
+  await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Chat opened."}).catch(()=>{});await reply(token,chatId,`💬 Continuing **${data.title}**.`);return"chat-selected";
+}
+function validTimezone(value:string) {try{new Intl.DateTimeFormat("en",{timeZone:value}).format(new Date());return true;}catch{return false;}}
+function zonedDateTime(date:string,time:string,timeZone:string) {
+  const wall=Date.parse(`${date}T${time}:00Z`);if(!Number.isFinite(wall)||!validTimezone(timeZone))return null;
+  const parts=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(new Date(wall));
+  const get=(type:string)=>Number(parts.find(x=>x.type===type)?.value||0),shown=Date.UTC(get("year"),get("month")-1,get("day"),get("hour"),get("minute"),get("second"));
+  let utc=wall-(shown-wall);const parts2=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(new Date(utc));
+  const get2=(type:string)=>Number(parts2.find(x=>x.type===type)?.value||0),shown2=Date.UTC(get2("year"),get2("month")-1,get2("day"),get2("hour"),get2("minute"),get2("second"));utc-=shown2-wall;return new Date(utc);
+}
+function reminderIntent(text:string) {return /^\/remind(?:\s|$)/i.test(text)||/\bremind me\b/i.test(text)||/\bset (?:a |an )?reminder\b/i.test(text);}
+function parseReminderJson(value:string) {
+  const start=value.indexOf("{"),end=value.lastIndexOf("}");if(start<0||end<=start)throw new Error("Tell me when and what to remind you about.");let data:any;try{data=JSON.parse(value.slice(start,end+1));}catch{throw new Error("I could not understand the reminder time. Try `/remind 2026-09-26 09:00 | Your message`.");}
+  const message=String(data?.message||"").trim().slice(0,1000),when=new Date(String(data?.remind_at||""));if(!message||!Number.isFinite(when.getTime()))throw new Error("Include a reminder message and a clear date and time.");return{message,when};
+}
+async function reminderDraft(profile:any,text:string,timeZone:string) {
+  const explicit=text.match(/^\/remind\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*\|\s*([\s\S]+)$/i);
+  if(explicit){const when=zonedDateTime(explicit[1],explicit[2],timeZone);if(!when)throw new Error("That reminder date, time, or timezone is invalid.");return{message:explicit[3].trim().slice(0,1000),when};}
+  const prompt=["Extract a reminder from the request.","Return only JSON with: remind_at (ISO 8601 including timezone offset), message (the reminder text).","If the date or time is missing or ambiguous, return {\"remind_at\":\"\",\"message\":\"\"}.",`Current time: ${new Date().toISOString()}`,`User timezone: ${timeZone}`,`Request: ${toolText(text,1200)}`].join("\n");
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20_000);try{const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},{role:"user",content:prompt}]}),signal:controller.signal});const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error("I could not prepare that reminder.");return parseReminderJson(String(d.reply));}finally{clearTimeout(timer);}
+}
+function reminderDisplay(date:string,timeZone:string) {try{return new Intl.DateTimeFormat("en-ZA",{timeZone,dateStyle:"medium",timeStyle:"short"}).format(new Date(date));}catch{return new Date(date).toISOString();}}
+async function createReminder(ownerId:number,creatorId:number,chatId:number,message:string,when:Date,timeZone:string) {
+  if(!message)throw new Error("Add a message after the reminder time.");if(when.getTime()<=Date.now()+60_000)throw new Error("Choose a reminder time at least one minute in the future.");if(when.getTime()>Date.now()+366*24*60*60_000)throw new Error("Reminders can be scheduled up to one year ahead.");
+  const {data,error}=await sb.from("telegram_personal_reminders").insert({bot_owner_id:ownerId,creator_id:creatorId,chat_id:chatId,message,remind_at:when.toISOString(),timezone:timeZone,status:"pending"}).select("id,message,remind_at,timezone").single();if(error)throw error;return data;
+}
+async function showReminders(token:string,chatId:number,ownerId:number,creatorId:number) {
+  const {data,error}=await sb.from("telegram_personal_reminders").select("id,message,remind_at,timezone").eq("bot_owner_id",ownerId).eq("creator_id",creatorId).eq("chat_id",chatId).eq("status","pending").order("remind_at").limit(10);if(error)throw error;
+  if(!data?.length){await reply(token,chatId,"⏰ You have no upcoming reminders.");return;}
+  const text="⏰ <b>Your upcoming reminders</b>\n\n"+data.map((x:any,i:number)=>`${i+1}. <b>${esc(reminderDisplay(x.remind_at,x.timezone))}</b>\n${esc(x.message)}`).join("\n\n");
+  const rows=data.map((x:any,i:number)=>[{text:`❌ Cancel ${i+1}`,callback_data:`reminder_cancel:${x.id}`}]);await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",reply_markup:{inline_keyboard:rows}});
+}
+async function cancelReminder(token:string,q:any,ownerId:number,id:string) {
+  const creatorId=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);if(!creatorId||!chatId||q?.message?.business_connection_id)return"reminder-cancel-rejected";
+  const {data,error}=await sb.from("telegram_personal_reminders").update({status:"cancelled",updated_at:new Date().toISOString()}).eq("id",id).eq("bot_owner_id",ownerId).eq("creator_id",creatorId).eq("chat_id",chatId).eq("status","pending").select("id").maybeSingle();if(error)throw error;
+  await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:data?"Reminder cancelled.":"Reminder is unavailable."}).catch(()=>{});if(data)await reply(token,chatId,"✅ Reminder cancelled.");return data?"reminder-cancelled":"reminder-cancel-missing";
 }
 
 function parseEmailDraft(value:string) {
@@ -405,7 +481,7 @@ Deno.serve(async (req: Request) => {
 
   if (tgOwner > 0) {
     const {data,error}=await sb.from("telegram_owned_bots")
-      .select("token_enc,webhook_secret_enc,account_label,is_active,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites")
+      .select("token_enc,webhook_secret_enc,account_label,is_active,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
       .eq("telegram_user_id",tgOwner).maybeSingle();
     if(error || !data || !data.is_active) return json({error:"Connector not found"},404);
     conn={
@@ -450,6 +526,15 @@ Deno.serve(async (req: Request) => {
     }
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
+      responseChat=Number(q?.message?.chat?.id||0);responseBusiness=String(q?.message?.business_connection_id||"");
+      if(paywallOwner&&data==="chat_new"){
+        const participantId=Number(q?.from?.id||0),callbackChat=Number(q?.message?.chat?.id||0);if(!participantId||!callbackChat||q?.message?.business_connection_id)return json({ok:true,route:"chat-new-rejected"});
+        await startConversation(paywallOwner,callbackChat,participantId);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"New chat started."}).catch(()=>{});await reply(token,callbackChat,"✨ New chat started. What would you like to talk about?");return json({ok:true,route:"chat-new"});
+      }
+      const chatSelect=data.match(/^chat_select:([0-9a-f-]{36})$/i);
+      if(paywallOwner&&chatSelect){const route=await selectConversation(token,q,paywallOwner,chatSelect[1].toLowerCase());return json({ok:true,route});}
+      const reminderCancel=data.match(/^reminder_cancel:([0-9a-f-]{36})$/i);
+      if(paywallOwner&&reminderCancel){const route=await cancelReminder(token,q,paywallOwner,reminderCancel[1].toLowerCase());return json({ok:true,route});}
       const emailAction=data.match(/^gmail_(send|cancel):([0-9a-f-]{36})$/i);
       if(emailAction&&paywallOwner){
         const route=await handleEmailConfirmation(token,q,paywallOwner,emailAction[1].toLowerCase() as "send"|"cancel",emailAction[2].toLowerCase());
@@ -475,6 +560,7 @@ Deno.serve(async (req: Request) => {
     responseChat=chatId;responseBusiness=businessConnectionId;
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
+    const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private"&&!businessConnectionId);
     if (!chatId || (!text&&!voice) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
       const mode=String(conn.channel_mode||"commands");
@@ -527,6 +613,20 @@ Deno.serve(async (req: Request) => {
       await reply(token,chatId,"In groups, mention me or reply to one of my messages. Educational commands: `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. In channels, use `/ask question` or an educational command. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
       return json({ok:true,route:"group-help"});
     }
+    if(privateConversation&&/^\/newchat(?:@[A-Za-z0-9_]+)?$/i.test(text)){
+      await startConversation(paywallOwner,chatId,senderId);await reply(token,chatId,"✨ New chat started. What would you like to talk about?");return json({ok:true,route:"chat-new"});
+    }
+    if(privateConversation&&/^\/chats(?:@[A-Za-z0-9_]+)?$/i.test(text)){
+      await showChats(token,chatId,paywallOwner,senderId);return json({ok:true,route:"chats"});
+    }
+    if(privateConversation&&/^\/reminders(?:@[A-Za-z0-9_]+)?$/i.test(text)){
+      await showReminders(token,chatId,paywallOwner,senderId);return json({ok:true,route:"reminders"});
+    }
+    if(privateConversation&&reminderIntent(text)){
+      const explicit=/^\/remind\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\|/i.test(text);if(!explicit)await consumeOwnerAiUsage(paywallOwner);
+      const timeZone=validTimezone(String(conn.timezone||""))?String(conn.timezone):"Africa/Johannesburg",draft=await reminderDraft(conn,text,timeZone),saved=await createReminder(paywallOwner,senderId,chatId,draft.message,draft.when,timeZone);
+      await telegram(token,"sendMessage",{chat_id:chatId,text:`⏰ <b>Reminder scheduled</b>\n\n<b>When:</b> ${esc(reminderDisplay(saved.remind_at,saved.timezone))}\n<b>Reminder:</b> ${esc(saved.message)}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"❌ Cancel reminder",callback_data:`reminder_cancel:${saved.id}`}]]}});return json({ok:true,route:"reminder-created"});
+    }
     const explicitTool=parseToolRequest(text),mailIntent=gmailIntent(text);
     if(ownerPrivate&&(explicitTool||mailIntent.matched||gmailSendIntent(text))){
       const tool=explicitTool?.tool||(mailIntent.matched||gmailSendIntent(text)?"gmail":"ai"),request=explicitTool?.request||text;
@@ -545,10 +645,13 @@ Deno.serve(async (req: Request) => {
       action: "typing",
       ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
     });
+    let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
+    if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
     // Personal bots are intentionally isolated from business profiles, catalogs,
     // bookings and business-account automation.
-    const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text);
+    const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory);
+    if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
     if(shouldSpeak){
       try{await telegramVoice(token,chatId,await synthesizeVoice(answer),answer,businessConnectionId)}catch{await reply(token,chatId,answer,businessConnectionId)}
