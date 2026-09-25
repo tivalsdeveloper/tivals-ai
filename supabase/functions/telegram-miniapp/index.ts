@@ -6,7 +6,10 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const OWNED_BOT_WEBHOOK = `${SUPABASE_URL}/functions/v1/tivals-user-telegram`;
+const TIVALS_AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
+const voiceBuckets = new Map<number,{count:number;resetAt:number}>();
 
 const cors = {
   "Access-Control-Allow-Origin":"https://ai.tivalsdeveloper.site",
@@ -32,6 +35,38 @@ function b64(bytes: Uint8Array) {
   for (let i=0;i<bytes.length;i+=0x8000) out += String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
   return btoa(out);
 }
+function fromB64(value:string) {
+  const raw=atob(value);const bytes=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+  return bytes;
+}
+function takeVoiceRate(tg:number) {
+  const now=Date.now(),bucket=voiceBuckets.get(tg);
+  if(!bucket||bucket.resetAt<=now){voiceBuckets.set(tg,{count:1,resetAt:now+60_000});return true;}
+  if(bucket.count>=6)return false;
+  bucket.count+=1;return true;
+}
+function voiceFormat(value:string) {
+  const v=String(value||"").toLowerCase();
+  if(["webm","mp3","m4a","aac","wav","ogg","flac"].includes(v))return v;
+  return "webm";
+}
+async function transcribeVoice(bytes:Uint8Array,format:string) {
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(!key)throw new Error("Voice recognition is not configured.");
+  const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:b64(bytes),format:voiceFormat(format)},response_format:"json",temperature:0})});
+  const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();
+  if(!r.ok||!text)throw new Error(d?.error?.message||d?.error||"I could not understand the recording.");
+  return text.slice(0,4000);
+}
+async function synthesizeVoice(text:string) {
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(!key)throw new Error("Voice replies are not configured.");
+  const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});
+  if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d?.error?.message||d?.error||"Voice generation failed.");}
+  const bytes=new Uint8Array(await r.arrayBuffer());if(!bytes.length)throw new Error("Voice generation returned no audio.");
+  return bytes;
+}
 async function aesKey() {
   const digest = await crypto.subtle.digest("SHA-256", enc.encode(SERVICE_KEY));
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt","decrypt"]);
@@ -56,6 +91,33 @@ function randomSecret() {
 async function isAdmin(tg:number) {
   const {data}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
   return Boolean(data);
+}
+async function consumeAiUsage(tg:number) {
+  if(await isAdmin(tg))return;
+  const access=await paidAccess(tg),limit=access.plan==="pro"?1000:access.plan==="basic"?200:20;
+  const today=new Date().toISOString().slice(0,10);
+  const {data,error}=await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle();
+  if(error)throw error;
+  const used=Number(data?.ai_messages||0);if(used>=limit)throw new Error("Your daily AI message limit has been reached.");
+  const {error:upsertError}=await sb.from("telegram_daily_usage").upsert({telegram_user_id:tg,usage_date:today,ai_messages:used+1,image_generations:Number(data?.image_generations||0),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id,usage_date"});
+  if(upsertError)throw upsertError;
+}
+
+async function voiceBusinessProfile(tg:number) {
+  const [{data:profile},{data:catalog},{data:specialists},{data:faqs}]=await Promise.all([
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
+    sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
+    sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
+  ]);
+  return profile?{...profile,catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]}:null;
+}
+
+async function voiceAiReply(tg:number,transcript:string,history:any[]) {
+  const safeHistory=(Array.isArray(history)?history:[]).slice(-6).map((m:any)=>({role:m?.role==="assistant"?"assistant":"user",content:String(m?.content||"").slice(0,1500)})).filter((m:any)=>m.content);
+  const r=await fetch(TIVALS_AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"tivals-ai",business_profile:await voiceBusinessProfile(tg),messages:[...safeHistory,{role:"user",content:transcript+"\n\nReply naturally for a spoken conversation. Be clear and concise."}]})});
+  const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error(d?.error||"Tivals AI could not answer.");
+  return String(d.reply).slice(0,3500);
 }
 async function paidAccess(tg:number) {
   if (await isAdmin(tg)) return {allowed:true,owner:true,plan:"owner"};
@@ -262,6 +324,20 @@ Deno.serve(async req => {
   const action = String(body?.action || "dashboard");
 
   try {
+    if(action==="voice_chat") {
+      if(!takeVoiceRate(tg))return json({error:"Please wait a moment before speaking again."},429);
+      const encoded=String(body?.audio_base64||"");
+      if(!encoded||encoded.length>8_000_000)return json({error:"The recording is missing or too large. Keep each turn under 45 seconds."},400);
+      let audio:Uint8Array;
+      try{audio=fromB64(encoded);}catch{return json({error:"The recording could not be read."},400);}
+      if(!audio.length||audio.length>6_000_000)return json({error:"Keep each voice turn under 45 seconds."},400);
+      await consumeAiUsage(tg);
+      const transcript=await transcribeVoice(audio,String(body?.audio_format||"webm"));
+      const reply=await voiceAiReply(tg,transcript,body?.history);
+      const spoken=await synthesizeVoice(reply);
+      return json({ok:true,transcript,reply,audio_base64:b64(spoken),audio_mime:"audio/mpeg"});
+    }
+
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
 
     if (action==="save_website_widget") {

@@ -117,6 +117,20 @@ async function telegram(method: string, payload: Record<string, unknown>) {
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed (${r.status}).`);
   return d;
 }
+
+async function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("voice", new Blob([audio], { type:"audio/mpeg" }), "tivals-ai-reply.mp3");
+  form.append("caption", String(reply || "").slice(0, 900));
+  if (business) form.append("business_connection_id", business);
+  const r = await fetch(`${TELEGRAM_API}/bot${token}/sendVoice`, { method:"POST", body:form });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram sendVoice failed (${r.status}).`);
+  return d;
+}
 async function groupMessageAllowed(message:any,text:string) {
   if(String(message?.chat?.type||"private")==="private")return true;
   if(!mainBotIdentity){const d=await telegram("getMe",{});mainBotIdentity={id:Number(d?.result?.id||0),username:String(d?.result?.username||"")};}
@@ -1233,6 +1247,63 @@ function bytesToB64(bytes: Uint8Array) {
   return btoa(s);
 }
 
+function audioFormat(mime:string) {
+  const value=String(mime||"").toLowerCase();
+  if(value.includes("webm"))return "webm";
+  if(value.includes("mpeg")||value.includes("mp3"))return "mp3";
+  if(value.includes("mp4")||value.includes("m4a"))return "m4a";
+  if(value.includes("aac"))return "aac";
+  if(value.includes("wav"))return "wav";
+  return "ogg";
+}
+
+async function transcribeVoice(bytes:Uint8Array,mime:string) {
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(!key) throw new Error("Voice recognition is not configured.");
+  const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{
+    method:"POST",
+    headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},
+    body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})
+  });
+  const d=await r.json().catch(()=>({}));
+  const text=String(d?.text||"").trim();
+  if(!r.ok||!text) throw new Error(d?.error?.message||d?.error||"I could not understand that voice message.");
+  return text.slice(0,4000);
+}
+
+async function synthesizeVoice(text:string) {
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(!key) throw new Error("Voice replies are not configured.");
+  const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{
+    method:"POST",
+    headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},
+    body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})
+  });
+  if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d?.error?.message||d?.error||"Voice generation failed.");}
+  const bytes=new Uint8Array(await r.arrayBuffer());
+  if(!bytes.length) throw new Error("Voice generation returned no audio.");
+  return bytes;
+}
+
+async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,business?:string,chatType="private") {
+  if(chatType!=="private"&&!business) throw new Error("Voice chat is available in a private chat with Tivals AI.");
+  const size=Number(voice?.file_size||0),duration=Number(voice?.duration||0);
+  if(size>6_000_000||duration>90) throw new Error("Please send a voice note shorter than 90 seconds.");
+  const quota=await consumeUsage(tg,"ai");
+  if(!quota.ok){await sendLimitReached(chatId,quota.plan as PlanName,"ai",business);return "voice-limit";}
+  await telegram("sendChatAction",{chat_id:chatId,action:"record_voice",...(business?{business_connection_id:business}:{})}).catch(()=>{});
+  const bytes=await telegramFileBytes(String(voice?.file_id||""),6_000_000);
+  const transcript=await transcribeVoice(bytes,String(voice?.mime_type||"audio/ogg"));
+  const reply=await askTivalsAI(transcript,tg);
+  try {
+    await telegramVoice(chatId,await synthesizeVoice(reply),reply,business);
+  } catch(e) {
+    console.error("Tivals voice reply error",String((e as Error)?.message||e));
+    await sendFormatted(chatId,reply,business);
+  }
+  return "voice";
+}
+
 async function telegramImageDataUrl(fileId:string) {
   const token = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
   const info = await telegram("getFile", { file_id: fileId });
@@ -1313,7 +1384,7 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, gmail_sending: true, email_confirmation: true, image_reading: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
+  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, gmail_sending: true, email_confirmation: true, image_reading: true, voice_chat: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
@@ -1426,11 +1497,18 @@ Deno.serve(async (req: Request) => {
   const photos = Array.isArray(message?.photo) ? message.photo : [];
   const imageDoc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
   const uploadDoc = message?.document && !imageDoc ? message.document : null;
+  const voice = message?.voice || null;
 
   if(!bm&&text&&!await groupMessageAllowed(message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
   if(tg&&!acceptChat(`${chatId}:${tg}`))return json({ok:true,ignored:true,reason:"rate-limited"});
 
   try {
+    if(voice) {
+      if(!tg) throw new Error("Telegram user ID is unavailable.");
+      const route=await handleVoiceMessage(chatId,effectiveTg,voice,business,String(message?.chat?.type||"private"));
+      return json({ok:true,route});
+    }
+
     if(uploadDoc && /^@github\s+upload\b/i.test(caption)) {
       if(!tg) throw new Error("Telegram user ID is unavailable.");
       await handleGithubDocumentUpload(chatId,effectiveTg,uploadDoc,caption,business,String(message?.chat?.type || "private"));
@@ -1488,6 +1566,9 @@ Deno.serve(async (req: Request) => {
         "• Send a photo and Tivals AI can analyze it.",
         "• Ask `@image ...` to generate an image.",
         "",
+        "**Voice chat**",
+        "• Send a voice note and Tivals AI will answer with a spoken voice reply.",
+        "",
         "**Account commands**",
         "• `/connect` — connect accounts",
         "• `/accounts` — show connected accounts",
@@ -1502,7 +1583,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/sendemail — Prepare an email for confirmation\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors and settings\n/connectbot — Connect your own Telegram bot\n\nTry `@gmail send email to name@example.com about ...`. The bot always asks for confirmation before sending.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/sendemail — Prepare an email for confirmation\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors, voice and settings\n/connectbot — Connect your own Telegram bot\n\nTry `@gmail send email to name@example.com about ...`. The bot always asks for confirmation before sending.", business);
       return json({ok:true});
     }
 

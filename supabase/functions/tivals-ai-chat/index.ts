@@ -9,10 +9,9 @@ const cors = {
 
 const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
-const VERSION = 28;
+const VERSION = 27;
 
 type WidgetConfig = {
   public_key: string;
@@ -42,7 +41,7 @@ const APPMIX_FREE_MODELS = [
 
 const APINEX_FALLBACK_MODELS = ["free/gemini-3.1-pro"];
 
-type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter" | "aimlapi";
+type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter";
 type SelectedModel = { provider: ProviderName; model: string };
 type PublicModel = { id: string; name: string; provider?: string; model?: string };
 
@@ -50,8 +49,7 @@ const cooldownUntil: Record<ProviderName, number> = {
   bazaarlink: 0,
   appmix: 0,
   apinex: 0,
-  openrouter: 0,
-  aimlapi: 0
+  openrouter: 0
 };
 
 let appMixWorkingModel = "";
@@ -395,7 +393,6 @@ function providerLabel(provider: ProviderName) {
   if (provider === "bazaarlink") return "BazaarLink";
   if (provider === "appmix") return "AppMix";
   if (provider === "apinex") return "Apinex";
-  if (provider === "aimlapi") return "AIML API";
   return "OpenRouter";
 }
 
@@ -614,23 +611,10 @@ async function callOpenRouter(key: string, prompt: any[]) {
   }
 }
 
-async function callAimlApi(key: string, model: string, prompt: any[]) {
-  if (inCooldown("aimlapi")) throw new Error("cooldown");
-  const chosen=String(model||"gpt-4o-mini").trim() || "gpt-4o-mini";
-  try {
-    const reply=await callProvider(`${AIMLAPI_BASE}/chat/completions`,key,chosen,prompt,{},12000);
-    return {reply,route:`aimlapi:${chosen}`,model:chosen};
-  } catch(e) {
-    const reason=safeErr(e);
-    if(["rate_limited","unauthorized","timeout","no_credits"].includes(reason)) setCooldown("aimlapi",reason);
-    throw new Error(reason);
-  }
-}
-
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
-  keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; aimlModel: string }
+  keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }
 ) {
   const { provider, model } = selected;
   if (inCooldown(provider)) throw new Error("cooldown");
@@ -638,8 +622,7 @@ async function callSpecificModel(
   const key = provider === "bazaarlink" ? keys.bazaar
     : provider === "appmix" ? keys.app
     : provider === "apinex" ? keys.apinex
-    : provider === "openrouter" ? keys.open
-    : keys.aiml;
+    : keys.open;
   if (!key) throw new Error("provider_not_configured");
 
   try {
@@ -671,8 +654,7 @@ async function callSpecificModel(
       }
       throw lastError;
     }
-    if (provider === "openrouter") return await callOpenRouter(key, prompt);
-    return await callAimlApi(key, keys.aimlModel, prompt);
+    return await callOpenRouter(key, prompt);
   } catch (e) {
     const reason = safeErr(e);
     if (["rate_limited", "unauthorized", "timeout", "no_credits"].includes(reason)) setCooldown(provider, reason);
@@ -680,7 +662,7 @@ async function callSpecificModel(
   }
 }
 
-async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; aimlModel: string }) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }) {
   const providers: any[] = [];
 
   if (keys.bazaar) {
@@ -741,9 +723,6 @@ async function providerStatus(keys: { bazaar: string; app: string; apinex: strin
   providers.push(keys.open
     ? { name: "OpenRouter", configured: true, cooldown_ms: Math.max(0, cooldownUntil.openrouter - Date.now()) }
     : { name: "OpenRouter", configured: false });
-  providers.push(keys.aiml
-    ? { name: "AIML API", configured: true, model: keys.aimlModel, fallback_only: true, cooldown_ms: Math.max(0, cooldownUntil.aimlapi - Date.now()) }
-    : { name: "AIML API", configured: false, fallback_only: true });
 
   return providers;
 }
@@ -786,9 +765,7 @@ Deno.serve(async (req: Request) => {
     app: Deno.env.get("APPMIX_API_KEY") || "",
     apinex: Deno.env.get("APINEX_API_KEY") || "",
     apinexBackup: Deno.env.get("APINEX_API_KEY_BACKUP") || "",
-    open: Deno.env.get("OPENROUTER_API_KEY") || "",
-    aiml: Deno.env.get("AIMLAPI_API_KEY") || "",
-    aimlModel: Deno.env.get("AIMLAPI_MODEL") || "gpt-4o-mini"
+    open: Deno.env.get("OPENROUTER_API_KEY") || ""
   };
 
   if (req.method === "GET") {
@@ -823,8 +800,7 @@ Deno.serve(async (req: Request) => {
         ...(keys.bazaar ? ["BazaarLink"] : []),
         ...(keys.app ? ["AppMix"] : []),
         ...(keys.apinex || keys.apinexBackup ? ["Apinex"] : []),
-        ...(keys.open ? ["OpenRouter"] : []),
-        ...(keys.aiml ? ["AIML API"] : [])
+        ...(keys.open ? ["OpenRouter"] : [])
       ]
     });
   }
@@ -906,14 +882,7 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
   }
 
-  if (keys.aiml) {
-    try {
-      const result=await callAimlApi(keys.aiml,keys.aimlModel,prompt);
-      return json({reply:result.reply,model:result.model,provider:"AIML API",route:result.route,fallback:true},200,widget?origin:"");
-    } catch(e) { failures.push({provider:"AIML API",error:safeErr(e)}); }
-  }
-
-  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml) {
+  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open) {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
