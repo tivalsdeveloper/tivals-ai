@@ -9,6 +9,8 @@ const GITHUB_PRIVATE_KEY = (Deno.env.get("GITHUB_PRIVATE_KEY") || "").replace(/\
 const GITHUB_CLIENT_SECRET = Deno.env.get("GITHUB_CLIENT_SECRET") || "";
 const TIKTOK_CLIENT_KEY = Deno.env.get("TIKTOK_CLIENT_KEY") || "";
 const TIKTOK_CLIENT_SECRET = Deno.env.get("TIKTOK_CLIENT_SECRET") || "";
+const GOOGLE_CLIENT_ID = Deno.env.get("GOOGLE_CLIENT_ID") || Deno.env.get("GOOGLE_OAUTH_CLIENT_ID") || "";
+const GOOGLE_CLIENT_SECRET = Deno.env.get("GOOGLE_CLIENT_SECRET") || Deno.env.get("GOOGLE_OAUTH_CLIENT_SECRET") || "";
 const STATIC_BASE = "https://ai.tivalsdeveloper.site";
 const TIKTOK_REDIRECT_URI = `${SUPABASE_URL}/functions/v1/telegram-oauth/tiktok/callback`;
 const TIKTOK_SCOPES = Deno.env.get("TIKTOK_SCOPES") || "user.info.basic,user.info.stats,video.list";
@@ -95,17 +97,24 @@ async function createState(tg: number, provider: string) {
   return state;
 }
 async function saveConnection(row: any, provider: string, info: any) {
+  let refreshTokenEnc:string|null=null;
+  if(info.refresh) refreshTokenEnc=await encrypt(info.refresh);
+  else {
+    const {data:existing}=await sb.from("telegram_oauth_connections").select("refresh_token_enc").eq("telegram_user_id",row.telegram_user_id).eq("provider",provider).maybeSingle();
+    refreshTokenEnc=existing?.refresh_token_enc||null;
+  }
   const { error } = await sb.from("telegram_oauth_connections").upsert({
     telegram_user_id: row.telegram_user_id,
     provider,
     provider_user_id: info.providerUserId || null,
     account_label: info.label || null,
     access_token_enc: await encrypt(info.access || ""),
-    refresh_token_enc: info.refresh ? await encrypt(info.refresh) : null,
+    refresh_token_enc: refreshTokenEnc,
     token_type: info.tokenType || null,
     scope: info.scope || null,
     expires_at: info.expiresAt || null,
     metadata: info.metadata || {},
+    ...(provider==="gmail"?{last_refreshed_at:new Date().toISOString(),persistent_until:new Date(Date.now()+30*24*60*60_000).toISOString(),refresh_failures:0,needs_reconnect:false}:{}),
     updated_at: new Date().toISOString(),
   }, { onConflict: "telegram_user_id,provider" });
   if (error) throw error;
@@ -699,11 +708,35 @@ async function tiktokVideos(tg: number, maxResults = 5) {
 }
 async function gmailConnection(tg: number) {
   const { data, error } = await sb.from("telegram_oauth_connections")
-    .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata")
+    .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata,last_refreshed_at,persistent_until,refresh_failures,needs_reconnect")
     .eq("telegram_user_id", tg).eq("provider", "gmail").maybeSingle();
   if (error) throw error;
   if (!data) throw new Error("Gmail is not connected. Use /connect first.");
   return data;
+}
+async function gmailAccessToken(tg:number,conn?:any) {
+  const connection=conn||await gmailConnection(tg);
+  const expiresAt=connection.expires_at?new Date(connection.expires_at).getTime():0;
+  const current=await decrypt(String(connection.access_token_enc||""));
+  let clientId=GOOGLE_CLIENT_ID||String(connection?.metadata?.oauth_client_id||"");
+  if(!clientId&&current){const info=await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(current)}`).then(r=>r.json()).catch(()=>({}));clientId=String(info?.aud||"");if(clientId)await sb.from("telegram_oauth_connections").update({metadata:{...(connection.metadata||{}),oauth_client_id:clientId},updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");}
+  if(current&&expiresAt>Date.now()+5*60_000)return current;
+  const refresh=await decrypt(String(connection.refresh_token_enc||""));
+  if(!refresh||!clientId){
+    await sb.from("telegram_oauth_connections").update({needs_reconnect:true,refresh_failures:Number(connection.refresh_failures||0)+1,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");
+    throw new Error("Gmail needs one secure reconnect to activate 30-day automatic refresh.");
+  }
+  const refreshBody:any={client_id:clientId,grant_type:"refresh_token",refresh_token:refresh};if(GOOGLE_CLIENT_SECRET)refreshBody.client_secret=GOOGLE_CLIENT_SECRET;
+  const r=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(refreshBody)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||!d?.access_token){
+    const failures=Number(connection.refresh_failures||0)+1;
+    await sb.from("telegram_oauth_connections").update({needs_reconnect:failures>=3,refresh_failures:failures,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");
+    throw new Error(d?.error_description||"Google rejected the Gmail refresh token. Reconnect Gmail if Google access was revoked.");
+  }
+  const now=new Date().toISOString(),expires=new Date(Date.now()+Math.max(60,Number(d.expires_in||3600))*1000).toISOString();
+  const {error}=await sb.from("telegram_oauth_connections").update({access_token_enc:await encrypt(String(d.access_token)),expires_at:expires,last_refreshed_at:now,persistent_until:new Date(Date.now()+30*24*60*60_000).toISOString(),refresh_failures:0,needs_reconnect:false,updated_at:now}).eq("telegram_user_id",tg).eq("provider","gmail");
+  if(error)throw error;return String(d.access_token);
 }
 async function gmailFetchJson(token: string, url: string) {
   const r = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
@@ -712,7 +745,7 @@ async function gmailFetchJson(token: string, url: string) {
   if (!r.ok) throw new Error(d?.error?.message || `Gmail request failed (${r.status}).`);
   return d;
 }
-function gmailRawMessage(recipient: string, subject: string, body: string) {
+function gmailRawMessage(recipient: string, subject: string, body: string,reply?:{inReplyTo?:string;references?:string}) {
   const safeRecipient = recipient.trim();
   if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(safeRecipient) || /[\r\n]/.test(safeRecipient)) {
     throw new Error("Enter one valid recipient email address.");
@@ -725,6 +758,8 @@ function gmailRawMessage(recipient: string, subject: string, body: string) {
   const raw = [
     `To: ${safeRecipient}`,
     `Subject: =?UTF-8?B?${encodedSubject}?=`,
+    ...(reply?.inReplyTo?[`In-Reply-To: ${reply.inReplyTo.replace(/[\r\n]/g,"").slice(0,998)}`]:[]),
+    ...(reply?.references?[`References: ${reply.references.replace(/[\r\n]/g,"").slice(0,1800)}`]:[]),
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",
@@ -733,18 +768,17 @@ function gmailRawMessage(recipient: string, subject: string, body: string) {
   ].join("\r\n");
   return b64(new TextEncoder().encode(raw)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-async function gmailSend(tg: number, recipient: string, subject: string, body: string) {
+async function gmailSend(tg: number, recipient: string, subject: string, body: string,reply?:{threadId?:string;inReplyTo?:string;references?:string}) {
   const conn = await gmailConnection(tg);
   const scope = String(conn.scope || "");
   if (!scope.includes("gmail.send") && !scope.includes("mail.google.com")) {
     throw new Error("Gmail send permission is not authorized. Disconnect Gmail, then use /connect and approve sending permission.");
   }
-  const token = await decrypt(String(conn.access_token_enc || ""));
-  if (!token) throw new Error("Gmail access token is missing. Reconnect Gmail with /connect.");
+  const token = await gmailAccessToken(tg,conn);
   const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ raw: gmailRawMessage(recipient, subject, body) }),
+    body: JSON.stringify({ raw: gmailRawMessage(recipient, subject, body,reply),...(reply?.threadId?{threadId:reply.threadId}:{}) }),
   });
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 || r.status === 403) {
@@ -755,8 +789,7 @@ async function gmailSend(tg: number, recipient: string, subject: string, body: s
 }
 async function gmailMessages(tg: number, query: string, maxResults: number) {
   const conn = await gmailConnection(tg);
-  const token = await decrypt(String(conn.access_token_enc || ""));
-  if (!token) throw new Error("Gmail access token is missing. Reconnect Gmail with /connect.");
+  const token = await gmailAccessToken(tg,conn);
   const max = Math.max(1, Math.min(10, Number(maxResults || 5)));
   const params = new URLSearchParams({ maxResults: String(max) });
   if (query.trim()) params.set("q", query.trim());
@@ -764,16 +797,20 @@ async function gmailMessages(tg: number, query: string, maxResults: number) {
   const refs = Array.isArray(list?.messages) ? list.messages.slice(0, max) : [];
   const messages = await Promise.all(refs.map(async (m: any) => {
     const p = new URLSearchParams({ format: "metadata" });
-    for (const h of ["From", "Subject", "Date", "To"]) p.append("metadataHeaders", h);
+    for (const h of ["From", "Reply-To", "Subject", "Date", "To", "Message-ID", "References"]) p.append("metadataHeaders", h);
     const d = await gmailFetchJson(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(String(m.id))}?${p.toString()}`);
     const headers = Object.fromEntries((d?.payload?.headers || []).map((h: any) => [String(h.name || "").toLowerCase(), String(h.value || "")]));
     return {
       id: d?.id || m.id,
       thread_id: d?.threadId || m.threadId || null,
       from: headers.from || "Unknown sender",
+      reply_to: headers["reply-to"] || headers.from || "",
       to: headers.to || "",
       subject: headers.subject || "(No subject)",
       date: headers.date || "",
+      internal_date: d?.internalDate?new Date(Number(d.internalDate)).toISOString():null,
+      internet_message_id: headers["message-id"] || "",
+      references: headers.references || "",
       snippet: String(d?.snippet || "").replace(/\s+/g, " ").trim(),
       label_ids: d?.labelIds || [],
     };
@@ -961,7 +998,7 @@ Deno.serve(async (req: Request) => {
         tokenType: "Bearer",
         scope: granted || GMAIL_SCOPES,
         expiresAt: new Date(Date.now() + Math.max(60, expiresIn) * 1000).toISOString(),
-        metadata: { email: profile.email || null, name: profile.name || null, picture: profile.picture || null },
+        metadata: { email: profile.email || null, name: profile.name || null, picture: profile.picture || null, oauth_client_id:tokenInfo.aud || null },
       });
       return json({ ok: true, account: profile.email || "Google account" });
     } catch (e) {
@@ -1047,13 +1084,19 @@ Deno.serve(async (req: Request) => {
 
   if (action === "status") {
     const { data, error } = await sb.from("telegram_oauth_connections")
-      .select("provider,account_label,scope,expires_at,updated_at,metadata")
+      .select("provider,account_label,scope,expires_at,updated_at,metadata,persistent_until,needs_reconnect")
       .eq("telegram_user_id", tg);
     if (error) return json({ error:error.message },500);
     const website = await telegramWebsiteLink(tg);
     const connections = [...(data || [])];
     if (website) connections.push({ provider:"website", account_label:website.account_label || "Tivals AI website", updated_at:website.updated_at, metadata:{ user_id:website.user_id } });
     return json({ connections });
+  }
+  if(action==="gmail_refresh_health")return json({ok:true,client_id_configured:Boolean(GOOGLE_CLIENT_ID),client_secret_configured:Boolean(GOOGLE_CLIENT_SECRET)});
+  if(action==="gmail_maintain"){
+    const {data:rows,error}=await sb.from("telegram_oauth_connections").select("telegram_user_id,provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata,last_refreshed_at,persistent_until,refresh_failures,needs_reconnect").eq("provider","gmail").limit(500);if(error)return json({error:error.message},500);
+    let maintained=0,failed=0;for(const row of rows||[]){try{await gmailAccessToken(Number(row.telegram_user_id),row);maintained+=1;}catch{failed+=1;}}
+    return json({ok:true,accounts:(rows||[]).length,maintained,failed});
   }
   if (action === "gmail_messages") {
     try {
@@ -1066,7 +1109,7 @@ Deno.serve(async (req: Request) => {
   if (action === "gmail_send") {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
-      return json(await gmailSend(tg, String(body.recipient || ""), String(body.subject || ""), String(body.email_body || "")));
+      return json(await gmailSend(tg, String(body.recipient || ""), String(body.subject || ""), String(body.email_body || ""),{threadId:String(body.thread_id||""),inReplyTo:String(body.in_reply_to||""),references:String(body.references||"")}));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
