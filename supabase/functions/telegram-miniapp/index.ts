@@ -10,6 +10,7 @@ const TIVALS_AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
 const voiceBuckets = new Map<number,{count:number;resetAt:number}>();
+const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites";
 
 const cors = {
   "Access-Control-Allow-Origin":"https://ai.tivalsdeveloper.site",
@@ -129,7 +130,7 @@ async function paidAccess(tg:number) {
 }
 async function ownedBot(tg:number) {
   const {data,error}=await sb.from("telegram_owned_bots")
-    .select("bot_id,username,account_label,is_active,connected_at,updated_at")
+    .select(BOT_PROFILE_COLUMNS)
     .eq("telegram_user_id",tg).maybeSingle();
   if(error) throw error;
   return data;
@@ -143,12 +144,44 @@ async function syncOwnedBotSetup(tg:number) {
   await botApi(token,"setWebhook",{
     url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
     secret_token:secret,
-    allowed_updates:["message","business_message","business_connection","callback_query"],
+    allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post"],
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
     menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
   }).catch(()=>null);
+}
+
+function botCommands(purpose:string) {
+  const base=[
+    {command:"start",description:"Start a conversation"},
+    {command:"ask",description:"Ask the bot in a group or channel"},
+    {command:"app",description:"Open the owner dashboard"},
+    {command:"grouphelp",description:"How to use this bot in groups"},
+    {command:"connect",description:"Owner: connect tools"},
+    {command:"accounts",description:"Owner: view connected tools"}
+  ];
+  if(["education","coding","math"].includes(purpose))base.push(
+    {command:"lesson",description:"Start a lesson on a topic"},
+    {command:"explain",description:"Explain a concept clearly"},
+    {command:"quiz",description:"Create a short quiz"},
+    {command:"practice",description:"Give practice questions"}
+  );
+  return base;
+}
+
+async function syncBotPresentation(token:string,profile:any) {
+  const name=String(profile?.bot_name||"My AI").trim().slice(0,64)||"My AI";
+  const purpose=String(profile?.bot_purpose||"general");
+  const subjects=Array.isArray(profile?.subjects)?profile.subjects.slice(0,8).join(", "):"";
+  const description=String(profile?.custom_instructions||profile?.personality||"").trim().slice(0,430);
+  const short=purpose==="coding"?"A personal programming tutor":purpose==="math"?"A personal mathematics tutor":purpose==="education"?`A personal tutor${subjects?` for ${subjects}`:""}`:"A personal AI assistant";
+  await Promise.all([
+    botApi(token,"setMyName",{name}),
+    botApi(token,"setMyShortDescription",{short_description:short.slice(0,120)}),
+    botApi(token,"setMyDescription",{description:(description||`${name} is a helpful, natural AI assistant.`).slice(0,512)}),
+    botApi(token,"setMyCommands",{commands:botCommands(purpose)})
+  ]);
 }
 async function botApi(token:string, method:string, payload?:Record<string,unknown>) {
   const r=await fetch(`https://api.telegram.org/bot${token}/${method}`, payload ? {
@@ -181,6 +214,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     bot_id:botId,
     username:me.username||null,
     account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot"),
+    bot_name:String(me.first_name||"My AI").slice(0,64),
     token_enc:await encrypt(token),
     webhook_secret_enc:await encrypt(secret),
     is_active:true,
@@ -197,18 +231,13 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     await botApi(token,"setWebhook",{
       url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
       secret_token:secret,
-      allowed_updates:["message","business_message","business_connection","callback_query"],
+      allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post"],
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
       menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
     }).catch(()=>null);
-    await botApi(token,"setMyCommands",{commands:[
-      {command:"start",description:"Start Tivals AI"},
-      {command:"app",description:"Open Tivals AI app"},
-      {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
-      {command:"accounts",description:"View connected tools"}
-    ]}).catch(()=>null);
+    await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
     await sb.from("telegram_owned_bots")
       .update({is_active:false,updated_at:new Date().toISOString()})
@@ -303,7 +332,16 @@ async function getDashboard(tg:number) {
     },
     business_knowledge:{catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]},
     website_widget:websiteWidget || null,
-    bot_connector:{ connected:Boolean(bot?.is_active), account_label:bot?.account_label||"", username:bot?.username||"", allowed:true },
+    bot_connector:{
+      connected:Boolean(bot?.is_active),account_label:bot?.account_label||"",username:bot?.username||"",allowed:true,
+      bot_name:bot?.bot_name||"My AI",bot_purpose:bot?.bot_purpose||"general",
+      personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
+      subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
+      teaching_style:bot?.teaching_style||"adaptive",language:bot?.language||"auto",
+      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"voice_messages",
+      group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
+      owner_only_invites:bot?.owner_only_invites!==false
+    },
     connectors:["gmail","github","tiktok","website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
       return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
@@ -380,6 +418,39 @@ Deno.serve(async req => {
     if (action==="own_bot_status") {
       const access=await paidAccess(tg);
       return json({ok:true,access,bot:await ownedBot(tg)});
+    }
+
+    if(action==="save_own_bot_profile") {
+      const purposes=["general","education","coding","math","custom"];
+      const levels=["primary","secondary","college","professional","all"];
+      const teaching=["adaptive","step_by_step","socratic","concise","detailed"];
+      const voices=["off","voice_messages","always"];
+      const groups=["off","mentions","all"];
+      const channels=["off","commands","all"];
+      const botName=String(body?.bot_name||"").trim().slice(0,64);
+      if(!botName)return json({error:"Enter a name for your bot."},400);
+      const subjects=(Array.isArray(body?.subjects)?body.subjects:String(body?.subjects||"").split(","))
+        .map((x:any)=>String(x).trim().slice(0,80)).filter(Boolean).slice(0,20);
+      const row={
+        bot_name:botName,
+        bot_purpose:purposes.includes(String(body?.bot_purpose))?String(body.bot_purpose):"general",
+        personality:String(body?.personality||"").trim().slice(0,1000)||"Friendly, natural and helpful",
+        custom_instructions:String(body?.custom_instructions||"").trim().slice(0,8000),subjects,
+        education_level:levels.includes(String(body?.education_level))?String(body.education_level):"all",
+        teaching_style:teaching.includes(String(body?.teaching_style))?String(body.teaching_style):"adaptive",
+        language:String(body?.language||"auto").trim().slice(0,60)||"auto",
+        welcome_message:String(body?.welcome_message||"").trim().slice(0,500)||"Hi! How can I help you today?",
+        voice_mode:voices.includes(String(body?.voice_mode))?String(body.voice_mode):"voice_messages",
+        group_mode:groups.includes(String(body?.group_mode))?String(body.group_mode):"mentions",
+        channel_mode:channels.includes(String(body?.channel_mode))?String(body.channel_mode):"commands",
+        owner_only_invites:body?.owner_only_invites!==false,updated_at:new Date().toISOString()
+      };
+      const {data:current,error:currentError}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
+      if(currentError)throw currentError;if(!current?.is_active||!current?.token_enc)return json({error:"Connect your Telegram bot first."},400);
+      const {data,error}=await sb.from("telegram_owned_bots").update(row).eq("telegram_user_id",tg).select(BOT_PROFILE_COLUMNS).single();
+      if(error)throw error;
+      await syncBotPresentation(await decrypt(String(current.token_enc)),data).catch(()=>null);
+      return json({ok:true,bot:data});
     }
 
     if (action==="disconnect_own_bot") {
