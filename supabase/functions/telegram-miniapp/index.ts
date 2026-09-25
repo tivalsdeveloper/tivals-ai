@@ -353,16 +353,19 @@ async function getDashboard(tg:number) {
 
 async function getPersonalBotDashboard(tg:number) {
   const today=new Date().toISOString().slice(0,10);
-  const [{data:usage},{data:bot},access]=await Promise.all([
+  const [{data:usage},{data:bot},access,accountData]=await Promise.all([
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     ownedBot(tg),
-    paidAccess(tg)
+    paidAccess(tg),
+    oauth("status",tg)
   ]);
+  const connections=Array.isArray(accountData?.connections)?accountData.connections:[];
   const planId=access.owner?"owner":access.plan;
   const planData=access.owner?{id:"owner",label:"Owner",ai:null,images:null,active:true}:{id:planId,label:planId==="pro"?"Pro":planId==="basic"?"Basic":"Free",ai:planId==="pro"?1000:planId==="basic"?200:20,images:planId==="pro"?50:planId==="basic"?10:1,active:true};
   return {
     plan:planData,
     usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
+    connectors:["gmail","github"].map(provider=>{const hit=connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit),account_label:hit?.account_label||""};}),
     bot_connector:{
       connected:Boolean(bot?.is_active),account_label:bot?.account_label||"",username:bot?.username||"",
       bot_name:bot?.bot_name||"My AI",bot_purpose:bot?.bot_purpose||"general",
@@ -404,6 +407,13 @@ Deno.serve(async req => {
 
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
     if (action==="personal_bot_dashboard") return json({ok:true,user,dashboard:await getPersonalBotDashboard(tg)});
+
+    if(action==="disconnect_personal_connector") {
+      const provider=String(body?.provider||"");
+      if(!["gmail","github"].includes(provider))return json({error:"Unknown connector"},400);
+      await oauth("disconnect",tg,provider);
+      return json({ok:true,provider});
+    }
 
     if (action==="save_website_widget") {
       const raw=String(body?.domain||"").trim().toLowerCase();
