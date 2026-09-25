@@ -5,7 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -126,7 +126,7 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="") {
-  await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Tivals AI App</b>\n\nOpen the dashboard to connect tools and manage your bot.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Tivals AI App",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Personal Bot Studio</b>\n\nCustomize your bot’s personality, learning subjects, voice and group settings.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Personal Bot Studio",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
 async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
@@ -345,12 +345,8 @@ Deno.serve(async (req: Request) => {
       }
       return json({ok:true,route:joined?"owner-chat-approved":"membership-updated"});
     }
-    if (paywallOwner && update?.business_connection) {
-      const connectionOwner = Number(update.business_connection?.user?.id || 0);
-      return json({
-        ok: true,
-        route: connectionOwner === paywallOwner ? "business-owner-verified" : "business-owner-rejected"
-      });
+    if (paywallOwner && (update?.business_connection || update?.business_message)) {
+      return json({ok:true,ignored:true,reason:"personal-bot-business-automation-disabled"});
     }
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
@@ -411,6 +407,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"tool-suggestions"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
+      if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId);return json({ok:true,route:"personal-app"});}
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
     }
@@ -429,8 +426,9 @@ Deno.serve(async (req: Request) => {
       ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
     });
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
-    const businessProfile=paywallOwner ? await telegramBusinessProfile(paywallOwner) : null;
-    const answer=await personalAi(conn,businessProfile,`${connectorKey}:${chatId}:${senderId||"channel"}`,text);
+    // Personal bots are intentionally isolated from business profiles, catalogs,
+    // bookings and business-account automation.
+    const answer=await personalAi(conn,null,`${connectorKey}:${chatId}:${senderId||"channel"}`,text);
     const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
     if(shouldSpeak){
       try{await telegramVoice(token,chatId,await synthesizeVoice(answer),answer,businessConnectionId)}catch{await reply(token,chatId,answer,businessConnectionId)}
