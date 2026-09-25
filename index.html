@@ -51,7 +51,7 @@ const API='https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat'
 const SUPABASE_URL='https://kxuszpixwfecawdeqkrx.supabase.co';
 const SUPABASE_KEY='sb_publishable__auyhjNpepXiYdGV5HEJ_A_AGsPbBuS';
 const AI_URL='https://ai.tivalsdeveloper.site/';
-const EMBED='<script src="https://tivalsdeveloper.github.io/tivals-ai/widget.js" data-widget-id="CREATE_IN_DASHBOARD" data-name="Tivals AI" data-position="right" data-welcome="Hi! How can I help?"><'+'/script>';
+const EMBED='<script src="https://ai.tivalsdeveloper.site/widget.js" data-widget-id="CREATE_IN_DASHBOARD" data-name="Tivals AI" data-position="right" data-welcome="Hi! How can I help?"><'+'/script>';
 const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,flowType:'pkce'}});window.sb=sb;
 async function aiHeaders(){const {data}=await sb.auth.getSession();const token=data.session?.access_token;if(!token)throw new Error('Please sign in to use Tivals AI.');return{'Content-Type':'application/json',Authorization:'Bearer '+token}}window.tivalsAiHeaders=aiHeaders;
 const authGate=document.querySelector('#authGate'),appShell=document.querySelector('#appShell'),authForm=document.querySelector('#authForm'),authEmail=document.querySelector('#authEmail'),authPassword=document.querySelector('#authPassword'),authName=document.querySelector('#authName'),authUsername=document.querySelector('#authUsername'),authConfirm=document.querySelector('#authConfirm'),authTerms=document.querySelector('#authTerms'),authMessage=document.querySelector('#authMessage');let authMode='login';
