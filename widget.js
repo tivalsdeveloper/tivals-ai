@@ -2,7 +2,7 @@
   if (window.__TIVALS_AI_WIDGET__) return;
   window.__TIVALS_AI_WIDGET__ = true;
   const script = document.currentScript;
-  const config = { widgetId: script?.dataset.widgetId || '', name: script?.dataset.name || 'Tivals AI', position: script?.dataset.position === 'left' ? 'left' : 'right', welcome: script?.dataset.welcome || 'Hi! How can I help?', model: script?.dataset.model || 'auto', autoOpen: script?.dataset.autoOpen !== 'false' };
+  const config = { widgetId: script?.dataset.widgetId || '', name: script?.dataset.name || 'Tivals AI', position: script?.dataset.position === 'left' ? 'left' : 'right', welcome: script?.dataset.welcome || 'Hi! How can I help?', model: script?.dataset.model || 'auto' };
   const initWidget = () => {
   const API = 'https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat';
   const WIDGET_API = `${API}?widget=${encodeURIComponent(config.widgetId)}`;
@@ -36,8 +36,22 @@
   input.oninput = () => { input.style.height = '46px'; input.style.height = `${Math.min(input.scrollHeight, 110)}px`; };
   input.onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } };
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && panel.classList.contains('open')) close(); });
-  if (config.autoOpen) requestAnimationFrame(() => { panel.classList.add('open'); fab.hidden = true; setTimeout(() => input.focus(), 250); });
   };
-  if (document.body) initWidget();
-  else document.addEventListener('DOMContentLoaded', initWidget, { once: true });
+  let started = false;
+  const startImmediately = () => {
+    if (started || !document.body) return false;
+    started = true;
+    initWidget();
+    return true;
+  };
+  if (!startImmediately()) {
+    const observer = new MutationObserver(() => {
+      if (startImmediately()) observer.disconnect();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      startImmediately();
+      observer.disconnect();
+    }, { once: true });
+  }
 })();
