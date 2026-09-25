@@ -346,9 +346,6 @@ Deno.serve(async (req: Request) => {
       }
       return json({ok:true,route:joined?"owner-chat-approved":"membership-updated"});
     }
-    if (paywallOwner && (update?.business_connection || update?.business_message)) {
-      return json({ok:true,ignored:true,reason:"personal-bot-business-automation-disabled"});
-    }
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
       if(data.startsWith("tool_suggest:")){
