@@ -150,7 +150,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html"}}
   }).catch(()=>null);
 }
 
@@ -237,7 +237,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -351,6 +351,30 @@ async function getDashboard(tg:number) {
   };
 }
 
+async function getPersonalBotDashboard(tg:number) {
+  const today=new Date().toISOString().slice(0,10);
+  const [{data:usage},{data:bot},access]=await Promise.all([
+    sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
+    ownedBot(tg),
+    paidAccess(tg)
+  ]);
+  const planId=access.owner?"owner":access.plan;
+  const planData=access.owner?{id:"owner",label:"Owner",ai:null,images:null,active:true}:{id:planId,label:planId==="pro"?"Pro":planId==="basic"?"Basic":"Free",ai:planId==="pro"?1000:planId==="basic"?200:20,images:planId==="pro"?50:planId==="basic"?10:1,active:true};
+  return {
+    plan:planData,
+    usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
+    bot_connector:{
+      connected:Boolean(bot?.is_active),account_label:bot?.account_label||"",username:bot?.username||"",
+      bot_name:bot?.bot_name||"My AI",bot_purpose:bot?.bot_purpose||"general",
+      personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
+      subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
+      teaching_style:bot?.teaching_style||"adaptive",language:bot?.language||"auto",
+      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"voice_messages",
+      group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",owner_only_invites:bot?.owner_only_invites!==false
+    }
+  };
+}
+
 Deno.serve(async req => {
   if (req.method==="OPTIONS") return new Response(null,{status:204,headers:cors});
   if (req.method==="GET") return json({ok:true,service:"telegram-miniapp"});
@@ -379,6 +403,7 @@ Deno.serve(async req => {
     }
 
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
+    if (action==="personal_bot_dashboard") return json({ok:true,user,dashboard:await getPersonalBotDashboard(tg)});
 
     if (action==="save_website_widget") {
       const raw=String(body?.domain||"").trim().toLowerCase();
@@ -422,7 +447,7 @@ Deno.serve(async req => {
       return json({ok:true,access,bot:await ownedBot(tg)});
     }
 
-    if(action==="save_own_bot_profile") {
+    if(action==="save_own_bot_profile" || action==="save_personal_bot_profile") {
       const purposes=["general","education","coding","math","custom"];
       const levels=["primary","secondary","college","professional","all"];
       const teaching=["adaptive","step_by_step","socratic","concise","detailed"];
