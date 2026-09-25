@@ -182,7 +182,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
       drop_pending_updates:false
     });
     await Promise.all([
-      managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:TELEGRAM_APP_URL}}}),
+      managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html"}}}),
       managedBotApi(token,"setMyShortDescription",{short_description:"A personal, human-like AI assistant and tutor"}),
       managedBotApi(token,"setMyDescription",{description:`${botName} is your personal AI assistant. It can teach programming, mathematics and other subjects, and works in approved groups and channels.`}),
       managedBotApi(token,"setMyCommands",{commands:managedBotCommands()})
