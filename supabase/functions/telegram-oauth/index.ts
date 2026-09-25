@@ -6,6 +6,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const GITHUB_APP_ID = Deno.env.get("GITHUB_APP_ID") || "";
 const GITHUB_PRIVATE_KEY = (Deno.env.get("GITHUB_PRIVATE_KEY") || "").replace(/\\n/g, "\n");
+const GITHUB_CLIENT_SECRET = Deno.env.get("GITHUB_CLIENT_SECRET") || "";
 const TIKTOK_CLIENT_KEY = Deno.env.get("TIKTOK_CLIENT_KEY") || "";
 const TIKTOK_CLIENT_SECRET = Deno.env.get("TIKTOK_CLIENT_SECRET") || "";
 const STATIC_BASE = "https://ai.tivalsdeveloper.site";
@@ -380,11 +381,69 @@ async function githubInstallation(id: string) {
 }
 async function githubConnection(tg: number) {
   const { data, error } = await sb.from("telegram_oauth_connections")
-    .select("provider,account_label,scope,metadata")
+    .select("provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata")
     .eq("telegram_user_id", tg).eq("provider", "github").maybeSingle();
   if (error) throw error;
   if (!data) throw new Error("GitHub is not connected. Use /connect first.");
   return data;
+}
+async function githubUserAuthorizationLink(tg:number) {
+  if (!GITHUB_CLIENT_SECRET) throw new Error("GitHub user authorization is not configured yet. Add GITHUB_CLIENT_SECRET to Supabase Edge Function secrets.");
+  const app=await githubAppInfo();
+  const clientId=String(app?.client_id || "");
+  if(!clientId) throw new Error("GitHub App client ID is unavailable.");
+  const state=await createState(tg,"github_user");
+  const redirectUri=`${SUPABASE_URL}/functions/v1/telegram-oauth/github/user/callback`;
+  const params=new URLSearchParams({client_id:clientId,redirect_uri:redirectUri,state});
+  return {url:`https://github.com/login/oauth/authorize?${params.toString()}`};
+}
+async function githubExchangeUserCode(code:string) {
+  if(!GITHUB_CLIENT_SECRET) throw new Error("GITHUB_CLIENT_SECRET is not configured.");
+  const app=await githubAppInfo();
+  const clientId=String(app?.client_id || "");
+  const redirectUri=`${SUPABASE_URL}/functions/v1/telegram-oauth/github/user/callback`;
+  const r=await fetch("https://github.com/login/oauth/access_token",{
+    method:"POST",
+    headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams({client_id:clientId,client_secret:GITHUB_CLIENT_SECRET,code,redirect_uri:redirectUri}),
+  });
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok || !d?.access_token) throw new Error(d?.error_description || d?.error || "GitHub user authorization failed.");
+  return d;
+}
+async function saveGithubUserAuthorization(tg:number, token:any) {
+  const conn=await githubConnection(tg);
+  const user=await githubJson(String(token.access_token),"https://api.github.com/user");
+  const metadata={...(conn.metadata || {}),user_login:user?.login || null,user_id:user?.id || null,user_authorized:true};
+  const expiresIn=Number(token.expires_in || 0);
+  const {error}=await sb.from("telegram_oauth_connections").update({
+    access_token_enc:await encrypt(String(token.access_token)),
+    refresh_token_enc:token.refresh_token ? await encrypt(String(token.refresh_token)) : null,
+    expires_at:expiresIn>0 ? new Date(Date.now()+expiresIn*1000).toISOString() : null,
+    metadata,
+    updated_at:new Date().toISOString(),
+  }).eq("telegram_user_id",tg).eq("provider","github");
+  if(error) throw error;
+  return {login:user?.login || conn.account_label || "GitHub user"};
+}
+async function githubUserToken(tg:number) {
+  const conn=await githubConnection(tg);
+  let access=await decrypt(String(conn.access_token_enc || ""));
+  if(!access) throw new Error("Authorize GitHub repository creation first.");
+  const expiresAt=conn.expires_at ? new Date(conn.expires_at).getTime() : Number.MAX_SAFE_INTEGER;
+  if(expiresAt>Date.now()+60_000) return access;
+  const refresh=await decrypt(String(conn.refresh_token_enc || ""));
+  if(!refresh || !GITHUB_CLIENT_SECRET) throw new Error("GitHub user authorization expired. Authorize it again.");
+  const app=await githubAppInfo();
+  const r=await fetch("https://github.com/login/oauth/access_token",{
+    method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams({client_id:String(app?.client_id || ""),client_secret:GITHUB_CLIENT_SECRET,grant_type:"refresh_token",refresh_token:refresh}),
+  });
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok || !d?.access_token) throw new Error("GitHub user authorization expired. Authorize it again.");
+  await saveGithubUserAuthorization(tg,d);
+  access=String(d.access_token);
+  return access;
 }
 async function githubInstallationAccess(tg: number) {
   const conn = await githubConnection(tg);
@@ -494,6 +553,46 @@ async function githubCreateIssue(tg: number, repository: string, title: string, 
     body: JSON.stringify({ title: safeTitle, body: safeBody }),
   });
   return { ok:true, number:d?.number || null, html_url:d?.html_url || null, title:d?.title || safeTitle };
+}
+function githubFilePath(value:string) {
+  const path=value.trim().replace(/^\/+/,"");
+  if(!path || path.length>300 || path.split("/").some(x=>!x || x==="." || x==="..")) throw new Error("Choose a valid repository file path.");
+  if(/^\.github\/workflows\//i.test(path)) throw new Error("Workflow files cannot be changed through Telegram.");
+  return path;
+}
+async function githubFile(tg:number,repository:string,pathValue:string) {
+  const fullName=githubRepositoryName(repository),path=githubFilePath(pathValue);
+  const {token}=await githubInstallationAccess(tg);
+  const url=`https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const d=await githubJson(token,url);
+  if(d?.type!=="file" || !d?.sha) throw new Error("The requested GitHub path is not a file.");
+  const content=String(d?.content || "").replace(/\s/g,"");
+  return {repository:fullName,path,sha:String(d.sha),size:Number(d?.size || 0),encoding:d?.encoding || "base64",content_base64:content};
+}
+async function githubUpsertFile(tg:number,repository:string,pathValue:string,contentBase64:string,message:string,sha="") {
+  const fullName=githubRepositoryName(repository),path=githubFilePath(pathValue);
+  const {token,permissions}=await githubInstallationAccess(tg);
+  if(permissions?.contents!=="write") throw new Error("The GitHub App does not have Contents write permission.");
+  const clean=contentBase64.replace(/\s/g,"");
+  if(!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) throw new Error("Uploaded file content is invalid.");
+  const estimatedBytes=Math.floor(clean.length*3/4);
+  if(estimatedBytes>900_000) throw new Error("Telegram GitHub uploads are limited to 900 KB per file.");
+  const commitMessage=message.replace(/[\r\n]+/g," ").trim().slice(0,200) || `Update ${path}`;
+  const body:any={message:commitMessage,content:clean};
+  if(sha) body.sha=sha;
+  const url=`https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const d=await githubJson(token,url,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  return {ok:true,repository:fullName,path,commit_sha:d?.commit?.sha || null,html_url:d?.content?.html_url || null};
+}
+async function githubCreateRepository(tg:number,nameValue:string,description:string,isPrivate:boolean) {
+  const name=nameValue.trim();
+  if(!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) throw new Error("Choose a valid GitHub repository name.");
+  const token=await githubUserToken(tg);
+  const d=await githubJson(token,"https://api.github.com/user/repos",{
+    method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({name,description:description.trim().slice(0,350),private:Boolean(isPrivate),auto_init:true}),
+  });
+  return {ok:true,full_name:d?.full_name || name,html_url:d?.html_url || null,private:Boolean(d?.private)};
 }
 async function createLink(req: Request, provider: string, tg: number) {
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
@@ -695,6 +794,7 @@ Deno.serve(async (req: Request) => {
         app_name: app?.name || null,
         app_id_configured: Boolean(GITHUB_APP_ID),
         private_key_configured: Boolean(GITHUB_PRIVATE_KEY),
+        user_authorization_configured: Boolean(GITHUB_CLIENT_SECRET),
       });
     } catch (e) {
       return json({
@@ -702,8 +802,21 @@ Deno.serve(async (req: Request) => {
         error: String((e as Error)?.message || e),
         app_id_configured: Boolean(GITHUB_APP_ID),
         private_key_configured: Boolean(GITHUB_PRIVATE_KEY),
+        user_authorization_configured: Boolean(GITHUB_CLIENT_SECRET),
       }, 200);
     }
+  }
+  if (req.method === "GET" && u.pathname.endsWith("/github/user/callback")) {
+    const state=u.searchParams.get("state") || "",code=u.searchParams.get("code") || "";
+    const fail=(message:string)=>Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`,302);
+    const st=await stateRow(state,"github_user");
+    if(!st || !code) return fail("The GitHub authorization link is invalid or expired. Return to Telegram and try again.");
+    try {
+      const token=await githubExchangeUserCode(code);
+      const saved=await saveGithubUserAuthorization(Number(st.telegram_user_id),token);
+      await sb.from("telegram_oauth_states").delete().eq("state",state);
+      return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(saved.login)}`,302);
+    } catch(e) { return fail(String((e as Error)?.message || e)); }
   }
   if (req.method === "GET" && u.pathname.endsWith("/github/setup")) {
     const state = u.searchParams.get("state") || "";
@@ -924,6 +1037,11 @@ Deno.serve(async (req: Request) => {
     try { return json(await createTelegramWebsiteLink(tg)); }
     catch (e) { return json({ error:String((e as Error)?.message || e) },400); }
   }
+  if (action === "create_github_user_link") {
+    if (!internal(req)) return json({error:"Unauthorized"},401);
+    try { return json(await githubUserAuthorizationLink(tg)); }
+    catch(e) { return json({error:String((e as Error)?.message || e)},400); }
+  }
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
 
@@ -976,6 +1094,31 @@ Deno.serve(async (req: Request) => {
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
+  }
+  if (action === "github_user_status") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      const conn=await githubConnection(tg);
+      return json({configured:Boolean(GITHUB_CLIENT_SECRET),authorized:Boolean(conn.access_token_enc),login:conn?.metadata?.user_login || null});
+    } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
+  }
+  if (action === "github_file") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      return json(await githubFile(tg,String(body.repository || ""),String(body.path || "")));
+    } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
+  }
+  if (action === "github_upsert_file") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      return json(await githubUpsertFile(tg,String(body.repository || ""),String(body.path || ""),String(body.content_base64 || ""),String(body.message || ""),String(body.sha || "")));
+    } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
+  }
+  if (action === "github_create_repository") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      return json(await githubCreateRepository(tg,String(body.name || ""),String(body.description || ""),Boolean(body.private)));
+    } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
   }
   if (action === "tiktok_profile") {
     try {
