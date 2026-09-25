@@ -527,6 +527,77 @@ function githubIssueIntent(text: string) {
   return /\b(?:create|open|add|report)\s+(?:an?\s+)?(?:github\s+)?issue\b/i.test(String(text || ""));
 }
 
+function githubRepositoryCreateIntent(text:string) {
+  return /\bcreate\s+(?:a\s+|an\s+)?(?:new\s+)?(?:github\s+)?repo(?:sitory)?\b/i.test(String(text || ""));
+}
+
+function githubFileWriteIntent(text:string) {
+  return /\b(?:create|edit|update|change|replace)\s+(?:a\s+|the\s+)?file\b/i.test(String(text || ""));
+}
+
+function githubFileTarget(text:string) {
+  const match=String(text || "").match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\s]+)/);
+  return match ? {repository:match[1],path:match[2].replace(/^\/+/,"")} : null;
+}
+
+function decodeGithubText(contentBase64:string) {
+  try {
+    const raw=atob(contentBase64.replace(/\s/g,""));
+    const bytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+    return new TextDecoder("utf-8",{fatal:true}).decode(bytes);
+  } catch { throw new Error("This file is not UTF-8 text, so the AI cannot edit it. You can still replace it by uploading a file."); }
+}
+
+function parseGithubFileDraft(value:string) {
+  const start=value.indexOf("{"),end=value.lastIndexOf("}");
+  if(start<0 || end<=start) throw new Error("I could not prepare the file change.");
+  let draft:any;
+  try { draft=JSON.parse(value.slice(start,end+1)); }
+  catch { throw new Error("I could not prepare the file change. Try again with a clearer instruction."); }
+  const content=String(draft?.content ?? "");
+  const message=String(draft?.commit_message || "Update file").replace(/[\r\n]+/g," ").trim().slice(0,200);
+  if(new TextEncoder().encode(content).length>120_000) throw new Error("AI-edited text files are limited to 120 KB.");
+  return {content,message};
+}
+
+async function createGithubFileDraftWithAI(request:string,tg:number,currentContent:string|null) {
+  const prompt=[
+    currentContent===null ? "Create the requested repository text file." : "Edit the repository text file exactly as requested.",
+    "Return only valid JSON with exactly these string fields: content, commit_message.",
+    "Return the complete final file content, not a patch or explanation.",
+    "Do not add secrets, credentials, tokens, or hidden remote scripts.",
+    "",
+    "USER REQUEST:",toolText(request,1800),
+    "",
+    "CURRENT FILE CONTENT:",currentContent===null ? "[new file]" : currentContent.slice(0,16000),
+  ].join("\n");
+  return parseGithubFileDraft(await askTivalsAI(prompt,tg));
+}
+
+function parseGithubRepositoryDraft(value:string) {
+  const start=value.indexOf("{"),end=value.lastIndexOf("}");
+  if(start<0 || end<=start) throw new Error("I could not prepare the repository.");
+  let draft:any;
+  try { draft=JSON.parse(value.slice(start,end+1)); }
+  catch { throw new Error("I could not prepare the repository. Include its name, description, and whether it should be private."); }
+  const name=String(draft?.name || "").trim();
+  const description=String(draft?.description || "").trim().slice(0,350);
+  if(!/^[A-Za-z0-9_.-]{1,100}$/.test(name)) throw new Error("Choose a valid repository name using letters, numbers, dots, dashes, or underscores.");
+  return {name,description,private:Boolean(draft?.private)};
+}
+
+async function createGithubRepositoryDraftWithAI(request:string,tg:number) {
+  const prompt=[
+    "Prepare a new GitHub repository from the user's request.",
+    "Return only valid JSON with fields: name (string), description (string), private (boolean).",
+    "Use a short GitHub-safe name and never include credentials.",
+    "",
+    "USER REQUEST:",toolText(request,1800),
+  ].join("\n");
+  return parseGithubRepositoryDraft(await askTivalsAI(prompt,tg));
+}
+
 function parseGithubIssueDraft(value: string, allowedRepositories: string[]) {
   const start = value.indexOf("{");
   const end = value.lastIndexOf("}");
@@ -583,14 +654,72 @@ async function showGithubIssueConfirmation(chatId: number|string, tg: number, re
   });
 }
 
-async function handleGithubConfirmation(q:any, action:"issue"|"cancel", id:string) {
+async function showGithubFileConfirmation(chatId:number|string,tg:number,repository:string,path:string,contentBase64:string,message:string,sha:string,sourceName="AI edit") {
+  await sb.from("telegram_pending_github_actions").delete().lt("expires_at",new Date().toISOString());
+  const id=crypto.randomUUID();
+  const size=Math.floor(contentBase64.replace(/\s/g,"").length*3/4);
+  if(size>900_000) throw new Error("Telegram GitHub uploads are limited to 900 KB per file.");
+  const {error}=await sb.from("telegram_pending_github_actions").insert({
+    id,telegram_user_id:tg,chat_id:Number(chatId),action:"upsert_file",repository,
+    payload:{path,content_base64:contentBase64,message,sha},status:"pending",
+    expires_at:new Date(Date.now()+10*60*1000).toISOString(),
+  });
+  if(error) throw error;
+  let preview="Binary or non-text file — preview unavailable.";
+  try { preview=decodeGithubText(contentBase64).slice(0,2200) || "[empty file]"; } catch {}
+  await telegram("sendMessage",{
+    chat_id:chatId,parse_mode:"HTML",
+    text:`🐙 <b>Confirm GitHub file ${sha ? "update" : "creation"}</b>\n\n<b>Repository:</b> ${esc(repository)}\n<b>Path:</b> ${esc(path)}\n<b>Source:</b> ${esc(sourceName)}\n<b>Size:</b> ${size} bytes\n<b>Commit:</b> ${esc(message)}\n\n<pre>${esc(preview)}</pre>\n\n<i>This action expires in 10 minutes. Nothing changes until you confirm.</i>`,
+    reply_markup:{inline_keyboard:[[
+      {text:sha ? "✅ Update file" : "✅ Create file",callback_data:`github_file:${id}`},
+      {text:"❌ Cancel",callback_data:`github_cancel:${id}`},
+    ]]},
+  });
+}
+
+async function sendGithubUserAuthorization(chatId:number|string,tg:number) {
+  const link=await oauthCall("create_github_user_link",tg,"github");
+  if(!link?.url) throw new Error("GitHub user authorization is unavailable.");
+  await telegram("sendMessage",{
+    chat_id:chatId,parse_mode:"HTML",
+    text:"🔐 <b>Authorize repository creation</b>\n\nGitHub requires user authorization before Tivals AI can create a repository in your personal account. File edits to existing connected repositories do not need this extra step.",
+    reply_markup:{inline_keyboard:[[{text:"Authorize GitHub",url:link.url}]]},
+  });
+}
+
+async function showGithubRepositoryConfirmation(chatId:number|string,tg:number,request:string) {
+  const status=await oauthCall("github_user_status",tg,"github");
+  if(!status?.authorized) {
+    await sendGithubUserAuthorization(chatId,tg);
+    return false;
+  }
+  const draft=await createGithubRepositoryDraftWithAI(request,tg);
+  await sb.from("telegram_pending_github_actions").delete().lt("expires_at",new Date().toISOString());
+  const id=crypto.randomUUID();
+  const {error}=await sb.from("telegram_pending_github_actions").insert({
+    id,telegram_user_id:tg,chat_id:Number(chatId),action:"create_repository",repository:"",
+    payload:draft,status:"pending",expires_at:new Date(Date.now()+10*60*1000).toISOString(),
+  });
+  if(error) throw error;
+  await telegram("sendMessage",{
+    chat_id:chatId,parse_mode:"HTML",
+    text:`🐙 <b>Confirm new GitHub repository</b>\n\n<b>Name:</b> ${esc(draft.name)}\n<b>Visibility:</b> ${draft.private ? "Private" : "Public"}\n<b>Description:</b> ${esc(draft.description || "No description")}\n\n<i>The repository will be initialized with a README. Nothing is created until you confirm.</i>`,
+    reply_markup:{inline_keyboard:[[
+      {text:"✅ Create repository",callback_data:`github_repo:${id}`},
+      {text:"❌ Cancel",callback_data:`github_cancel:${id}`},
+    ]]},
+  });
+  return true;
+}
+
+async function handleGithubConfirmation(q:any, action:"issue"|"file"|"repo"|"cancel", id:string) {
   const tg=Number(q?.from?.id || 0), chatId=q?.message?.chat?.id;
   if(!tg || !chatId || q?.message?.business_connection_id) {
     await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"GitHub confirmation is available only in your direct bot chat.",show_alert:true}).catch(()=>{});
     return "github-confirm-rejected";
   }
   const {data:pending,error}=await sb.from("telegram_pending_github_actions")
-    .select("id,repository,payload,status,expires_at").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",Number(chatId)).maybeSingle();
+    .select("id,action,repository,payload,status,expires_at").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",Number(chatId)).maybeSingle();
   if(error) throw error;
   if(!pending || pending.status!=="pending" || new Date(pending.expires_at).getTime()<=Date.now()) {
     if(pending?.id) await sb.from("telegram_pending_github_actions").delete().eq("id",pending.id).eq("telegram_user_id",tg);
@@ -604,21 +733,36 @@ async function handleGithubConfirmation(q:any, action:"issue"|"cancel", id:strin
     await sendFormatted(chatId,"❌ **GitHub action cancelled.** Nothing was changed.");
     return "github-cancelled";
   }
+  const expectedAction={issue:"create_issue",file:"upsert_file",repo:"create_repository"}[action];
+  if(pending.action!==expectedAction) {
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"This confirmation does not match the pending action.",show_alert:true}).catch(()=>{});
+    return "github-confirm-mismatch";
+  }
   const {data:claimed,error:claimError}=await sb.from("telegram_pending_github_actions")
     .update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending")
-    .gt("expires_at",new Date().toISOString()).select("id,repository,payload").maybeSingle();
+    .gt("expires_at",new Date().toISOString()).select("id,action,repository,payload").maybeSingle();
   if(claimError) throw claimError;
   if(!claimed) {
     await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"This GitHub action is already being processed.",show_alert:true}).catch(()=>{});
     return "github-confirm-duplicate";
   }
-  await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Creating GitHub issue…"}).catch(()=>{});
+  await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Running confirmed GitHub action…"}).catch(()=>{});
   await telegram("editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
   try {
-    const result=await oauthCall("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload?.title,issue_body:claimed.payload?.body});
+    let result:any,successText="";
+    if(claimed.action==="create_issue") {
+      result=await oauthCall("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload?.title,issue_body:claimed.payload?.body});
+      successText=`✅ **GitHub issue created**\n\n${claimed.repository} #${result?.number || ""}\n${result?.title || claimed.payload?.title}${result?.html_url ? `\n${result.html_url}` : ""}`;
+    } else if(claimed.action==="upsert_file") {
+      result=await oauthCall("github_upsert_file",tg,"github",{repository:claimed.repository,path:claimed.payload?.path,content_base64:claimed.payload?.content_base64,message:claimed.payload?.message,sha:claimed.payload?.sha || ""});
+      successText=`✅ **GitHub file ${claimed.payload?.sha ? "updated" : "created"}**\n\n${claimed.repository}:${claimed.payload?.path}${result?.html_url ? `\n${result.html_url}` : ""}`;
+    } else if(claimed.action==="create_repository") {
+      result=await oauthCall("github_create_repository",tg,"github",{name:claimed.payload?.name,description:claimed.payload?.description,private:Boolean(claimed.payload?.private)});
+      successText=`✅ **GitHub repository created**\n\n${result?.full_name || claimed.payload?.name}${result?.html_url ? `\n${result.html_url}` : ""}`;
+    } else throw new Error("Unsupported GitHub action.");
     await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
-    await sendFormatted(chatId,`✅ **GitHub issue created**\n\n${claimed.repository} #${result?.number || ""}\n${result?.title || claimed.payload?.title}${result?.html_url ? `\n${result.html_url}` : ""}`);
-    return "github-issue-created";
+    await sendFormatted(chatId,successText);
+    return claimed.action==="create_issue" ? "github-issue-created" : claimed.action==="upsert_file" ? "github-file-written" : "github-repository-created";
   } catch(actionError) {
     await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
     await sendFormatted(chatId,"⚠️ The GitHub issue could not be confirmed as created. Check the repository before trying again.\n\n"+String((actionError as Error)?.message||actionError));
@@ -786,6 +930,10 @@ function toolsHelpText() {
     "• `@github check my GitHub account`",
     "• `@github inspect tivalsdeveloper/tivals-ai`",
     "• `@github create issue in owner/repository about ...`",
+    "• `@github edit file owner/repository:path with ...`",
+    "• `@github create file owner/repository:path containing ...`",
+    "• Send a document with caption `@github upload owner/repository:path`",
+    "• `@github create repository NAME as private`",
     "• `@website check my website account`",
     "• `@youtube Python tutorial`",
     "• `@image futuristic AI robot`",
@@ -878,10 +1026,32 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
     if (!tg) throw new Error("Telegram user ID is unavailable.");
     if (business) throw new Error("Connected account tools are available only in the account owner's direct Tivals AI chat.");
     if (!await connectedToolQuota(chatId, tg, business)) return "github-limit";
+    if (githubRepositoryCreateIntent(request)) {
+      await showGithubRepositoryConfirmation(chatId,tg,request);
+      return "github-repository-draft";
+    }
     const d = await oauthCall("github_repositories", tg, "github", { max_results: 20 });
     if (githubIssueIntent(request)) {
       await showGithubIssueConfirmation(chatId, tg, request, d);
       return "github-issue-draft";
+    }
+    if(githubFileWriteIntent(request)) {
+      const target=githubFileTarget(request);
+      if(!target) throw new Error("Include the target as `owner/repository:path/to/file`.");
+      const creating=/\bcreate\s+(?:a\s+|the\s+)?file\b/i.test(request);
+      let current:any=null;
+      try { current=await oauthCall("github_file",tg,"github",{repository:target.repository,path:target.path}); }
+      catch(e) {
+        if(!creating || !/not found/i.test(String((e as Error)?.message || e))) throw e;
+      }
+      if(creating && current?.sha) throw new Error("That file already exists. Use `edit file` instead.");
+      if(!creating && !current?.sha) throw new Error("That file does not exist. Use `create file` instead.");
+      if(Number(current?.size || 0)>120_000) throw new Error("AI editing is limited to text files up to 120 KB. Upload a replacement file instead.");
+      const existing=current?.content_base64 ? decodeGithubText(String(current.content_base64)) : null;
+      const draft=await createGithubFileDraftWithAI(request,tg,existing);
+      const contentBase64=bytesToB64(new TextEncoder().encode(draft.content));
+      await showGithubFileConfirmation(chatId,tg,target.repository,target.path,contentBase64,draft.message,String(current?.sha || ""),"AI-generated text");
+      return "github-file-draft";
     }
     const selectedRepository = selectGithubRepository(request, d);
     if (selectedRepository) {
@@ -1076,6 +1246,33 @@ async function telegramImageDataUrl(fileId:string) {
   return `data:${type};base64,${bytesToB64(bytes)}`;
 }
 
+async function telegramFileBytes(fileId:string,maxBytes:number) {
+  const token=Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
+  const info=await telegram("getFile",{file_id:fileId});
+  const path=info?.result?.file_path;
+  if(!path) throw new Error("Telegram did not return the file path.");
+  const r=await fetch(`${TELEGRAM_API}/file/bot${token}/${path}`);
+  if(!r.ok) throw new Error("Could not download the Telegram file.");
+  const bytes=new Uint8Array(await r.arrayBuffer());
+  if(bytes.length>maxBytes) throw new Error(`This upload is too large. Maximum size is ${Math.floor(maxBytes/1000)} KB.`);
+  return bytes;
+}
+
+async function handleGithubDocumentUpload(chatId:number|string,tg:number,document:any,caption:string,business?:string,chatType="private") {
+  if(business || chatType!=="private") throw new Error("GitHub file uploads are available only in your private chat with Tivals AI.");
+  const match=caption.match(/^@github\s+upload\s+(?:to\s+)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\s]+)(?:\s+.*)?$/i);
+  if(!match) throw new Error("Add this caption to the document: `@github upload owner/repository:path/to/file`");
+  const repository=match[1],path=match[2].replace(/^\/+/,"");
+  const declaredSize=Number(document?.file_size || 0);
+  if(declaredSize>900_000) throw new Error("Telegram GitHub uploads are limited to 900 KB per file.");
+  let current:any=null;
+  try { current=await oauthCall("github_file",tg,"github",{repository,path}); }
+  catch(e) { if(!/not found/i.test(String((e as Error)?.message || e))) throw e; }
+  const bytes=await telegramFileBytes(String(document?.file_id || ""),900_000);
+  const fileName=String(document?.file_name || path.split("/").pop() || "file");
+  await showGithubFileConfirmation(chatId,tg,repository,path,bytesToB64(bytes),`Upload ${fileName} from Telegram`,String(current?.sha || ""),`Telegram upload: ${fileName}`);
+}
+
 function visionText(d:any) {
   const c=d?.choices?.[0]?.message?.content;
   if(typeof c==="string") return c.trim();
@@ -1147,10 +1344,10 @@ Deno.serve(async (req: Request) => {
         return json({ ok:false, route:"gmail-confirm-error", error:message }, 200);
       }
     }
-    const githubAction=data.match(/^github_(issue|cancel):([0-9a-f-]{36})$/i);
+    const githubAction=data.match(/^github_(issue|file|repo|cancel):([0-9a-f-]{36})$/i);
     if(githubAction) {
       try {
-        const route=await handleGithubConfirmation(q,githubAction[1].toLowerCase() as "issue"|"cancel",githubAction[2].toLowerCase());
+        const route=await handleGithubConfirmation(q,githubAction[1].toLowerCase() as "issue"|"file"|"repo"|"cancel",githubAction[2].toLowerCase());
         return json({ok:true,route});
       } catch(e) {
         const message=String((e as Error)?.message||e);
@@ -1227,20 +1424,27 @@ Deno.serve(async (req: Request) => {
   const text = String(message?.text || "").trim();
   const caption = String(message?.caption || "").trim();
   const photos = Array.isArray(message?.photo) ? message.photo : [];
-  const doc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
+  const imageDoc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
+  const uploadDoc = message?.document && !imageDoc ? message.document : null;
 
   if(!bm&&text&&!await groupMessageAllowed(message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
   if(tg&&!acceptChat(`${chatId}:${tg}`))return json({ok:true,ignored:true,reason:"rate-limited"});
 
   try {
-    if (photos.length || doc) {
+    if(uploadDoc && /^@github\s+upload\b/i.test(caption)) {
+      if(!tg) throw new Error("Telegram user ID is unavailable.");
+      await handleGithubDocumentUpload(chatId,effectiveTg,uploadDoc,caption,business,String(message?.chat?.type || "private"));
+      return json({ok:true,route:"github-upload-draft"});
+    }
+
+    if (photos.length || imageDoc) {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
       const quota = await consumeUsage(effectiveTg, "ai");
       if (!quota.ok) {
         await sendLimitReached(chatId, quota.plan as PlanName, "ai", business);
         return json({ok:true,route:"vision-limit"});
       }
-      const fileId = doc?.file_id || photos[photos.length-1]?.file_id;
+      const fileId = imageDoc?.file_id || photos[photos.length-1]?.file_id;
       await telegram("sendChatAction", { chat_id: chatId, action: "typing", ...(business ? { business_connection_id: business } : {}) }).catch(()=>{});
       const reply = await analyzeImage(await telegramImageDataUrl(fileId), caption);
       await sendFormatted(chatId, reply, business);
