@@ -167,7 +167,8 @@ async function verifyInitData(initData:string,token:string) {
   const secret=await hmac(new TextEncoder().encode("WebAppData"),token);
   if(hex(await hmac(secret,dataCheck))!==hash) return null;
   const authDate=Number(p.get("auth_date")||0);
-  if(!authDate||Date.now()/1000-authDate>86400) return null;
+  const age=Math.floor(Date.now()/1000)-authDate;
+  if(!authDate||age<0||age>900) return null;
   try{const user=JSON.parse(p.get("user")||"{}");return user?.id?user:null}catch{return null}
 }
 async function validateInitData(initData:string) {

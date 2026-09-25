@@ -38,14 +38,18 @@ async function syncOwnedBots(){
   }
   return {synced,failed:errors.length,errors};
 }
-Deno.serve(async()=>{
+Deno.serve(async(req:Request)=>{
+  if(req.method!=="POST")return json({ok:false,error:"Method not allowed"},405);
+  const syncSecret=Deno.env.get("TELEGRAM_SYNC_SECRET")||SERVICE_KEY;
+  if(!syncSecret||req.headers.get("authorization")!==`Bearer ${syncSecret}`)return json({ok:false,error:"Unauthorized"},401);
   const token=Deno.env.get("TELEGRAM_BOT_TOKEN")||"";
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
   if(!token)return json({ok:false,error:"missing bot token"},500);
+  if(!secret)return json({ok:false,error:"missing webhook secret"},500);
   const allowed_updates=["message","business_message","business_connection","callback_query"];
   const payload:any={url:WEBHOOK_URL,allowed_updates,drop_pending_updates:false};
-  if(secret)payload.secret_token=secret;
-  const setResult=await botCall(token,"setWebhook",payload);
+  payload.secret_token=secret;
+  await botCall(token,"setWebhook",payload);
   await botCall(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:APP_URL}}});
   await botCall(token,"setMyCommands",{commands:[
     {command:"start",description:"Start Tivals AI"},
@@ -54,7 +58,6 @@ Deno.serve(async()=>{
     {command:"accounts",description:"View connected tools"},
     {command:"tools",description:"Show available AI tools"}
   ]});
-  const info=await botCall(token,"getWebhookInfo");
   const owned=await syncOwnedBots();
-  return json({ok:true,allowed_updates,telegram:setResult,webhook_info:info,owned_bots:owned});
+  return json({ok:true,allowed_updates,main_bot_synced:true,owned_bots:owned});
 });

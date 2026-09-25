@@ -8,6 +8,23 @@ const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
+const seenUpdates = new Map<string, number>();
+const chatBuckets = new Map<string, { count:number; resetAt:number }>();
+const botIdentity = new Map<string, { id:number; username:string }>();
+
+function acceptUpdate(key:string) {
+  const now=Date.now(),expires=seenUpdates.get(key)||0;
+  if(expires>now)return false;
+  seenUpdates.set(key,now+10*60_000);
+  if(seenUpdates.size>5000)for(const [k,v] of seenUpdates)if(v<=now)seenUpdates.delete(k);
+  return true;
+}
+function acceptChat(key:string) {
+  const now=Date.now(),bucket=chatBuckets.get(key);
+  if(!bucket||bucket.resetAt<=now){chatBuckets.set(key,{count:1,resetAt:now+60_000});return true;}
+  if(bucket.count>=12)return false;
+  bucket.count+=1;return true;
+}
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
@@ -31,6 +48,14 @@ async function telegram(token: string, method: string, payload: Record<string, u
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed.`);
   return d;
+}
+async function groupMessageAllowed(token:string,connectorKey:string,message:any,text:string) {
+  if(String(message?.chat?.type||"private")==="private")return true;
+  let me=botIdentity.get(connectorKey);
+  if(!me){const d=await telegram(token,"getMe",{});me={id:Number(d?.result?.id||0),username:String(d?.result?.username||"")};botIdentity.set(connectorKey,me);}
+  const repliedToBot=Number(message?.reply_to_message?.from?.id||0)===me.id;
+  const mentioned=Boolean(me.username&&new RegExp(`@${me.username.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}\\b`,"i").test(text));
+  return repliedToBot||mentioned;
 }
 async function businessBelongsToOwner(token: string, businessConnectionId: string, ownerId: number) {
   if (!businessConnectionId || !ownerId) return false;
@@ -205,6 +230,9 @@ Deno.serve(async (req: Request) => {
     if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
 
     const update = await req.json();
+    const connectorKey=paywallOwner?`tg:${paywallOwner}`:`web:${owner}`;
+    const updateId=Number(update?.update_id);
+    if(Number.isFinite(updateId)&&!acceptUpdate(`${connectorKey}:${updateId}`))return json({ok:true,ignored:true,reason:"duplicate-update"});
     if (paywallOwner && update?.business_connection) {
       const connectionOwner = Number(update.business_connection?.user?.id || 0);
       return json({
@@ -230,6 +258,8 @@ Deno.serve(async (req: Request) => {
     const text = String(message?.text || "").trim();
     const businessConnectionId = String(message?.business_connection_id || "");
     if (!chatId || !text || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
+    if(!update?.business_message&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
+    if(!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
     if (paywallOwner && update?.business_message && !(await businessBelongsToOwner(token, businessConnectionId, paywallOwner))) {
       return json({ ok: true, route: "business-owner-rejected" });
     }

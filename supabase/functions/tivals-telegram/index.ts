@@ -12,6 +12,23 @@ const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+const seenUpdates = new Map<number, number>();
+const chatBuckets = new Map<string, { count:number; resetAt:number }>();
+let mainBotIdentity:{id:number;username:string}|null=null;
+
+function acceptUpdate(id:number) {
+  const now=Date.now(),expires=seenUpdates.get(id)||0;
+  if(expires>now)return false;
+  seenUpdates.set(id,now+10*60_000);
+  if(seenUpdates.size>5000)for(const [k,v] of seenUpdates)if(v<=now)seenUpdates.delete(k);
+  return true;
+}
+function acceptChat(key:string) {
+  const now=Date.now(),bucket=chatBuckets.get(key);
+  if(!bucket||bucket.resetAt<=now){chatBuckets.set(key,{count:1,resetAt:now+60_000});return true;}
+  if(bucket.count>=12)return false;
+  bucket.count+=1;return true;
+}
 
 const SUBSCRIPTION_PERIOD = 2592000;
 const PLAN_CONFIG = {
@@ -99,6 +116,13 @@ async function telegram(method: string, payload: Record<string, unknown>) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram ${method} failed (${r.status}).`);
   return d;
+}
+async function groupMessageAllowed(message:any,text:string) {
+  if(String(message?.chat?.type||"private")==="private")return true;
+  if(!mainBotIdentity){const d=await telegram("getMe",{});mainBotIdentity={id:Number(d?.result?.id||0),username:String(d?.result?.username||"")};}
+  const repliedToBot=Number(message?.reply_to_message?.from?.id||0)===mainBotIdentity.id;
+  const mentioned=Boolean(mainBotIdentity.username&&new RegExp(`@${mainBotIdentity.username.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}\\b`,"i").test(text));
+  return repliedToBot||mentioned;
 }
 
 type PlanName = "free" | "basic" | "pro";
@@ -752,7 +776,8 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
-  if (secret && (req.headers.get("x-telegram-bot-api-secret-token") || "") !== secret) return json({ error: "Unauthorized webhook." }, 401);
+  if (!secret) return json({ error: "Webhook security is not configured." }, 503);
+  if ((req.headers.get("x-telegram-bot-api-secret-token") || "") !== secret) return json({ error: "Unauthorized webhook." }, 401);
 
   let update:any;
   try {
@@ -760,6 +785,8 @@ Deno.serve(async (req: Request) => {
   } catch {
     return json({ error: "Invalid Telegram update." }, 400);
   }
+  const updateId=Number(update?.update_id);
+  if(Number.isFinite(updateId)&&!acceptUpdate(updateId))return json({ok:true,ignored:true,reason:"duplicate-update"});
 
   if (update?.callback_query) {
     const q=update.callback_query;
@@ -833,6 +860,9 @@ Deno.serve(async (req: Request) => {
   const caption = String(message?.caption || "").trim();
   const photos = Array.isArray(message?.photo) ? message.photo : [];
   const doc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
+
+  if(!bm&&text&&!await groupMessageAllowed(message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
+  if(tg&&!acceptChat(`${chatId}:${tg}`))return json({ok:true,ignored:true,reason:"rate-limited"});
 
   try {
     if (photos.length || doc) {

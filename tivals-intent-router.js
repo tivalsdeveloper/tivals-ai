@@ -13,7 +13,8 @@
     try{
       const model=document.querySelector('#model')?.value||'';
       const prompt=`Classify the user's intent for a chat application. Return exactly one word: github or general.\nUse github only when the user actually wants to inspect, create, modify, list, link, commit, or otherwise operate on a GitHub repository/file. A previously active repository is context, not proof that a new unrelated request is about GitHub.\nActive repository: ${gh.repo||'none'}\nActive file: ${gh.path||'none'}\nUser message: ${q}`;
-      const r=await fetch(AI,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,messages:[{role:'user',content:prompt}]})});
+      const headers=window.tivalsAiHeaders?await window.tivalsAiHeaders():{'Content-Type':'application/json'};
+      const r=await fetch(AI,{method:'POST',headers,body:JSON.stringify({model,messages:[{role:'user',content:prompt}]})});
       const d=await r.json().catch(()=>({})),a=String(d.reply||'').trim().toLowerCase();
       return a.startsWith('github')?'github':'general';
     }catch{return explicitGithub(q)?'github':'general'}

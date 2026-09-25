@@ -1,7 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const cors = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": "https://ai.tivalsdeveloper.site",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Content-Type": "application/json"
@@ -56,8 +56,34 @@ let appMixWorkingModel = "";
 let apinexWorkingModel = "";
 let bazaarWorkingModel = "";
 
+const APP_ORIGINS = new Set([
+  "https://ai.tivalsdeveloper.site",
+  "https://tivalsdeveloper.github.io"
+]);
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function appOriginAllowed(origin: string) {
+  return APP_ORIGINS.has(origin);
+}
+
+function takeRateLimit(key: string, limit: number, windowMs = 60_000) {
+  const now = Date.now();
+  const current = rateBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (current.count >= limit) return false;
+  current.count += 1;
+  if (rateBuckets.size > 5000) {
+    for (const [bucketKey, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(bucketKey);
+  }
+  return true;
+}
+
 function responseHeaders(origin = "") {
-  return { ...cors, "Access-Control-Allow-Origin": origin || "*", "Vary": "Origin" };
+  const allowedOrigin = origin || cors["Access-Control-Allow-Origin"];
+  return { ...cors, "Access-Control-Allow-Origin": allowedOrigin, "Vary": "Origin", "Cache-Control": "no-store" };
 }
 
 function json(data: unknown, status = 200, origin = "") {
@@ -178,10 +204,16 @@ function telegramBusinessSystem(value:any) {
 
 function cleanMessages(v: unknown) {
   if (!Array.isArray(v)) return [];
-  return v.slice(-16).map((m:any) => ({
+  const cleaned = v.slice(-10).map((m:any) => ({
     role: ["assistant", "system"].includes(m?.role) ? m.role : "user",
-    content: String(m?.content || "").slice(0, 16000)
+    content: String(m?.content || "").slice(0, 4000)
   })).filter((m:any) => m.content);
+  let remaining = 24_000;
+  return cleaned.reverse().map((m:any) => {
+    const content = m.content.slice(-remaining);
+    remaining = Math.max(0, remaining - content.length);
+    return { ...m, content };
+  }).filter((m:any) => m.content).reverse();
 }
 
 function replyFrom(d: any) {
@@ -414,7 +446,12 @@ function parseSelectedModel(value: unknown): SelectedModel | null {
   if (colon > 0) {
     const provider = id.slice(0, colon) as ProviderName;
     const model = id.slice(colon + 1);
-    if (["bazaarlink", "appmix", "apinex", "openrouter"].includes(provider) && model) {
+    const freeOnly =
+      (provider === "bazaarlink" && (model === "auto:free" || /:free$/i.test(model))) ||
+      (provider === "appmix" && /-free(?:$|\b)/i.test(model)) ||
+      (provider === "apinex" && model.startsWith("free/")) ||
+      (provider === "openrouter" && model === "openrouter/free");
+    if (freeOnly) {
       return { provider, model };
     }
   }
@@ -703,7 +740,25 @@ Deno.serve(async (req: Request) => {
     if (!domainAllowed(origin, widget.allowed_domains)) return json({ error: "This domain is not authorized to use this Tivals AI widget.", code: "DOMAIN_NOT_ALLOWED" }, 403, origin);
   }
 
-  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: responseHeaders(widget ? origin : "") });
+  if (req.method === "OPTIONS") {
+    if (!widget && origin && !appOriginAllowed(origin)) return json({ error: "Origin not allowed." }, 403);
+    return new Response(null, { status: 204, headers: responseHeaders(widget ? origin : origin) });
+  }
+
+  const serviceKey=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+  const authHeader=req.headers.get("authorization")||"";
+  const internalRequest=Boolean(serviceKey && authHeader===`Bearer ${serviceKey}`);
+  let userId="";
+  if (!internalRequest && authHeader.startsWith("Bearer ")) {
+    const token=authHeader.slice(7).trim();
+    if (token) {
+      const admin=adminClient();
+      const {data}=admin ? await admin.auth.getUser(token) : {data:{user:null}};
+      userId=String(data?.user?.id||"");
+    }
+  }
+  if (!widget && !internalRequest && !userId) return json({ error: "Sign in is required.", code: "AUTH_REQUIRED" }, 401, origin);
+  if (!widget && origin && !appOriginAllowed(origin)) return json({ error: "Origin not allowed." }, 403);
 
   const keys = {
     bazaar: Deno.env.get("BAZAARLINK_API_KEY") || "",
@@ -718,7 +773,7 @@ Deno.serve(async (req: Request) => {
 
     if (u.searchParams.get("models") === "1") {
       const models = await getPublicModels(keys.apinex || keys.apinexBackup, keys.open, keys.app, keys.bazaar);
-      return json({ ok: true, version: VERSION, models, count: models.length });
+      return json({ ok: true, version: VERSION, models, count: models.length }, 200, widget ? origin : origin);
     }
 
     if (u.searchParams.get("health") === "1") {
@@ -756,12 +811,16 @@ Deno.serve(async (req: Request) => {
   try { body = await req.json(); }
   catch { return json({ error: "Invalid JSON request." }, 400); }
 
-  const serviceKey=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
-  const internalRequest=Boolean(serviceKey && req.headers.get("authorization")===`Bearer ${serviceKey}`);
   const telegramBusiness=internalRequest ? telegramBusinessSystem(body?.business_profile) : "";
 
+  if (!internalRequest) {
+    const bucketKey = widget ? `widget:${widget.public_key}` : `user:${userId}`;
+    const limit = widget ? 20 : 40;
+    if (!takeRateLimit(bucketKey, limit)) return json({ error: "Too many requests. Please wait a minute and try again.", code: "RATE_LIMITED" }, 429, widget ? origin : origin);
+  }
+
   const messages = cleanMessages(body?.messages);
-  if (!messages.length && body?.message) messages.push({ role: "user", content: String(body.message).slice(0,16000) });
+  if (!messages.length && body?.message) messages.push({ role: "user", content: String(body.message).slice(0,4000) });
   if (!messages.length) return json({ error: "Please enter a message." }, 400);
 
   const system = {
