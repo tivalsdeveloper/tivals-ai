@@ -7,6 +7,7 @@ const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
 const seenUpdates = new Map<string, number>();
@@ -67,8 +68,22 @@ async function telegramFileBytes(token:string,fileId:string,maxBytes=6_000_000) 
   const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length>maxBytes)throw new Error("Please keep voice messages under 90 seconds.");return bytes;
 }
 function audioFormat(mime:string){const v=String(mime||"").toLowerCase();if(v.includes("webm"))return"webm";if(v.includes("mpeg")||v.includes("mp3"))return"mp3";if(v.includes("mp4")||v.includes("m4a"))return"m4a";if(v.includes("aac"))return"aac";if(v.includes("wav"))return"wav";return"ogg"}
-async function transcribeVoice(bytes:Uint8Array,mime:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(!key)throw new Error("Voice recognition is not configured.");const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();if(!r.ok||!text)throw new Error(d?.error?.message||d?.error||"I could not understand that voice message.");return text.slice(0,4000)}
-async function synthesizeVoice(text:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(!key)throw new Error("Voice replies are not configured.");const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d?.error?.message||d?.error||"Voice generation failed.");}return new Uint8Array(await r.arrayBuffer())}
+function aimlTranscript(d:any){return String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim()}
+async function aimlTranscribe(bytes:Uint8Array,mime:string){
+  const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");
+  const form=new FormData();form.append("model","#g1_whisper-small");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
+  const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${key}`},body:form});const c=await created.json().catch(()=>({}));
+  if(!created.ok||!c?.generation_id)throw new Error("backup_transcription_failed");
+  for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${key}`}});const d=await r.json().catch(()=>({}));const transcript=aimlTranscript(d);if(r.ok&&transcript)return transcript.slice(0,4000);const status=String(d?.status||"").toLowerCase();if(["error","failed","cancelled"].includes(status))break;}
+  throw new Error("backup_transcription_timeout");
+}
+async function transcribeVoice(bytes:Uint8Array,mime:string){
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();if(r.ok&&text)return text.slice(0,4000)}catch{}
+  try{return await aimlTranscribe(bytes,mime)}catch{throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.")}
+}
+async function aimlSpeech(text:string){const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("backup_speech_failed");const audio=await fetch(url);if(!audio.ok)throw new Error("backup_audio_download_failed");return new Uint8Array(await audio.arrayBuffer())}
+async function synthesizeVoice(text:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}return aimlSpeech(text)}
 async function groupMessageAllowed(token:string,connectorKey:string,message:any,text:string) {
   if(String(message?.chat?.type||"private")==="private")return true;
   let me=botIdentity.get(connectorKey);
