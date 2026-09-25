@@ -262,13 +262,20 @@ async function personalAi(profile:any,businessProfile:any,memoryKey:string,userT
   const answer=String(result.reply);remember(memoryKey,prompt,answer);return answer;
 }
 
-async function paidOrOwner(tg:number) {
+async function consumeOwnerAiUsage(tg:number) {
   const {data:admin}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();
-  if(admin) return true;
+  if(admin)return;
   const {data}=await sb.from("telegram_subscriptions")
     .select("plan,status,subscription_expiration_date")
     .eq("telegram_user_id",tg).maybeSingle();
-  return Boolean(data && data.status==="active" && ["basic","pro"].includes(data.plan) && new Date(data.subscription_expiration_date).getTime()>Date.now());
+  const active=Boolean(data&&data.status==="active"&&["basic","pro"].includes(data.plan)&&new Date(data.subscription_expiration_date).getTime()>Date.now());
+  const plan=active?String(data.plan):"free",limit=plan==="pro"?1000:plan==="basic"?200:20;
+  const today=new Date().toISOString().slice(0,10);
+  const {data:usage,error}=await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle();
+  if(error)throw error;
+  const used=Number(usage?.ai_messages||0);if(used>=limit)throw new Error("This bot has reached its daily AI limit. The creator can upgrade the plan in /app.");
+  const {error:upsertError}=await sb.from("telegram_daily_usage").upsert({telegram_user_id:tg,usage_date:today,ai_messages:used+1,image_generations:Number(usage?.image_generations||0),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id,usage_date"});
+  if(upsertError)throw upsertError;
 }
 
 Deno.serve(async (req: Request) => {
@@ -406,6 +413,7 @@ Deno.serve(async (req: Request) => {
       action: "typing",
       ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
     });
+    if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
     const businessProfile=paywallOwner ? await telegramBusinessProfile(paywallOwner) : null;
     const answer=await personalAi(conn,businessProfile,`${connectorKey}:${chatId}:${senderId||"channel"}`,text);
     const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
