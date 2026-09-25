@@ -8,6 +8,7 @@ const PIXAZO_STUDIO_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1
 const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegram-oauth";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
+const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -1348,30 +1349,23 @@ function audioFormat(mime:string) {
 
 async function transcribeVoice(bytes:Uint8Array,mime:string) {
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
-  if(!key) throw new Error("Voice recognition is not configured.");
-  const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{
-    method:"POST",
-    headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},
-    body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})
-  });
-  const d=await r.json().catch(()=>({}));
-  const text=String(d?.text||"").trim();
-  if(!r.ok||!text) throw new Error(d?.error?.message||d?.error||"I could not understand that voice message.");
-  return text.slice(0,4000);
+  if(key)try{
+    const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});
+    const d=await r.json().catch(()=>({})),text=String(d?.text||"").trim();if(r.ok&&text)return text.slice(0,4000);
+  }catch{}
+  const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
+  try{
+    const kind=audioFormat(mime),form=new FormData();form.append("model","#g1_whisper-small");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${kind}`);
+    const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
+    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
+  }catch{}
+  throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
 }
 
 async function synthesizeVoice(text:string) {
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
-  if(!key) throw new Error("Voice replies are not configured.");
-  const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{
-    method:"POST",
-    headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},
-    body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})
-  });
-  if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d?.error?.message||d?.error||"Voice generation failed.");}
-  const bytes=new Uint8Array(await r.arrayBuffer());
-  if(!bytes.length) throw new Error("Voice generation returned no audio.");
-  return bytes;
+  if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}
+  const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice replies are temporarily unavailable.");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${backup}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("Voice replies are temporarily unavailable.");const audio=await fetch(url);if(!audio.ok)throw new Error("Voice replies are temporarily unavailable.");return new Uint8Array(await audio.arrayBuffer());
 }
 
 async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,business?:string,chatType="private") {
@@ -1473,7 +1467,7 @@ async function analyzeImage(dataUrl:string, question:string) {
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, gmail_sending: true, email_confirmation: true, image_reading: true, voice_chat: true, oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
+  if (req.method === "GET") return json({ ok: true, service: "Tivals AI Telegram webhook", gmail_reading: true, gmail_sending: true, email_confirmation: true, image_reading: true, voice_chat: true, audio_backup_configured:Boolean(Deno.env.get("AIMLAPI_API_KEY")), oauth: true, formatting: "html-code-blocks", subscriptions: "telegram-stars", mini_app: true });
   if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
 
   const secret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
