@@ -8,6 +8,7 @@ const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const OWNED_BOT_WEBHOOK = `${SUPABASE_URL}/functions/v1/tivals-user-telegram`;
 const TIVALS_AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
 const voiceBuckets = new Map<number,{count:number;resetAt:number}>();
 const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites";
@@ -54,19 +55,20 @@ function voiceFormat(value:string) {
 }
 async function transcribeVoice(bytes:Uint8Array,format:string) {
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
-  if(!key)throw new Error("Voice recognition is not configured.");
-  const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:b64(bytes),format:voiceFormat(format)},response_format:"json",temperature:0})});
-  const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();
-  if(!r.ok||!text)throw new Error(d?.error?.message||d?.error||"I could not understand the recording.");
-  return text.slice(0,4000);
+  if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:b64(bytes),format:voiceFormat(format)},response_format:"json",temperature:0})});const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();if(r.ok&&text)return text.slice(0,4000)}catch{}
+  const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please try again later.");
+  try{
+    const kind=voiceFormat(format),mime=kind==="mp3"?"audio/mpeg":kind==="m4a"?"audio/mp4":`audio/${kind}`;
+    const form=new FormData();form.append("model","#g1_whisper-small");form.append("audio",new Blob([bytes],{type:mime}),`voice.${kind}`);
+    const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
+    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
+  }catch{}
+  throw new Error("Voice recognition is temporarily unavailable. Please try again later.");
 }
 async function synthesizeVoice(text:string) {
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
-  if(!key)throw new Error("Voice replies are not configured.");
-  const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});
-  if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d?.error?.message||d?.error||"Voice generation failed.");}
-  const bytes=new Uint8Array(await r.arrayBuffer());if(!bytes.length)throw new Error("Voice generation returned no audio.");
-  return bytes;
+  if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}
+  const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice replies are temporarily unavailable.");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${backup}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("Voice replies are temporarily unavailable.");const audio=await fetch(url);if(!audio.ok)throw new Error("Voice replies are temporarily unavailable.");return new Uint8Array(await audio.arrayBuffer());
 }
 async function aesKey() {
   const digest = await crypto.subtle.digest("SHA-256", enc.encode(SERVICE_KEY));
