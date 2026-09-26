@@ -10,6 +10,7 @@ const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
 const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?mode=personal&v=20260926-5";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
+const APPMIX_BASE = "https://api.apmix.ai/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
 const enc = new TextEncoder();
 const seenUpdates = new Map<string, number>();
@@ -88,11 +89,13 @@ async function aimlSpeech(text:string){const key=Deno.env.get("AIMLAPI_API_KEY")
 async function synthesizeVoice(text:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}return aimlSpeech(text)}
 function visionReply(d:any){const content=d?.choices?.[0]?.message?.content;if(typeof content==="string")return content.trim();if(Array.isArray(content))return content.map((x:any)=>typeof x==="string"?x:String(x?.text||"")).join("\n").trim();return""}
 async function analyzeImage(dataUrl:string,question:string){
-  const prompt=String(question||"Describe this image and answer helpfully.").slice(0,3000),messages=[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:dataUrl}}]}];
+  const prompt=String(question||"Describe this image and answer helpfully.").slice(0,3000)+" Respond clearly for a mobile Telegram chat; mention uncertainty rather than guessing.",messages=[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:dataUrl}}]}];
   const aimlKey=Deno.env.get("AIMLAPI_API_KEY")||"";
   if(aimlKey)try{const r=await fetch(`${AIMLAPI_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${aimlKey}`,"Content-Type":"application/json"},body:JSON.stringify({model:"alibaba/qwen3.5-omni-flash",messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
   const openKey=Deno.env.get("OPENROUTER_API_KEY")||"";
-  if(openKey)try{const r=await fetch(`${OPENROUTER_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${openKey}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openrouter/free",messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
+  if(openKey)for(const model of ["qwen/qwen3-vl-235b-a22b-thinking:free","openrouter/free"])try{const r=await fetch(`${OPENROUTER_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${openKey}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model,messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
+  const app=Deno.env.get("APPMIX_API_KEY")||"";
+  if(app)for(const model of ["openai/gpt-4.1-free","google/gemini-3-flash-preview-free"])try{const r=await fetch(`${APPMIX_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${app}`,"Content-Type":"application/json"},body:JSON.stringify({model,messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
   throw new Error("Image understanding is temporarily unavailable. Please try again shortly.");
 }
 async function groupMessageAllowed(token:string,connectorKey:string,message:any,text:string) {
@@ -114,7 +117,7 @@ async function businessBelongsToOwner(token: string, businessConnectionId: strin
   }
 }
 function esc(v: string) {
-  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 function toolText(value:unknown,max=500) {
   const text=String(value??"").replace(/\s+/g," ").trim();
@@ -264,6 +267,8 @@ function mdToHtml(input: string) {
     .replace(/^\s*[-*]\s+/gm, "• ")
     .replace(/^\s*(\d+)\.\s+/gm, "$1. ")
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]\n]{1,80})\]\((https?:\/\/[^\s)<>]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/^&gt;\s?(.+)$/gm, "<blockquote>$1</blockquote>")
     .replace(/\n{3,}/g, "\n\n");
 
   codeBlocks.forEach((block, i) => { t = t.replace(`@@TIVALS_CODE_${i}@@`, block); });
@@ -331,7 +336,8 @@ function personalBotSystem(profile:any) {
     "You are an AI and must never falsely claim to be human, conscious, or physically present.",
     "This is a personal assistant, not a business assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
     "Never invent business details, prices, bookings, contact information, account data, or completed actions.",
-    "Never pretend to have done a real-world action you did not do. Be honest when uncertain."
+    "Never pretend to have done a real-world action you did not do. Be honest when uncertain.",
+    "Telegram presentation: lead with the answer, use short paragraphs, and add informative headings only when they help. Avoid Markdown tables, unnecessary emoji, repeated greetings and long introductions. Present search results as numbered items; email results as sender, subject, date and summary. For programming, use fenced language-tagged code blocks and keep each block focused."
   ];
   if(["education","coding","math"].includes(purpose)){
     lines.push(
