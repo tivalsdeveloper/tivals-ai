@@ -957,14 +957,36 @@ function emailAddress(header:string) {
   if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(address)) throw new Error("The sender has no valid reply address.");
   return address;
 }
+function emailSearchQuery(raw:string){
+  const input=String(raw||"").trim();
+  const sender=input.match(/^from\s+(.+)$/i);
+  return sender ? "from:("+sender[1].trim()+")" : input;
+}
+function emailSearchSummary(data:any){
+  const messages=Array.isArray(data?.messages)?data.messages:[];
+  const grouped=new Map<string,{mail:any;count:number}>();
+  for(const mail of messages){
+    const key=String(mail?.thread_id||mail?.id||"");
+    if(!key)continue;
+    const prior=grouped.get(key);
+    if(prior)prior.count++;
+    else grouped.set(key,{mail,count:1});
+  }
+  if(!grouped.size)return "📭 **No matching emails found.**\n\nTry a sender address, subject, or a different search term.";
+  const results=[...grouped.values()].slice(0,6).map(({mail:m,count},i)=>{
+    const sender=String(m.from||"Unknown sender").replace(/\s*<[^>]+>\s*$/,"").replace(/^["']|["']$/g,"").trim()||"Unknown sender";
+    const date=m.internal_date?new Date(m.internal_date).toLocaleDateString("en-ZA",{day:"numeric",month:"short",year:"numeric"}):String(m.date||"").slice(0,23);
+    return (i+1)+". **"+toolText(m.subject||"(No subject)",95)+"**\n"+toolText(sender,55)+(date?" · "+date:"")+(count>1?" · "+count+" in thread":"")+"\n"+toolText(m.snippet||"",88)+"\nID: `"+m.id+"`";
+  });
+  return "📬 **Email results** · "+Number(data?.result_size||messages.length)+" found\n\n"+results.join("\n\n")+"\n\n/reademail ID · /replyemail ID | instructions";
+}
 async function handleEmailCommand(chatId:number|string,tg:number,command:{command:string;args:string},business?:string) {
   if(business||Number(chatId)!==tg) throw new Error("Gmail commands are available only in your direct bot chat.");
   if(!command.args){await sendFormatted(chatId,command.command==="findemail"?"Use `/findemail sender, subject, or Gmail search terms`":command.command==="reademail"?"Use `/reademail MESSAGE_ID` from /findemail results":"Use `/replyemail MESSAGE_ID | what you want to say` from /findemail results");return;}
   if(!await connectedToolQuota(chatId,tg,business))return;
   if(command.command==="findemail"){
-    const d=await oauthCall("gmail_messages",tg,"gmail",{query:command.args,max_results:10});
-    const list=Array.isArray(d?.messages)?d.messages:[];
-    await sendFormatted(chatId,list.length?"📧 **Email results**\n\n"+list.map((m:any,i:number)=>`${i+1}. **${m.subject||"(No subject)"}**\nFrom: ${m.from||"Unknown"}\n${toolText(m.snippet,160)}\nID: \`${m.id}\``).join("\n\n")+"\n\nUse /reademail ID or /replyemail ID | your instructions.":"No matching emails found.");
+    const d=await oauthCall("gmail_messages",tg,"gmail",{query:emailSearchQuery(command.args),max_results:10});
+    await sendFormatted(chatId,emailSearchSummary(d));
     return;
   }
   const match=command.args.match(/^([a-f0-9]{8,32})(?:\s*\|\s*([\s\S]+))?$/i);
