@@ -5,7 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-2";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
