@@ -472,6 +472,8 @@ async function sendToolSuggestions(chatId:number|string,business?:string) {
     reply_markup:{inline_keyboard:[
       [{text:"🎵 TikTok",callback_data:"tool_suggest:tiktok"},{text:"📧 Gmail",callback_data:"tool_suggest:gmail"}],
       [{text:"🐙 GitHub",callback_data:"tool_suggest:github"},{text:"▶️ YouTube",callback_data:"tool_suggest:youtube"}],
+      [{text:"🔎 Find email",callback_data:"tool_suggest:findemail"},{text:"📖 Read email",callback_data:"tool_suggest:reademail"}],
+      [{text:"↩️ Reply to email",callback_data:"tool_suggest:replyemail"},{text:"✉️ Send email",callback_data:"tool_suggest:sendemail"}],
       [{text:"🎨 Image",callback_data:"tool_suggest:image"},{text:"✨ AI",callback_data:"tool_suggest:ai"}]
     ]}
   };
@@ -480,7 +482,11 @@ async function sendToolSuggestions(chatId:number|string,business?:string) {
 }
 const TOOL_SUGGESTION_TEXT:Record<string,string>={
   tiktok:"🎵 **TikTok**\n\nType: `@tiktok check my TikTok account`\nOr: `@tiktok show my latest videos`",
-  gmail:"📧 **Gmail**\n\nType: `@gmail check my latest emails`\nOr use `/connect` first.",
+  gmail:"📧 **Gmail**\n\nUse `/gmail check my latest emails`, `/findemail QUERY`, or `/unread`. Connect with /connect first.",
+  findemail:"🔎 **Find an email**\n\nUse `/findemail application status` or `/findemail from:example@example.com`. The results include IDs for reading and replying.",
+  reademail:"📖 **Read an email**\n\nFirst use `/findemail QUERY`, then copy its ID into `/reademail ID`.",
+  replyemail:"↩️ **Reply to an email**\n\nFirst find and read the message. Then use `/replyemail ID | Thank them and ask for more details`. You must confirm before sending.",
+  sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",
   github:"🐙 **GitHub**\n\nType: `@github check my GitHub account`\nOr use `/connect` first.",
   youtube:"▶️ **YouTube**\n\nType: `@youtube Python tutorial`",
   image:"🎨 **Image**\n\nType: `@image futuristic AI robot`",
