@@ -28,10 +28,13 @@ async function syncOwnedBots(){
       await botCall(token,"setWebhook",{url:OWNED_WEBHOOK_URL+"?tg_owner="+encodeURIComponent(String(row.telegram_user_id)),secret_token:secret,allowed_updates:["message","business_message","business_connection","callback_query"],drop_pending_updates:false});
       await botCall(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:APP_URL}}});
       await botCall(token,"setMyCommands",{commands:[
-        {command:"start",description:"Start Tivals AI"},
-        {command:"app",description:"Open Tivals AI app"},
-        {command:"connect",description:"Connect Gmail, GitHub and TikTok"},
-        {command:"accounts",description:"View connected tools"}
+        {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
+        {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminders",description:"View upcoming reminders"},
+        {command:"lesson",description:"Start a lesson on a topic"},{command:"explain",description:"Explain a concept clearly"},{command:"quiz",description:"Create a short quiz"},{command:"practice",description:"Give practice questions"},
+        {command:"search",description:"Search the live web"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
+        {command:"grouphelp",description:"How to use this bot in groups"},{command:"connect",description:"Owner: connect tools"},{command:"accounts",description:"Owner: view connected tools"},
+        {command:"emails",description:"Owner: show recent Gmail"},{command:"unread",description:"Owner: show unread Gmail"},{command:"sendemail",description:"Owner: prepare an email"},
+        {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
       ]});
       synced++;
     }catch(e){errors.push(String((e as Error)?.message||e).slice(0,180));}
