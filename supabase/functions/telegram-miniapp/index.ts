@@ -425,6 +425,7 @@ Deno.serve(async req => {
   const action = String(body?.action || "dashboard");
 
   try {
+    if(action==="app_context") return json({ok:true,mode:(await verifyInitData(String(body?.init_data||""),BOT_TOKEN))?"business":"personal"});
     if(action==="voice_chat") {
       if(!takeVoiceRate(tg))return json({error:"Please wait a moment before speaking again."},429);
       const encoded=String(body?.audio_base64||"");
