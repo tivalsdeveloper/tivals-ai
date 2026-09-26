@@ -9,7 +9,7 @@ const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegra
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
-const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-1";
+const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-2";
 const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
