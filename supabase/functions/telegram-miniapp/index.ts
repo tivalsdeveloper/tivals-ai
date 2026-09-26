@@ -333,7 +333,6 @@ const plans = {
 } as const;
 
 async function getDashboard(tg:number) {
-  await syncOwnedBotSetup(tg).catch(()=>{});
   const today = new Date().toISOString().slice(0,10);
   const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
@@ -384,7 +383,6 @@ async function getDashboard(tg:number) {
 }
 
 async function getPersonalBotDashboard(tg:number) {
-  await syncOwnedBotSetup(tg).catch(()=>{});
   const today=new Date().toISOString().slice(0,10);
   const [{data:usage},{data:bot},access,accountData,{data:monitor}]=await Promise.all([
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
