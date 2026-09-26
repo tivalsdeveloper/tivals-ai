@@ -188,6 +188,10 @@ function managedBotCommands() {
     {command:"disconnect_website",description:"Owner: disconnect website"}
   ];
 }
+function managedBotPublicCommands(){
+  const allowed=new Set(["start","help","ask","newchat","chats","remind","reminders","lesson","explain","quiz","practice","search","tools","grouphelp","youtube","image"]);
+  return managedBotCommands().filter(item=>allowed.has(item.command));
+}
 function mainBotCommands(){
   const excluded=new Set(["newchat","chats","remind","reminders","lesson","explain","quiz","practice","grouphelp"]);
   return [
@@ -230,7 +234,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
       managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:PERSONAL_BOT_APP_URL}}}),
       managedBotApi(token,"setMyShortDescription",{short_description:"A personal, human-like AI assistant and tutor"}),
       managedBotApi(token,"setMyDescription",{description:`${botName} is your personal AI assistant. It can teach programming, mathematics and other subjects, and works in approved groups and channels.`}),
-      managedBotApi(token,"setMyCommands",{commands:managedBotCommands()})
+      managedBotApi(token,"setMyCommands",{commands:managedBotPublicCommands(),scope:{type:"default"}})
     ]);
   } catch(e) {
     await sb.from("telegram_owned_bots").update({is_active:false,updated_at:new Date().toISOString()}).eq("telegram_user_id",ownerId).eq("bot_id",botId);
