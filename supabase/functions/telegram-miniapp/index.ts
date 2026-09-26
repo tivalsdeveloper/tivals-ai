@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?mode=personal&v=20260926-5"}}
   }).catch(()=>null);
 }
 
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?mode=personal&v=20260926-5"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -384,6 +384,7 @@ async function getDashboard(tg:number) {
 }
 
 async function getPersonalBotDashboard(tg:number) {
+  await syncOwnedBotSetup(tg).catch(()=>{});
   const today=new Date().toISOString().slice(0,10);
   const [{data:usage},{data:bot},access,accountData,{data:monitor}]=await Promise.all([
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
