@@ -13,7 +13,7 @@ const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const XKIRO_BASE = "https://api.xkiro.com/v1";
-const VERSION = 29;
+const VERSION = 30;
 
 type WidgetConfig = {
   public_key: string;
@@ -43,7 +43,7 @@ const APPMIX_FREE_MODELS = [
 
 const APINEX_FALLBACK_MODELS = ["free/gemini-3.1-pro"];
 
-type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter";
+type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter" | "xkiro";
 type SelectedModel = { provider: ProviderName; model: string };
 type PublicModel = { id: string; name: string; provider?: string; model?: string };
 
@@ -51,12 +51,14 @@ const cooldownUntil: Record<ProviderName, number> = {
   bazaarlink: 0,
   appmix: 0,
   apinex: 0,
-  openrouter: 0
+  openrouter: 0,
+  xkiro: 0
 };
 
 let appMixWorkingModel = "";
 let apinexWorkingModel = "";
 let bazaarWorkingModel = "";
+let xkiroWorkingModel = "";
 
 const APP_ORIGINS = new Set([
   "https://ai.tivalsdeveloper.site",
@@ -366,6 +368,22 @@ function bazaarFreeModels(raw: any) {
   return out;
 }
 
+function xkiroFreeModels(raw: any) {
+  const rows = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.models) ? raw.models : [];
+  const out: string[] = [];
+  for (const row of rows) {
+    const id = String(row?.id || row?.model || row?.model_id || row?.slug || "").trim();
+    if (!id.includes("/")) continue;
+    const pricing = row?.pricing || row?.price || {};
+    const zero =
+      (isZeroPrice(pricing?.prompt) && isZeroPrice(pricing?.completion)) ||
+      (isZeroPrice(pricing?.input) && isZeroPrice(pricing?.output));
+    const free = row?.free === true || row?.is_free === true || String(row?.tier || row?.access_tier || "").toLowerCase() === "free";
+    if (zero || free || /(?:^|[-/:])free(?:$|[-/:])/i.test(id)) out.push(id);
+  }
+  return uniqueModels(out);
+}
+
 function prettyModelName(model: string, provider: ProviderName) {
   const known: Record<string,string> = {
     "free/gemini-3.1-pro": "Gemini 3.1 Pro",
@@ -395,6 +413,7 @@ function providerLabel(provider: ProviderName) {
   if (provider === "bazaarlink") return "BazaarLink";
   if (provider === "appmix") return "AppMix";
   if (provider === "apinex") return "Apinex";
+  if (provider === "xkiro") return "xKiro";
   return "OpenRouter";
 }
 
@@ -620,9 +639,26 @@ async function callAiml(key: string, prompt: any[]) {
 }
 
 async function callXkiro(key: string, prompt: any[]) {
-  const model = Deno.env.get("XKIRO_MODEL") || "openai/gpt-5.6-sol";
-  const reply = await callProvider(`${XKIRO_BASE}/chat/completions`, key, model, prompt, {}, 12000);
-  return { reply, route: `xkiro:${model}`, model };
+  if (inCooldown("xkiro")) throw new Error("cooldown");
+  let models: string[] = [];
+  if (xkiroWorkingModel) models.push(xkiroWorkingModel);
+  const configured = String(Deno.env.get("XKIRO_MODEL") || "").trim();
+  try {
+    const { raw } = await listModels(XKIRO_BASE, key, 4000);
+    const free = xkiroFreeModels(raw);
+    if (configured && free.includes(configured)) models.push(configured);
+    models.push(...free);
+  } catch {}
+  models = uniqueModels(models);
+  if (!models.length) throw new Error("no_free_models");
+  const result = await tryModels(
+    "xkiro",
+    models,
+    m => callProvider(`${XKIRO_BASE}/chat/completions`, key, m, prompt, {}, 12000),
+    50
+  );
+  xkiroWorkingModel = result.model;
+  return result;
 }
 
 async function callSpecificModel(
@@ -679,11 +715,14 @@ async function callSpecificModel(
 async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; xkiro: string }) {
   const providers: any[] = [];
   providers.push({ name: "AIML API", configured: Boolean(keys.aiml) });
-  providers.push({
-    name: "xKiro",
-    configured: Boolean(keys.xkiro),
-    model: Deno.env.get("XKIRO_MODEL") || "openai/gpt-5.6-sol"
-  });
+  if (keys.xkiro) {
+    try {
+      const { raw } = await listModels(XKIRO_BASE, keys.xkiro, 4000);
+      providers.push({ name: "xKiro", configured: true, free_only: true, free_models_visible: xkiroFreeModels(raw).length, cooldown_ms: Math.max(0, cooldownUntil.xkiro - Date.now()) });
+    } catch (e) {
+      providers.push({ name: "xKiro", configured: true, free_only: true, error: safeErr(e) });
+    }
+  } else providers.push({ name: "xKiro", configured: false, free_only: true });
 
   if (keys.bazaar) {
     try {
