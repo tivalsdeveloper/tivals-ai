@@ -8,6 +8,7 @@ const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
 const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-7";
+const BUSINESS_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
@@ -217,12 +218,13 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   const text=list.length?"<b>Connected tools</b>\n\n"+list.map((x:any)=>"• "+(labels[x.provider]||x.provider)+": <b>"+esc(x.account_label||"Connected")+"</b>").join("\n"):"<b>Connected tools</b>\n\nNo tools connected yet. Use /connect.";
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
-async function ownerApp(token:string,chatId:number,business="") {
+async function ownerApp(token:string,chatId:number,business="",kind="personal") {
+  const businessBot=kind==="business",url=businessBot?BUSINESS_APP_URL:APP_URL,label=businessBot?"Business Bot Studio":"Personal Bot Studio";
   await Promise.all([
-    telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}}),
+    telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url}}}),
     registerBotCommands(token,chatId)
   ]).catch(()=>{});
-  await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Personal Bot Studio</b>\n\nCustomize your bot’s personality, learning subjects, voice and group settings.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Personal Bot Studio",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
+  await telegram(token,"sendMessage",{chat_id:chatId,text:`📱 <b>${label}</b>\n\nManage your ${businessBot?"business details, products, services and bot settings":"bot’s personality, learning subjects, voice and group settings"}.`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:`Open ${label}`,web_app:{url}}]]},...(business?{business_connection_id:business}:{})});
 }
 async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
@@ -627,7 +629,7 @@ Deno.serve(async (req: Request) => {
 
   if (tgOwner > 0) {
     const {data,error}=await sb.from("telegram_owned_bots")
-      .select("token_enc,webhook_secret_enc,account_label,is_active,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
+      .select("token_enc,webhook_secret_enc,account_label,is_active,bot_kind,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
       .eq("telegram_user_id",tgOwner).maybeSingle();
     if(error || !data || !data.is_active) return json({error:"Connector not found"},404);
     conn={
@@ -733,7 +735,7 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
     }
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
-      await ownerApp(token,chatId,businessConnectionId); return json({ok:true,route:"owner-app"});
+      await ownerApp(token,chatId,businessConnectionId,conn.bot_kind); return json({ok:true,route:"owner-app"});
     }
     if (paywallOwner && senderId === paywallOwner && text === "/connect") {
       await ownerConnectMenu(token,chatId,paywallOwner,businessConnectionId); return json({ok:true,route:"owner-connect"});
@@ -762,11 +764,11 @@ Deno.serve(async (req: Request) => {
     if (/^\/start(?:\s|$)/i.test(text)) {
       if(privateConversation){
         try {
-          if(senderId===paywallOwner)await Promise.all([registerBotCommands(token,chatId),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}})]);
+          if(senderId===paywallOwner)await Promise.all([registerBotCommands(token,chatId),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:conn.bot_kind==="business"?BUSINESS_APP_URL:APP_URL}}})]);
           else await telegram(token,"setMyCommands",{commands:publicBotCommands(),scope:{type:"default"}});
         } catch(error){console.error("Bot command registration failed",String((error as Error)?.message||error));}
       }
-      if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId);return json({ok:true,route:"personal-app"});}
+      if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId,conn.bot_kind);return json({ok:true,route:"personal-app"});}
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
     }
