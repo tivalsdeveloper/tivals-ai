@@ -5,7 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-1";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-2";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -71,7 +71,7 @@ function audioFormat(mime:string){const v=String(mime||"").toLowerCase();if(v.in
 function aimlTranscript(d:any){return String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim()}
 async function aimlTranscribe(bytes:Uint8Array,mime:string){
   const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");
-  const form=new FormData();form.append("model","#g1_whisper-small");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
+  const form=new FormData();form.append("model","whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
   const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${key}`},body:form});const c=await created.json().catch(()=>({}));
   if(!created.ok||!c?.generation_id)throw new Error("backup_transcription_failed");
   for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${key}`}});const d=await r.json().catch(()=>({}));const transcript=aimlTranscript(d);if(r.ok&&transcript)return transcript.slice(0,4000);const status=String(d?.status||"").toLowerCase();if(["error","failed","cancelled"].includes(status))break;}
@@ -84,6 +84,15 @@ async function transcribeVoice(bytes:Uint8Array,mime:string){
 }
 async function aimlSpeech(text:string){const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("backup_speech_failed");const audio=await fetch(url);if(!audio.ok)throw new Error("backup_audio_download_failed");return new Uint8Array(await audio.arrayBuffer())}
 async function synthesizeVoice(text:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}return aimlSpeech(text)}
+function visionReply(d:any){const content=d?.choices?.[0]?.message?.content;if(typeof content==="string")return content.trim();if(Array.isArray(content))return content.map((x:any)=>typeof x==="string"?x:String(x?.text||"")).join("\n").trim();return""}
+async function analyzeImage(dataUrl:string,question:string){
+  const prompt=String(question||"Describe this image and answer helpfully.").slice(0,3000),messages=[{role:"user",content:[{type:"text",text:prompt},{type:"image_url",image_url:{url:dataUrl}}]}];
+  const aimlKey=Deno.env.get("AIMLAPI_API_KEY")||"";
+  if(aimlKey)try{const r=await fetch(`${AIMLAPI_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${aimlKey}`,"Content-Type":"application/json"},body:JSON.stringify({model:"alibaba/qwen3.5-omni-flash",messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
+  const openKey=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(openKey)try{const r=await fetch(`${OPENROUTER_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${openKey}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openrouter/free",messages,max_tokens:1200,temperature:.25})});const d=await r.json().catch(()=>({})),answer=visionReply(d);if(r.ok&&answer)return answer}catch{}
+  throw new Error("Image understanding is temporarily unavailable. Please try again shortly.");
+}
 async function groupMessageAllowed(token:string,connectorKey:string,message:any,text:string) {
   if(String(message?.chat?.type||"private")==="private")return true;
   let me=botIdentity.get(connectorKey);
@@ -319,7 +328,7 @@ function remember(key:string,user:string,assistant:string) {
 }
 async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>) {
   const prompt=commandPrompt(userText);
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25_000);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45_000);
   try {
     const history=persistentHistory||memoryMessages(memoryKey);
     const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
@@ -557,12 +566,14 @@ Deno.serve(async (req: Request) => {
     const senderId = Number(message?.from?.id || 0);
     let text = String(message?.text || message?.caption || "").trim();
     const voice=message?.voice||null;
+    const photos=Array.isArray(message?.photo)?message.photo:[];
+    const imageDocument=/^image\//i.test(String(message?.document?.mime_type||""))?message.document:null;
     const businessConnectionId = String(message?.business_connection_id || "");
     responseChat=chatId;responseBusiness=businessConnectionId;
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
     const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private"&&!businessConnectionId);
-    if (!chatId || (!text&&!voice) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
+    if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
       const mode=String(conn.channel_mode||"commands");
       if(mode==="off")return json({ok:true,ignored:true,reason:"channel-disabled"});
@@ -640,6 +651,16 @@ Deno.serve(async (req: Request) => {
       const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);if(duration>90||size>6_000_000)throw new Error("Please keep voice messages under 90 seconds.");
       await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
       text=await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg"));
+    }
+    if(photos.length||imageDocument){
+      if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
+      await telegram(token,"sendChatAction",{chat_id:chatId,action:"typing",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
+      const fileId=String(imageDocument?.file_id||photos[photos.length-1]?.file_id||"");
+      const mime=String(imageDocument?.mime_type||"image/jpeg");
+      const bytes=await telegramFileBytes(token,fileId,8_000_000);
+      const answer=await analyzeImage(`data:${mime};base64,${bytesToB64(bytes)}`,text||"What is in this image? Describe it clearly and answer any visible question.");
+      await reply(token,chatId,answer,businessConnectionId);
+      return json({ok:true,route:"vision"});
     }
     await telegram(token, "sendChatAction", {
       chat_id: chatId,
