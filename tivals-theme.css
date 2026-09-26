@@ -39,3 +39,37 @@ body:has(#authGate:not([hidden])){background:#040b17!important}
 
 /* Auth visibility must override responsive display rules. */
 .authGate[hidden],.appShell[hidden]{display:none!important}
+
+/* Calm, modern Tivals workspace — shared by desktop and mobile. */
+:root{--bg:#071221!important;--panel:#101f34!important;--panel2:#152b48!important;--line:#2a496c!important;--muted:#a9bed5!important;--brand:#31aaff!important;--cyan:#5cdded!important}
+html,body,.app,.appShell{background:#071221!important}
+.logo,.avatar{background:#0e2545 url("./app-icon.svg") center/cover no-repeat!important;color:transparent!important;font-size:0!important;box-shadow:0 8px 23px #030b1c66}
+.sidebar{background:linear-gradient(165deg,#0c2340,#071629 74%)!important;border-color:#25476b!important}
+.sideBrand .logo,.authBrand .logo,.storyBrand .logo{border:1px solid #4e8dbf!important}
+.sideTools,.userCard{box-shadow:0 12px 35px #020a183d!important}
+.sideTool,.historyBtn,.sideNew{transition:background .18s ease,transform .18s ease,border-color .18s ease}
+.sideTool:hover,.historyBtn:hover,.sideNew:hover{transform:translateX(2px)}
+.top{background:#0a1b31ee!important;border-color:#31516f!important;box-shadow:0 12px 32px #030b1c3b}
+.model,.iconBtn{background:#142b49!important;border:1px solid #315877!important;border-radius:13px!important;min-height:44px;color:#eff8ff!important}
+.chat{background:radial-gradient(circle at 72% 3%,#17436d4d,transparent 31rem),#071221!important}
+.welcome{max-width:780px!important}.welcome h1{font-size:clamp(2.25rem,5vw,4.2rem)!important;line-height:1.08!important;letter-spacing:-.048em!important}
+.welcome p{max-width:620px;margin-inline:auto;color:#adc1d8!important}
+.quickGrid{gap:12px!important;max-width:690px!important}
+.chip{min-height:92px;background:linear-gradient(150deg,#112a48,#0d2039)!important;border:1px solid #315676!important;border-radius:18px!important;padding:17px!important;box-shadow:0 14px 36px #02081638!important;transition:transform .17s ease,border-color .17s ease,background .17s ease}
+.chip:hover{transform:translateY(-3px);border-color:#57baff!important;background:#143653!important}
+.chip strong{color:#f4f9ff;font-size:1rem}.chip span{display:block;margin-top:6px;font-size:.875rem;color:#b6c9dc!important}
+.toolBtn{min-height:44px;border-radius:13px!important;background:#142b49!important;border-color:#315676!important;color:#e0f1ff!important}
+.msg{max-width:860px!important;gap:12px!important}.bubble{font-size:1rem;line-height:1.6}
+.ai .bubble{background:#0f2239!important;border:1px solid #294767!important;border-radius:18px!important;box-shadow:0 10px 28px #020a172e}
+.user .bubble{background:linear-gradient(135deg,#2465bd,#2456a0)!important;color:#fff!important;border:1px solid #498ddd!important;border-radius:18px 18px 5px 18px!important}
+.ai .bubble h2,.ai .bubble h3{color:#bde8ff}.ai .bubble a{color:#7bceff}
+.codebox{border-color:#325a7f!important;border-radius:15px!important;background:#06101f!important}.codehead{background:#142d49!important;color:#c4def3!important}.codebox pre{font-size:.875rem;line-height:1.65}
+.composerWrap{background:linear-gradient(transparent,#071221 22%)!important}.composer{background:#132b48f2!important;border:1px solid #3b668b!important;border-radius:23px!important;box-shadow:0 15px 38px #02071366!important}.send,.action{background:linear-gradient(135deg,#2697f2,#216bc4)!important;color:#fff!important}
+.modal{background:#0e2037!important;border:1px solid #315777!important;box-shadow:0 30px 75px #0009!important}
+.authGate{background:#071221!important}.authPanel{background:radial-gradient(circle at 100% 0,#16447755,transparent 28rem),#08192d!important}
+.authCard{background:#0e2540ef!important;border:1px solid #38618b!important;box-shadow:0 26px 80px #02081391!important}
+.authCard h1{letter-spacing:-.045em!important}.authLead{color:#bed0e2!important}.authTrust span{color:#a9c3df!important}
+.authTabs{background:#081a2f!important}.authTab.active{background:#1e4770!important}
+.authSubmit{background:linear-gradient(135deg,#278dea,#1d6ac5)!important}.field input{color:#fff!important}
+@media(max-width:760px){.welcome p{margin-left:0!important}.chat{padding-bottom:126px!important}.top{box-shadow:0 7px 22px #020a1738}.chip{min-height:84px}.ai .bubble{background:#10243b!important}}
+@media(prefers-reduced-motion:reduce){.chip,.sideTool,.historyBtn,.sideNew{transition:none!important;transform:none!important}}
