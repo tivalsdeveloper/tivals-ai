@@ -1215,7 +1215,7 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
       await sendFormatted(chatId, "Usage: `@youtube what you want to search`", business);
       return "youtube-help";
     }
-    await sendHtml(chatId, ytHtml(request, await searchYouTube(request)), business);
+    await sendYouTubeResults(chatId, request, await searchYouTube(request), business);
     return "youtube";
   }
 
@@ -1302,6 +1302,32 @@ async function searchYouTube(query: string) {
 function ytHtml(q: string, videos: any[]) {
   if (!videos.length) return `🔎 No YouTube videos found for <b>${esc(q)}</b>.`;
   return `🔎 <b>YouTube results for “${esc(q)}”</b>\n\n` + videos.slice(0,6).map((x:any,i:number) => `${i+1}. <b>${esc(String(x?.title || "Untitled"))}</b>\n${esc(String(x?.channelTitle || ""))}${x?.url ? `\n<a href="${esc(String(x.url))}">▶ Watch on YouTube</a>` : ""}`).join("\n\n");
+}
+
+
+// Telegram creates its playable YouTube card from a visible, standalone URL.
+// HTML anchor tags in the results list cannot produce an in-chat video preview.
+async function sendYouTubeResults(chatId: number|string, query: string, videos: any[], business?: string) {
+  await sendHtml(chatId, ytHtml(query, videos), business);
+  const first = videos.find((video:any) => {
+    try {
+      const url = new URL(String(video?.url || ""));
+      return url.protocol === "https:" && ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(url.hostname);
+    } catch { return false; }
+  });
+  if (!first) return;
+  const p: Record<string, unknown> = {
+    chat_id: chatId,
+    text: `▶️ Play in Telegram: ${String(first.title || "YouTube video").slice(0,180)}\n${first.url}`,
+    link_preview_options: { is_disabled: false, url: String(first.url), prefer_large_media: true, show_above_text: true }
+  };
+  if (business) p.business_connection_id = business;
+  try { await telegram("sendMessage", p); }
+  catch {
+    // Older Telegram clients/API versions can still open the original video link.
+    delete p.link_preview_options;
+    await telegram("sendMessage", p);
+  }
 }
 
 function imagePrompt(text: string) {
@@ -1832,7 +1858,7 @@ Deno.serve(async (req: Request) => {
 
     const yt = youtubeQuery(text);
     if (yt) {
-      await sendHtml(chatId,ytHtml(yt,await searchYouTube(yt)),business);
+      await sendYouTubeResults(chatId,yt,await searchYouTube(yt),business);
       return json({ok:true,route:"youtube"});
     }
 
