@@ -10,7 +10,7 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-4";
-const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3";
+const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -196,7 +196,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
     await managedBotApi(token,"setWebhook",{
       url:`${SUPABASE_URL}/functions/v1/tivals-user-telegram?tg_owner=${encodeURIComponent(String(ownerId))}`,
       secret_token:secret,
-      allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post"],
+      allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
       drop_pending_updates:false
     });
     await Promise.all([
@@ -1387,9 +1387,9 @@ async function transcribeVoice(bytes:Uint8Array,mime:string) {
   }catch{}
   const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
   try{
-    const kind=audioFormat(mime),form=new FormData();form.append("model","whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${kind}`);
+    const kind=audioFormat(mime),form=new FormData();form.append("model","#g1_whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${kind}`);
     const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
-    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
+    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.alternatives?.[0]?.transcript||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
   }catch{}
   throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
 }
