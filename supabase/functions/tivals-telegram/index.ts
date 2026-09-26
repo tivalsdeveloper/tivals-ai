@@ -10,7 +10,7 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-4";
-const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-6";
+const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-7";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -219,7 +219,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
     telegram_user_id:ownerId,bot_id:botId,username:bot?.username||null,
     account_label:bot?.username?`@${bot.username}`:botName,bot_name:botName,
     token_enc:await managedBotEncrypt(token),webhook_secret_enc:await managedBotEncrypt(secret),
-    is_active:true,updated_at:new Date().toISOString()
+    is_active:true,bot_kind:"personal",updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
   if(error)throw error;
 
