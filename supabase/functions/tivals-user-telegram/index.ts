@@ -738,7 +738,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"slash-tools"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
-      if(paywallOwner&&privateConversation){
+      if(privateConversation){
         try {
           if(senderId===paywallOwner)await Promise.all([registerBotCommands(token,chatId),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}})]);
           else await telegram(token,"setMyCommands",{commands:publicBotCommands(),scope:{type:"default"}});
