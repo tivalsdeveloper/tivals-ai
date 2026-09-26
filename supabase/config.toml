@@ -1,0 +1,16 @@
+[functions.telegram-miniapp]
+# Telegram Mini Apps authenticate with signed initData from Telegram, not a
+# Supabase user JWT. The function verifies the HMAC signature and rejects data
+# older than 15 minutes before any dashboard data is read.
+verify_jwt = false
+
+[functions.tivals-telegram]
+# Telegram webhooks authenticate with x-telegram-bot-api-secret-token.
+verify_jwt = false
+
+[functions.tivals-user-telegram]
+# User-owned bot webhooks authenticate with a unique encrypted webhook secret.
+verify_jwt = false
+
+[functions.telegram-gmail-monitor]
+verify_jwt = true
