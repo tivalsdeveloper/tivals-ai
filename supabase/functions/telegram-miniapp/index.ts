@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-1"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-2"}}
   }).catch(()=>null);
 }
 
@@ -255,7 +255,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-1"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-2"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -329,7 +329,7 @@ async function getDashboard(tg:number) {
     sb.from("telegram_business_catalog").select("id,item_type,name,price,currency,details,available,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_specialists").select("id,first_name,last_name,about,services,active,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
-    oauth("status",tg),
+    oauth("status",tg).catch(()=>({connections:[]})),
     isAdmin(tg),
     ownedBot(tg),
     sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle()
@@ -375,7 +375,7 @@ async function getPersonalBotDashboard(tg:number) {
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     ownedBot(tg),
     personalBotAccess(tg),
-    oauth("status",tg),
+    oauth("status",tg).catch(()=>({connections:[]})),
     sb.from("telegram_gmail_monitor_settings").select("enabled,interval_minutes,auto_draft_replies,last_checked_at,last_success_at,last_error").eq("telegram_user_id",tg).maybeSingle()
   ]);
   const connections=Array.isArray(accountData?.connections)?accountData.connections:[];
