@@ -7,8 +7,8 @@ const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-7";
-const BUSINESS_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8";
+const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
@@ -219,7 +219,7 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="",kind="personal") {
-  const businessBot=kind==="business",url=businessBot?BUSINESS_APP_URL:APP_URL,label=businessBot?"Business Bot Studio":"Personal Bot Studio";
+  const businessBot=kind==="business",url=APP_URL,label="Bot Studio";
   await Promise.all([
     telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url}}}),
     registerBotCommands(token,chatId)
