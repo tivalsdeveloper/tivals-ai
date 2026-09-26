@@ -461,6 +461,23 @@ Deno.serve(async req => {
 
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
     if (action==="personal_bot_dashboard") return json({ok:true,user,dashboard:await getPersonalBotDashboard(tg)});
+    if (action==="bot_profile_photo") {
+      const {data:bot}=await sb.from("telegram_owned_bots").select("bot_id,is_active,token_enc").eq("telegram_user_id",tg).maybeSingle();
+      if(!bot?.is_active||!bot?.bot_id||!bot?.token_enc)return json({ok:true,photo:""});
+      const token=await decrypt(String(bot.token_enc));
+      const photos=await fetch(`https://api.telegram.org/bot${token}/getUserProfilePhotos`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user_id:bot.bot_id,limit:1})}).then(r=>r.json());
+      const sizes=photos?.result?.photos?.[0];
+      if(!photos?.ok||!Array.isArray(sizes)||!sizes.length)return json({ok:true,photo:""});
+      const fileId=sizes.findLast((x:any)=>Number(x?.file_size||0)<=150_000)?.file_id||sizes[0]?.file_id;
+      const file=await fetch(`https://api.telegram.org/bot${token}/getFile`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({file_id:fileId})}).then(r=>r.json());
+      if(!file?.ok||!file?.result?.file_path)return json({ok:true,photo:""});
+      const response=await fetch(`https://api.telegram.org/file/bot${token}/${file.result.file_path}`);
+      if(!response.ok||Number(response.headers.get("content-length")||0)>150_000)return json({ok:true,photo:""});
+      const bytes=new Uint8Array(await response.arrayBuffer());
+      if(bytes.length>150_000)return json({ok:true,photo:""});
+      const mime=bytes[0]===0x89&&bytes[1]===0x50?"image/png":"image/jpeg";
+      return json({ok:true,photo:`data:${mime};base64,${b64(bytes)}`});
+    }
 
     if(action==="disconnect_personal_connector") {
       const provider=String(body?.provider||"");
