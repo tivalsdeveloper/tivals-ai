@@ -463,7 +463,7 @@ Deno.serve(async req => {
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
     if (action==="personal_bot_dashboard") return json({ok:true,user,dashboard:await getPersonalBotDashboard(tg)});
     if (action==="bot_profile_photo") {
-      const {data:bot}=await sb.from("telegram_owned_bots").select("bot_id,is_active,token_enc").eq("telegram_user_id",tg).maybeSingle();
+      const {data:bot}=await sb.from("telegram_owned_bots").select("bot_id,username,is_active,token_enc").eq("telegram_user_id",tg).maybeSingle();
       if(!bot?.is_active||!bot?.bot_id||!bot?.token_enc)return json({ok:true,photo:""});
       const token=await decrypt(String(bot.token_enc));
       const photoRequest={method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user_id:bot.bot_id,limit:1})};
@@ -471,8 +471,14 @@ Deno.serve(async req => {
       let photos=await fetch(`https://api.telegram.org/bot${photoToken}/getUserProfilePhotos`,photoRequest).then(r=>r.json());
       if(!photos?.result?.photos?.length){photoToken=token;photos=await fetch(`https://api.telegram.org/bot${photoToken}/getUserProfilePhotos`,photoRequest).then(r=>r.json());}
       const sizes=photos?.result?.photos?.[0];
-      if(!photos?.ok||!Array.isArray(sizes)||!sizes.length)return json({ok:true,photo:""});
-      const fileId=sizes.findLast((x:any)=>Number(x?.file_size||0)<=150_000)?.file_id||sizes[0]?.file_id;
+      let fileId=Array.isArray(sizes)&&sizes.length?(sizes.findLast((x:any)=>Number(x?.file_size||0)<=150_000)?.file_id||sizes[0]?.file_id):"";
+      if(!fileId){
+        for(const candidate of [BOT_TOKEN,token]){
+          const chat=await fetch(`https://api.telegram.org/bot${candidate}/getChat`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({chat_id:bot.bot_id})}).then(r=>r.json()).catch(()=>({}));
+          if(chat?.result?.photo?.small_file_id){fileId=chat.result.photo.small_file_id;photoToken=candidate;break;}
+        }
+      }
+      if(!fileId)return json({ok:true,photo:""});
       const file=await fetch(`https://api.telegram.org/bot${photoToken}/getFile`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({file_id:fileId})}).then(r=>r.json());
       if(!file?.ok||!file?.result?.file_path)return json({ok:true,photo:""});
       const response=await fetch(`https://api.telegram.org/file/bot${photoToken}/${file.result.file_path}`);
