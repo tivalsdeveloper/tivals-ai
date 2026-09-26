@@ -430,8 +430,14 @@ Deno.serve(async req => {
       await consumeAiUsage(tg);
       const transcript=await transcribeVoice(audio,String(body?.audio_format||"webm"));
       const reply=await voiceAiReply(tg,transcript,body?.history);
-      const spoken=await synthesizeVoice(reply);
-      return json({ok:true,transcript,reply,audio_base64:b64(spoken),audio_mime:"audio/mpeg"});
+      try {
+        const spoken=await synthesizeVoice(reply);
+        return json({ok:true,transcript,reply,audio_base64:b64(spoken),audio_mime:"audio/mpeg",audio_provider:"server"});
+      } catch {
+        // Preserve the transcript and AI answer so the Mini App can use its
+        // browser-side Puter.js fallback instead of failing the whole turn.
+        return json({ok:true,transcript,reply,audio_base64:"",audio_mime:"",audio_provider:"puter"});
+      }
     }
 
     if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
