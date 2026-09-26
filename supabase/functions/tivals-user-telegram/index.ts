@@ -6,7 +6,7 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -69,10 +69,10 @@ async function telegramFileBytes(token:string,fileId:string,maxBytes=6_000_000) 
   const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length>maxBytes)throw new Error("Please keep voice messages under 90 seconds.");return bytes;
 }
 function audioFormat(mime:string){const v=String(mime||"").toLowerCase();if(v.includes("webm"))return"webm";if(v.includes("mpeg")||v.includes("mp3"))return"mp3";if(v.includes("mp4")||v.includes("m4a"))return"m4a";if(v.includes("aac"))return"aac";if(v.includes("wav"))return"wav";return"ogg"}
-function aimlTranscript(d:any){return String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim()}
+function aimlTranscript(d:any){return String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.alternatives?.[0]?.transcript||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim()}
 async function aimlTranscribe(bytes:Uint8Array,mime:string){
   const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");
-  const form=new FormData();form.append("model","whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
+  const form=new FormData();form.append("model","#g1_whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
   const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${key}`},body:form});const c=await created.json().catch(()=>({}));
   if(!created.ok||!c?.generation_id)throw new Error("backup_transcription_failed");
   for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${key}`}});const d=await r.json().catch(()=>({}));const transcript=aimlTranscript(d);if(r.ok&&transcript)return transcript.slice(0,4000);const status=String(d?.status||"").toLowerCase();if(["error","failed","cancelled"].includes(status))break;}
@@ -190,7 +190,9 @@ async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
     [{text:"📧 Gmail",callback_data:"tool_suggest:gmail"},{text:"🐙 GitHub",callback_data:"tool_suggest:github"}],
     [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"🔎 Web Search",callback_data:"tool_suggest:web"}],
-    [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"}]
+    [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"},{text:"🖼️ Images",callback_data:"tool_suggest:image"}],
+    [{text:"🎙️ Voice",callback_data:"tool_suggest:voice"},{text:"⏰ Reminders",callback_data:"tool_suggest:reminder"}],
+    [{text:"💬 Chats",callback_data:"tool_suggest:chats"},{text:"🎓 Tutor",callback_data:"tool_suggest:tutor"}]
   ]},...(business?{business_connection_id:business}:{})});
 }
 const TOOL_SUGGESTION_TEXT:Record<string,string>={
@@ -198,8 +200,21 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
   github:"🐙 **GitHub**\n\n`@github check my GitHub account`\n`@github inspect owner/repository`\n\nOnly the bot owner can access connected repositories.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
   web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
-  ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`"
+  ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`",
+  image:"🖼️ **Image understanding**\n\nAttach a photo and add your question as the caption. I can describe it, read visible text and answer questions about it.",
+  voice:"🎙️ **Voice**\n\nSend a Telegram voice note. I will transcribe it, answer naturally and return a spoken reply when voice replies are enabled.",
+  reminder:"⏰ **Reminders**\n\nUse `/remind tomorrow at 7 PM | Study mathematics` or say `Remind me tomorrow at 7 PM to study mathematics`.",
+  chats:"💬 **Personal chats**\n\nUse `/newchat` to start fresh and `/chats` to continue an earlier conversation.",
+  tutor:"🎓 **Learning tools**\n\nUse `/lesson topic`, `/explain topic`, `/quiz topic`, or `/practice topic`."
 };
+const INLINE_TOOL_RESULTS=[
+  ["gmail","📧 Gmail","Read, search and prepare emails","@gmail "],["github","🐙 GitHub","Inspect connected repositories","@github "],
+  ["web","🔎 Web Search","Search current information","@web "],["website","🌐 Website","Check the connected website account","@website "],
+  ["ai","✨ Personal AI","Ask your personal assistant","@ai "],["image","🖼️ Image","Attach a photo and ask a question","@image "],
+  ["voice","🎙️ Voice","Send a voice note for a spoken reply","@voice"],["reminder","⏰ Reminder","Create a personal reminder","@reminder "],
+  ["tutor","🎓 Tutor","Learn, practise or take a quiz","@tutor "]
+] as const;
+async function answerInlineToolSuggestions(token:string,query:any){const needle=String(query?.query||"").trim().toLowerCase();const results=INLINE_TOOL_RESULTS.filter(x=>!needle||`${x[0]} ${x[1]} ${x[2]}`.toLowerCase().includes(needle)).map(x=>({type:"article",id:`tivals-${x[0]}`,title:x[1],description:x[2],input_message_content:{message_text:x[3]}}));await telegram(token,"answerInlineQuery",{inline_query_id:query.id,results,cache_time:0,is_personal:true})}
 function personalBotCommands(){return[
   {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
   {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminders",description:"View upcoming reminders"},
@@ -207,6 +222,7 @@ function personalBotCommands(){return[
   {command:"search",description:"Search the live web"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
   {command:"grouphelp",description:"How to use this bot in groups"},{command:"connect",description:"Owner: connect tools"},{command:"accounts",description:"Owner: view connected tools"},
   {command:"emails",description:"Owner: show recent Gmail"},{command:"unread",description:"Owner: show unread Gmail"},{command:"sendemail",description:"Owner: prepare an email"},
+  {command:"web",description:"Search current information"},{command:"gmail",description:"Use connected Gmail"},{command:"github",description:"Use connected GitHub"},{command:"website",description:"Check connected website"},{command:"image",description:"How to analyze an image"},{command:"voice",description:"How to use voice replies"},
   {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
 ]}
 function mdToHtml(input: string) {
@@ -491,6 +507,12 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
   if(tool==="website"||tool==="site"){
     const data=await oauth("status",tg),list=Array.isArray(data?.connections)?data.connections:[],site=list.find((x:any)=>x?.provider==="website");if(!site)throw new Error("Tivals AI Website is not connected. Use /connect first.");await reply(token,chatId,`🌐 **Connected website account**\n\n${site.account_label||"Tivals AI Website"}`);return"website";
   }
+  if(tool==="web"||tool==="search"){
+    const query=String(request||"").trim();if(!query)throw new Error("Add what you want to search for, for example: @web latest AI news");
+    await consumeOwnerAiUsage(tg);const r=await fetch(WEB_SEARCH_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({query,num:8})});const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data?.error||"Web search is temporarily unavailable.");
+    const results=Array.isArray(data?.results)?data.results.slice(0,8):[],verified=toolText([`Query: ${query}`,data?.answerBox?`Answer box: ${JSON.stringify(data.answerBox)}`:"",...results.map((x:any,i:number)=>`Result ${i+1}: ${x?.title||"Untitled"}\nURL: ${x?.url||""}\nSnippet: ${x?.snippet||""}\nDate: ${x?.date||""}`)].filter(Boolean).join("\n\n"),7500);await answerWithTool(token,chatId,profile,memoryKey,"live web search",query,verified);return"web-search";
+  }
+  if(["image","voice","reminder","chats","tutor"].includes(tool)){await reply(token,chatId,TOOL_SUGGESTION_TEXT[tool]);return`tool-help-${tool}`;}
   if(tool==="ai"||tool==="chat")return"ai";
   throw new Error(`@${tool} is not available in this personal bot yet. Use /tools to see supported tools.`);
 }
@@ -535,6 +557,7 @@ Deno.serve(async (req: Request) => {
     const connectorKey=paywallOwner?`tg:${paywallOwner}`:`web:${owner}`;
     const updateId=Number(update?.update_id);
     if(Number.isFinite(updateId)&&!acceptUpdate(`${connectorKey}:${updateId}`))return json({ok:true,ignored:true,reason:"duplicate-update"});
+    if(update?.inline_query){await answerInlineToolSuggestions(token,update.inline_query);return json({ok:true,route:"inline-tool-suggestions"});}
     if(paywallOwner&&update?.my_chat_member){
       const membership=update.my_chat_member,chat=membership?.chat||{},actor=Number(membership?.from?.id||0);
       const status=String(membership?.new_chat_member?.status||""),joined=["member","administrator","restricted"].includes(status);
@@ -621,8 +644,8 @@ Deno.serve(async (req: Request) => {
     }
     const disconnect=text.match(/^\/disconnect_(gmail|github|tiktok|website)$/i);
     if(disconnect&&ownerPrivate){const provider=disconnect[1].toLowerCase();await oauth("disconnect",paywallOwner,provider);if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner);await reply(token,chatId,`✅ ${disconnect[1]} disconnected from your personal bot.`);return json({ok:true,route:"owner-disconnect",provider});}
-    if(/^\/tools$/i.test(text)){
-      await reply(token,chatId,"**Personal bot tools**\n\n• `@gmail check my latest emails`\n• `@gmail show unread emails`\n• `@gmail send email to name@example.com about ...`\n• `@github check my GitHub account`\n• `@github inspect owner/repository`\n• `@website check my connected website`\n• `@ai your question`\n\nConnected-account tools work only for the bot owner in a private chat. Use /connect first.");return json({ok:true,route:"tools-help"});
+    if(/^\/(?:tools|help)$/i.test(text)){
+      await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /image · /voice\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
     }
     if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|emails|unread|sendemail|disconnect_)/i.test(text)||parseToolRequest(text))) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
@@ -632,10 +655,14 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"tool-suggestions"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
+      if(paywallOwner&&senderId===paywallOwner)await Promise.all([telegram(token,"setMyCommands",{commands:personalBotCommands()}),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}})]).catch(()=>{});
       if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId);return json({ok:true,route:"personal-app"});}
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
     }
+    const slashTool=text.match(/^\/(web|search|gmail|github|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
+    if(/^\/(?:image|voice)$/i.test(text)){const tool=text.slice(1).toLowerCase();await reply(token,chatId,TOOL_SUGGESTION_TEXT[tool],businessConnectionId);return json({ok:true,route:`tool-help-${tool}`});}
     if(/^\/grouphelp(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await reply(token,chatId,"In groups, mention me or reply to one of my messages. Educational commands: `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. In channels, use `/ask question` or an educational command. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
       return json({ok:true,route:"group-help"});
