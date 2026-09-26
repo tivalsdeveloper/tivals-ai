@@ -1309,24 +1309,25 @@ function ytHtml(q: string, videos: any[]) {
 // HTML anchor tags in the results list cannot produce an in-chat video preview.
 async function sendYouTubeResults(chatId: number|string, query: string, videos: any[], business?: string) {
   await sendHtml(chatId, ytHtml(query, videos), business);
-  const first = videos.find((video:any) => {
+  const playable = videos.filter((video:any) => {
     try {
       const url = new URL(String(video?.url || ""));
       return url.protocol === "https:" && ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(url.hostname);
     } catch { return false; }
-  });
-  if (!first) return;
-  const p: Record<string, unknown> = {
-    chat_id: chatId,
-    text: `▶️ Play in Telegram: ${String(first.title || "YouTube video").slice(0,180)}\n${first.url}`,
-    link_preview_options: { is_disabled: false, url: String(first.url), prefer_large_media: true, show_above_text: true }
-  };
-  if (business) p.business_connection_id = business;
-  try { await telegram("sendMessage", p); }
-  catch {
-    // Older Telegram clients/API versions can still open the original video link.
-    delete p.link_preview_options;
-    await telegram("sendMessage", p);
+  }).slice(0,3);
+  for (const video of playable) {
+    const p: Record<string, unknown> = {
+      chat_id: chatId,
+      text: `▶️ Play in Telegram: ${String(video.title || "YouTube video").slice(0,180)}\n${video.url}`,
+      link_preview_options: { is_disabled: false, url: String(video.url), prefer_large_media: true, show_above_text: true }
+    };
+    if (business) p.business_connection_id = business;
+    try { await telegram("sendMessage", p); }
+    catch {
+      // Older Telegram clients/API versions can still open the original video link.
+      delete p.link_preview_options;
+      await telegram("sendMessage", p);
+    }
   }
 }
 
