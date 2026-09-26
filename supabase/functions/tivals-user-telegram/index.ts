@@ -204,6 +204,8 @@ async function ownerApp(token:string,chatId:number,business="") {
 async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
     [{text:"📧 Gmail",callback_data:"tool_suggest:gmail"},{text:"🐙 GitHub",callback_data:"tool_suggest:github"}],
+    [{text:"🔎 Find email",callback_data:"tool_suggest:findemail"},{text:"📖 Read email",callback_data:"tool_suggest:reademail"}],
+    [{text:"↩️ Reply to email",callback_data:"tool_suggest:replyemail"},{text:"✉️ Send email",callback_data:"tool_suggest:sendemail"}],
     [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"🔎 Web Search",callback_data:"tool_suggest:web"}],
     [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"},{text:"🖼️ Images",callback_data:"tool_suggest:image"}],
     [{text:"🎙️ Voice",callback_data:"tool_suggest:voice"},{text:"⏰ Reminders",callback_data:"tool_suggest:reminder"}],
@@ -211,7 +213,11 @@ async function sendToolSuggestions(token:string,chatId:number,business="") {
   ]},...(business?{business_connection_id:business}:{})});
 }
 const TOOL_SUGGESTION_TEXT:Record<string,string>={
-  gmail:"📧 **Gmail**\n\n`@gmail check my latest emails`\n`@gmail show unread emails`\n`@gmail send email to name@example.com about ...`\n\nOnly the bot owner can use connected Gmail, and sending always requires confirmation.",
+  gmail:"📧 **Gmail**\n\n`/gmail check my latest emails`\n`/findemail QUERY`\n`/unread`\n\nOnly the bot owner can use connected Gmail.",
+  findemail:"🔎 **Find an email**\n\nUse `/findemail application status` or `/findemail from:example@example.com`. The results include IDs for reading and replying.",
+  reademail:"📖 **Read an email**\n\nFirst use `/findemail QUERY`, then copy its ID into `/reademail ID`.",
+  replyemail:"↩️ **Reply to an email**\n\nFirst find and read the message. Then use `/replyemail ID | Thank them and ask for more details`. You must confirm before sending.",
+  sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",
   github:"🐙 **GitHub**\n\n`@github check my GitHub account`\n`@github inspect owner/repository`\n\nOnly the bot owner can access connected repositories.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
   web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
@@ -224,6 +230,8 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
 };
 const INLINE_TOOL_RESULTS=[
   ["gmail","📧 Gmail","Read, search and prepare emails","@gmail "],["github","🐙 GitHub","Inspect connected repositories","@github "],
+  ["findemail","🔎 Find email","Search your Gmail and get message IDs","/findemail "],["reademail","📖 Read email","Open a message by ID","/reademail "],
+  ["replyemail","↩️ Reply to email","Draft a confirmed reply by ID","/replyemail "],["sendemail","✉️ Send email","Draft an email for confirmation","/sendemail "],
   ["web","🔎 Web Search","Search current information","@web "],["youtube","▶️ YouTube","Search and preview videos in chat","@youtube "],["website","🌐 Website","Check the connected website account","@website "],
   ["ai","✨ Personal AI","Ask your personal assistant","@ai "],["image","🖼️ Image","Attach a photo and ask a question","@image "],
   ["voice","🎙️ Voice","Send a voice note for a spoken reply","@voice"],["reminder","⏰ Reminder","Create a personal reminder","@reminder "],
