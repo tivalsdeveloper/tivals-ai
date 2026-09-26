@@ -25,7 +25,7 @@ async function syncOwnedBots(){
   for(const row of data||[]){
     try{
       const [token,secret]=await Promise.all([decrypt(String(row.token_enc||"")),decrypt(String(row.webhook_secret_enc||""))]);
-      await botCall(token,"setWebhook",{url:OWNED_WEBHOOK_URL+"?tg_owner="+encodeURIComponent(String(row.telegram_user_id)),secret_token:secret,allowed_updates:["message","business_message","business_connection","callback_query"],drop_pending_updates:false});
+      await botCall(token,"setWebhook",{url:OWNED_WEBHOOK_URL+"?tg_owner="+encodeURIComponent(String(row.telegram_user_id)),secret_token:secret,allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],drop_pending_updates:false});
       await botCall(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"Tivals AI",web_app:{url:APP_URL}}});
       await botCall(token,"setMyCommands",{commands:[
         {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
@@ -34,6 +34,7 @@ async function syncOwnedBots(){
         {command:"search",description:"Search the live web"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
         {command:"grouphelp",description:"How to use this bot in groups"},{command:"connect",description:"Owner: connect tools"},{command:"accounts",description:"Owner: view connected tools"},
         {command:"emails",description:"Owner: show recent Gmail"},{command:"unread",description:"Owner: show unread Gmail"},{command:"sendemail",description:"Owner: prepare an email"},
+        {command:"web",description:"Search current information"},{command:"gmail",description:"Use connected Gmail"},{command:"github",description:"Use connected GitHub"},{command:"website",description:"Check connected website"},{command:"image",description:"How to analyze an image"},{command:"voice",description:"How to use voice replies"},
         {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
       ]});
       synced++;
@@ -49,7 +50,7 @@ Deno.serve(async(req:Request)=>{
   const secret=Deno.env.get("TELEGRAM_WEBHOOK_SECRET")||"";
   if(!token)return json({ok:false,error:"missing bot token"},500);
   if(!secret)return json({ok:false,error:"missing webhook secret"},500);
-  const allowed_updates=["message","business_message","business_connection","callback_query"];
+  const allowed_updates=["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"];
   const payload:any={url:WEBHOOK_URL,allowed_updates,drop_pending_updates:false};
   payload.secret_token=secret;
   await botCall(token,"setWebhook",payload);
