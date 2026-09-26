@@ -6,7 +6,7 @@ const SUPABASE_URL=Deno.env.get("SUPABASE_URL")||"";
 const SERVICE_KEY=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
 const WEBHOOK_URL=SUPABASE_URL+"/functions/v1/tivals-telegram";
 const OWNED_WEBHOOK_URL=SUPABASE_URL+"/functions/v1/tivals-user-telegram";
-const APP_URL="https://ai.tivalsdeveloper.site/telegram-app.html";
+const APP_URL="https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-3";
 const sb=createClient(SUPABASE_URL,SERVICE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
 const enc=new TextEncoder();
 
