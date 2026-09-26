@@ -1314,7 +1314,7 @@ async function sendYouTubeResults(chatId: number|string, query: string, videos: 
       const url = new URL(String(video?.url || ""));
       return url.protocol === "https:" && ["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"].includes(url.hostname);
     } catch { return false; }
-  }).slice(0,3);
+  });
   for (const video of playable) {
     const p: Record<string, unknown> = {
       chat_id: chatId,
