@@ -7,7 +7,7 @@ const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-9";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -126,7 +126,7 @@ function toolText(value:unknown,max=500) {
 }
 function parseToolRequest(text:string) {
   const m=String(text||"").trim().match(/^[@\/]([a-zA-Z0-9_-]+)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/);
-  if(!m||!["gmail","email","github","website","site","web","youtube","image","voice","reminder","tutor","ai","chat","tiktok"].includes(String(m[1]).toLowerCase()))return null;
+  if(!m||!["gmail","email","github","shopify","website","site","web","youtube","image","voice","reminder","tutor","ai","chat","tiktok"].includes(String(m[1]).toLowerCase()))return null;
   return{tool:String(m[1]).toLowerCase(),request:String(m[2]||"").trim()};
 }
 function emailCommand(text:string) {
@@ -210,11 +210,12 @@ async function ownerConnectMenu(token:string,chatId:number,tg:number,business=""
     try{const d=await oauth("create_link",tg,provider);if(d?.url)rows.push([{text:label,url:d.url}])}catch{}
   }
   try{const d=await oauth("create_website_link",tg);if(d?.url)rows.push([{text:"🌐 Connect Tivals AI Website",url:d.url}])}catch{}
+  rows.push([{text:"🛍️ Connect Shopify",web_app:{url:APP_URL+"#connectors"}}]);
   await telegram(token,"sendMessage",{chat_id:chatId,text:"🔐 <b>Connect tools to your bot</b>\n\nThese connections belong to the bot owner and are never shown to visitors.",parse_mode:"HTML",reply_markup:{inline_keyboard:rows},...(business?{business_connection_id:business}:{})});
 }
 async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   const d=await oauth("status",tg);const list=Array.isArray(d?.connections)?d.connections:[];
-  const labels:any={gmail:"📧 Gmail",github:"🐙 GitHub",tiktok:"🎵 TikTok",website:"🌐 Tivals AI Website"};
+  const labels:any={gmail:"📧 Gmail",github:"🐙 GitHub",shopify:"🛍️ Shopify",tiktok:"🎵 TikTok",website:"🌐 Tivals AI Website"};
   const text=list.length?"<b>Connected tools</b>\n\n"+list.map((x:any)=>"• "+(labels[x.provider]||x.provider)+": <b>"+esc(x.account_label||"Connected")+"</b>").join("\n"):"<b>Connected tools</b>\n\nNo tools connected yet. Use /connect.";
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
@@ -244,6 +245,7 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
   replyemail:"↩️ **Reply to an email**\n\nFirst find and read the message. Then use `/replyemail ID | Thank them and ask for more details`. You must confirm before sending.",
   sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",
   github:"🐙 **GitHub**\n\n`@github check my GitHub account`\n`@github inspect owner/repository`\n\nOnly the bot owner can access connected repositories.",
+  shopify:"🛍️ **Shopify products**\n\nUse `/shopify` to see products, or `@shopify product name` to search your connected store. Connect the store in the Mini App first.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
   web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
   ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`",
@@ -598,6 +600,12 @@ async function answerWithTool(token:string,chatId:number,profile:any,memoryKey:s
   await reply(token,chatId,await personalAi(profile,memoryKey,prompt));
 }
 async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,memoryKey:string,tool:string,request:string) {
+  if(tool==="shopify"){
+    const data=await oauth("shopify_products",tg,"shopify",{query:request});
+    const products=Array.isArray(data?.products)?data.products:[];
+    const lines=products.map((p:any,i:number)=>`${i+1}. **${toolText(p.title,120)}**\n${p.priceRangeV2?.minVariantPrice?.amount||""} ${p.priceRangeV2?.minVariantPrice?.currencyCode||""}\n${toolText(p.description||"",150)}\n${p.onlineStoreUrl||`https://${data.shop}/products/${encodeURIComponent(String(p.handle||""))}`}`);
+    await reply(token,chatId,`🛍️ **${data.shop}**\n\n${lines.length?lines.join("\n\n"):"No matching products found."}`);return"shopify-products";
+  }
   if(["gmail","email"].includes(tool)){
     if(gmailSendIntent(request)){await showEmailConfirmation(token,chatId,tg,profile,request);return"gmail-email-draft";}
     await consumeOwnerAiUsage(tg);const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await answerWithTool(token,chatId,profile,memoryKey,"Gmail",resolved.title,gmailModelData(data,resolved.title));return"gmail";
@@ -772,7 +780,7 @@ Deno.serve(async (req: Request) => {
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
     }
-    const slashTool=text.match(/^\/(web|search|gmail|github|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
     if(/^\/(?:image|voice)$/i.test(text)){const tool=text.slice(1).toLowerCase();await reply(token,chatId,TOOL_SUGGESTION_TEXT[tool],businessConnectionId);return json({ok:true,route:`tool-help-${tool}`});}
     if(/^\/grouphelp(?:@[A-Za-z0-9_]+)?$/i.test(text)){
