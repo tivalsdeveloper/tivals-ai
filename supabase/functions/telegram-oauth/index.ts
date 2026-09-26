@@ -679,7 +679,8 @@ async function shopifyProducts(tg:number,term:string) {
   const d=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
   if(!r.ok||d.errors?.length)throw new Error(d.errors?.[0]?.message||"Shopify product lookup failed.");
-  return {shop,products:d.data?.products?.nodes||[]};
+  // Only expose products with a published storefront URL to bot visitors.
+  return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&url.hostname===shop;}catch{return false}})};
 }
 
 async function tiktokConnection(tg: number) {
@@ -893,7 +894,9 @@ Deno.serve(async (req: Request) => {
   const u = new URL(req.url);
 
   if(req.method==="GET"&&u.pathname.endsWith("/shopify/callback")){
-    const done=(message:string,success=false)=>new Response(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0c172b;color:white;font:18px system-ui;padding:32px"><h1>${success?"Shopify connected":"Shopify connection failed"}</h1><p>${message.replace(/[<>&"']/g,"")}</p><p>You can return to your Telegram bot now.</p></body>`,{status:success?200:400,headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-store"}});
+    const done=(message:string,success=false)=>success
+      ? Response.redirect("https://t.me/Tivalsdeveloper1Bot?start=shopify_connected",303)
+      : new Response(`Shopify connection failed: ${message}\nReturn to your Telegram bot and try again.`,{status:400,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}});
     const state=u.searchParams.get("state")||"",shop=shopDomain(u.searchParams.get("shop")||""),code=u.searchParams.get("code")||"";
     const st=await stateRow(state,"shopify");
     if(!st||shop!==SHOPIFY_STORE||shop!==st.shop_domain||!code||!SHOPIFY_CLIENT_SECRET)return done("This link is invalid or expired. Open the Mini App and try again.");
