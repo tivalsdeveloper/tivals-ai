@@ -59,9 +59,9 @@ async function transcribeVoice(bytes:Uint8Array,format:string) {
   const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please try again later.");
   try{
     const kind=voiceFormat(format),mime=kind==="mp3"?"audio/mpeg":kind==="m4a"?"audio/mp4":`audio/${kind}`;
-    const form=new FormData();form.append("model","whisper-base");form.append("audio",new Blob([bytes],{type:mime}),`voice.${kind}`);
+    const form=new FormData();form.append("model","#g1_whisper-base");form.append("audio",new Blob([bytes],{type:mime}),`voice.${kind}`);
     const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
-    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
+    for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.alternatives?.[0]?.transcript||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
   }catch{}
   throw new Error("Voice recognition is temporarily unavailable. Please try again later.");
 }
@@ -156,11 +156,11 @@ async function syncOwnedBotSetup(tg:number) {
   await botApi(token,"setWebhook",{
     url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
     secret_token:secret,
-    allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post"],
+    allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4"}}
   }).catch(()=>null);
 }
 
@@ -188,6 +188,12 @@ function botCommands(purpose:string) {
     {command:"emails",description:"Owner: show recent Gmail"},
     {command:"unread",description:"Owner: show unread Gmail"},
     {command:"sendemail",description:"Owner: prepare an email"},
+    {command:"web",description:"Search current information"},
+    {command:"gmail",description:"Use connected Gmail"},
+    {command:"github",description:"Use connected GitHub"},
+    {command:"website",description:"Check connected website"},
+    {command:"image",description:"How to analyze an image"},
+    {command:"voice",description:"How to use voice replies"},
     {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},
     {command:"disconnect_github",description:"Owner: disconnect GitHub"},
     {command:"disconnect_website",description:"Owner: disconnect website"}
@@ -259,11 +265,11 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     await botApi(token,"setWebhook",{
       url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
       secret_token:secret,
-      allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post"],
+      allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-4"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -436,6 +442,20 @@ Deno.serve(async req => {
       } catch {
         // Preserve the transcript and AI answer so the Mini App can use its
         // browser-side Puter.js fallback instead of failing the whole turn.
+        return json({ok:true,transcript,reply,audio_base64:"",audio_mime:"",audio_provider:"puter"});
+      }
+    }
+
+    if(action==="voice_text_chat") {
+      if(!takeVoiceRate(tg))return json({error:"Please wait a moment before speaking again."},429);
+      const transcript=String(body?.transcript||"").trim().slice(0,4000);
+      if(!transcript)return json({error:"No speech was recognized. Please try again."},400);
+      await consumeAiUsage(tg);
+      const reply=await voiceAiReply(tg,transcript,body?.history);
+      try {
+        const spoken=await synthesizeVoice(reply);
+        return json({ok:true,transcript,reply,audio_base64:b64(spoken),audio_mime:"audio/mpeg",audio_provider:"server"});
+      } catch {
         return json({ok:true,transcript,reply,audio_base64:"",audio_mime:"",audio_provider:"puter"});
       }
     }
