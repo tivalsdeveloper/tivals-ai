@@ -15,7 +15,7 @@ const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_a
 
 const cors = {
   "Access-Control-Allow-Origin":"https://ai.tivalsdeveloper.site",
-  "Access-Control-Allow-Headers":"content-type, authorization",
+  "Access-Control-Allow-Headers":"content-type, authorization, cache-control",
   "Access-Control-Allow-Methods":"GET, POST, OPTIONS",
   "Content-Type":"application/json; charset=utf-8"
 };
