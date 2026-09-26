@@ -9,7 +9,8 @@ const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegra
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
-const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html";
+const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-1";
+const PERSONAL_BOT_APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-1";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -182,7 +183,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
       drop_pending_updates:false
     });
     await Promise.all([
-      managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html"}}}),
+      managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:PERSONAL_BOT_APP_URL}}}),
       managedBotApi(token,"setMyShortDescription",{short_description:"A personal, human-like AI assistant and tutor"}),
       managedBotApi(token,"setMyDescription",{description:`${botName} is your personal AI assistant. It can teach programming, mathematics and other subjects, and works in approved groups and channels.`}),
       managedBotApi(token,"setMyCommands",{commands:managedBotCommands()})
@@ -206,6 +207,20 @@ async function offerManagedBotCreation(chatId:number|string,tg:number) {
     text:"🤖 Create your personal Tivals AI bot\n\nTap the button below, choose its name and username, and Telegram will create it securely. You can then customize its personality, subjects, voice, group behavior and channel behavior in the dashboard.",
     reply_markup:{keyboard:[[{text:"Create my personal bot",request_managed_bot:{request_id:Number(Date.now()%2147483647),suggested_name:"My Tivals AI"}}]],resize_keyboard:true,one_time_keyboard:true}
   });
+}
+
+async function sendBotTypeChooser(chatId:number|string,business?:string) {
+  const payload:any={
+    chat_id:chatId,
+    text:"🤖 <b>Create your AI bot</b>\n\nChoose the type of bot you want. Personal bots have their own private Studio. Business bots open the Business Bot Studio for company details, services, bookings, website automation and connected tools.",
+    parse_mode:"HTML",
+    reply_markup:{inline_keyboard:[
+      [{text:"✨ Create Personal Bot",callback_data:"create_bot:personal"}],
+      [{text:"🏢 Create Business Bot",web_app:{url:`${TELEGRAM_APP_URL}#business`}}]
+    ]}
+  };
+  if(business)payload.business_connection_id=business;
+  await telegram("sendMessage",payload);
 }
 
 async function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
@@ -1491,7 +1506,7 @@ Deno.serve(async (req: Request) => {
       await telegram("sendMessage",{
         chat_id:ownerId,
         text:`✅ ${label} is ready.\n\nIt can now chat naturally, teach programming, mathematics and other subjects, and work in groups or channels you approve. Open the dashboard to customize it.`,
-        reply_markup:{inline_keyboard:[[{text:"Customize my bot",web_app:{url:TELEGRAM_APP_URL}}]]}
+        reply_markup:{inline_keyboard:[[{text:"Customize my bot",web_app:{url:PERSONAL_BOT_APP_URL}}]]}
       });
       return json({ok:true,route:"managed-bot-connected",bot_id:Number(bot?.id||0)});
     } catch(e) {
@@ -1505,6 +1520,22 @@ Deno.serve(async (req: Request) => {
   if (update?.callback_query) {
     const q=update.callback_query;
     const data=String(q?.data||"");
+    if(data==="create_bot:personal") {
+      const ownerId=Number(q?.from?.id||0);
+      const callbackChat=q?.message?.chat?.id;
+      await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Opening personal bot creator…"}).catch(()=>{});
+      if(!ownerId||!callbackChat||String(q?.message?.chat?.type||"")!=="private") {
+        if(callbackChat)await sendFormatted(callbackChat,"Open a direct chat with me and send `/createbot` to create your personal bot.");
+        return json({ok:true,route:"managed-bot-private-only"});
+      }
+      try {
+        await offerManagedBotCreation(callbackChat,ownerId);
+        return json({ok:true,route:"managed-bot-offer"});
+      } catch(e) {
+        await sendFormatted(callbackChat,"Managed bot creation must first be enabled for Tivals AI in the @BotFather Mini App. You can still open `/app` and connect an existing BotFather bot token.");
+        return json({ok:false,route:"managed-bot-unavailable",error:String((e as Error)?.message||e)},200);
+      }
+    }
     const emailAction = data.match(/^gmail_(send|cancel):([0-9a-f-]{36})$/i);
     if (emailAction) {
       try {
@@ -1652,8 +1683,19 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    if(text === "/start businessbot" || text === "/createbusinessbot") {
+      if(String(message?.chat?.type||"")!=="private") {
+        await sendFormatted(chatId,"Open a direct chat with me and send `/createbusinessbot` to open the Business Bot Studio.",business);
+        return json({ok:true,route:"business-bot-private-only"});
+      }
+      await setMiniAppMenu(chatId);
+      await sendBotTypeChooser(chatId,business);
+      return json({ok:true,route:"business-bot-studio"});
+    }
+
     if (text === "/start" || text.startsWith("/start ")) {
       await setMiniAppMenu(chatId);
+      if(String(message?.chat?.type||"")==="private")await sendBotTypeChooser(chatId,business);
       await sendFormatted(chatId, [
         "👋 **Welcome to Tivals AI**",
         "",
@@ -1667,7 +1709,8 @@ Deno.serve(async (req: Request) => {
         "• Upgrade with Telegram Stars: `/subscribe`",
         "• Check your plan: `/plan`",
         "• Open dashboard: `/app`",
-        "• Create your own AI bot: `/createbot`",
+        "• Create a personal bot: `/createbot`",
+        "• Create a business bot: `/createbusinessbot`",
         "",
         "**Available tools**",
         "• `@tiktok check my TikTok account`",
@@ -1700,7 +1743,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/createbot — Create your personal AI bot inside Telegram\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/sendemail — Prepare an email for confirmation\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors, voice and settings\n/connectbot — Connect an existing Telegram bot\n\nTry `@gmail send email to name@example.com about ...`. The bot always asks for confirmation before sending.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/createbot — Create your personal AI bot inside Telegram\n/createbusinessbot — Open the Business Bot Studio\n/connect — Connect Gmail, GitHub, TikTok, or Tivals AI Website\n/accounts — Show connected accounts\n/emails — Show latest Gmail messages\n/unread — Show unread Gmail messages\n/sendemail — Prepare an email for confirmation\n/disconnect_gmail — Disconnect Gmail\n/disconnect_github — Disconnect GitHub\n/disconnect_tiktok — Disconnect TikTok\n/disconnect_website — Disconnect Tivals AI Website\n/tools — Show @tool examples\n/subscribe — Upgrade with Telegram Stars\n/plan — Check plan and daily usage\n/app — Open dashboard, connectors, voice and settings\n/connectbot — Connect an existing Telegram bot\n\nTry `@gmail send email to name@example.com about ...`. The bot always asks for confirmation before sending.", business);
       return json({ok:true});
     }
 
