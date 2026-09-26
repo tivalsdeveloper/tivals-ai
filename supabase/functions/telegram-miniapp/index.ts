@@ -59,7 +59,7 @@ async function transcribeVoice(bytes:Uint8Array,format:string) {
   const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please try again later.");
   try{
     const kind=voiceFormat(format),mime=kind==="mp3"?"audio/mpeg":kind==="m4a"?"audio/mp4":`audio/${kind}`;
-    const form=new FormData();form.append("model","#g1_whisper-small");form.append("audio",new Blob([bytes],{type:mime}),`voice.${kind}`);
+    const form=new FormData();form.append("model","whisper-base");form.append("audio",new Blob([bytes],{type:mime}),`voice.${kind}`);
     const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
     for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
   }catch{}
