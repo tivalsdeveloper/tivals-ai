@@ -153,6 +153,7 @@ function managedBotCommands() {
   return [
     {command:"start",description:"Start a human-like AI conversation"},
     {command:"help",description:"Show commands and AI tools"},
+    {command:"store",description:"Browse Tivalsdeveloper products"},
     {command:"ask",description:"Ask in a group or channel"},
     {command:"newchat",description:"Start a fresh private chat"},
     {command:"chats",description:"Continue a previous private chat"},
@@ -189,7 +190,7 @@ function managedBotCommands() {
   ];
 }
 function managedBotPublicCommands(){
-  const allowed=new Set(["start","help","ask","newchat","chats","remind","reminders","lesson","explain","quiz","practice","search","tools","grouphelp","youtube","image"]);
+  const allowed=new Set(["start","help","ask","store","newchat","chats","remind","reminders","lesson","explain","quiz","practice","search","tools","grouphelp","youtube","image"]);
   return managedBotCommands().filter(item=>allowed.has(item.command));
 }
 function mainBotCommands(){
@@ -1173,6 +1174,7 @@ function toolsHelpText() {
     "• Send a document with caption `@github upload owner/repository:path`",
     "• `@github create repository NAME as private`",
     "• `@website check my website account`",
+    "• `/store` or `/store product name` — browse Tivalsdeveloper products",
     "• `@youtube Python tutorial`",
     "• `@image futuristic AI robot`",
     "• `@ai explain recursion`",
@@ -1817,6 +1819,24 @@ Deno.serve(async (req: Request) => {
 
     if (!text) return json({ ok:true, ignored:true });
 
+    const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    if(storeCommand){
+      const term=String(storeCommand[1]||"").trim().slice(0,80);
+      try{
+        const {data:shopOwner}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
+        if(!shopOwner?.telegram_user_id)throw new Error("Store owner not found");
+        const data=await oauthCall("shopify_products",Number(shopOwner.telegram_user_id),"shopify",{query:term});
+        const products=Array.isArray(data?.products)?data.products:[];
+        if(!products.length){await sendFormatted(chatId,term?`No published products found for ${term}. Try /store to browse.`:"No published products are available right now.",business);return json({ok:true,route:"store-empty"});}
+        await sendFormatted(chatId,`🛍️ **Tivalsdeveloper store**\n\n${term?`Results for ${term}. `:""}Tap a product to view details or buy it. Search with /store product name.`,business);
+        for(const item of products){
+          const price=item.priceRangeV2?.minVariantPrice;
+          await telegram("sendMessage",{chat_id:chatId,text:`<b>${esc(String(item.title||"Product").slice(0,120))}</b>\n${esc(String(item.description||"").slice(0,240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url:String(item.onlineStoreUrl)}]]},...(business?{business_connection_id:business}:{})});
+        }
+        return json({ok:true,route:"store",count:products.length});
+      }catch(e){console.error("Store lookup failed",String((e as Error)?.message||e));await sendFormatted(chatId,"The store is temporarily unavailable. Please try again later.",business);return json({ok:true,route:"store-error"});}
+    }
+
     if (text === "@") {
       await sendToolSuggestions(chatId,business);
       return json({ok:true,route:"tool-suggestions"});
@@ -1901,7 +1921,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/store · /store product name — browse and buy published products\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
       return json({ok:true});
     }
 
