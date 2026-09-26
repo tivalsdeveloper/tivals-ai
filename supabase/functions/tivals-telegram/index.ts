@@ -45,7 +45,7 @@ function json(data: unknown, status = 200) {
 }
 
 function esc(v: string) {
-  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(v || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
 function stripTags(v: string) {
@@ -87,6 +87,8 @@ function mdToHtml(input: string) {
     .replace(/^\s*[-*]\s+/gm, "• ")
     .replace(/^\s*(\d+)\.\s+/gm, "$1. ")
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]\n]{1,80})\]\((https?:\/\/[^\s)<>]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/^&gt;\s?(.+)$/gm, "<blockquote>$1</blockquote>")
     .replace(/\n{3,}/g, "\n\n");
 
   codeBlocks.forEach((block, i) => {
@@ -184,6 +186,16 @@ function managedBotCommands() {
     {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},
     {command:"disconnect_github",description:"Owner: disconnect GitHub"},
     {command:"disconnect_website",description:"Owner: disconnect website"}
+  ];
+}
+function mainBotCommands(){
+  const excluded=new Set(["newchat","chats","remind","reminders","lesson","explain","quiz","practice","grouphelp"]);
+  return [
+    {command:"createbot",description:"Create a personal bot"},
+    {command:"createbusinessbot",description:"Open Business Bot Studio"},
+    ...managedBotCommands().filter(item=>!excluded.has(item.command)),
+    {command:"subscribe",description:"Explore subscriptions"},
+    {command:"plan",description:"See your plan and usage"}
   ];
 }
 async function connectManagedBot(ownerId:number,bot:any) {
@@ -1320,10 +1332,11 @@ async function askTivalsAI(message: string, tg = 0) {
       : settings.response_style === "detailed"
       ? "Give a detailed, well-structured answer with useful explanation."
       : "Give a balanced, clear answer with enough detail to be useful.";
+    const presentation = /\b(?:return only valid json|return valid json|json object)\b/i.test(message) ? "" : "\nTelegram presentation: lead with the answer, use short paragraphs and informative headings only when helpful. Avoid Markdown tables, unnecessary emoji, repeated greetings and long introductions. Use numbered items for results, concise sender/subject/date/summary for emails, and fenced language-tagged code blocks for code. Never claim an action was completed unless confirmed.";
     const r = await fetch(TIVALS_AI_URL, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${SERVICE_KEY}` },
-      body: JSON.stringify({ model: "tivals-ai", business_profile: businessProfile, messages: [{ role: "user", content: message + "\n\nPreference: " + style }] }),
+      body: JSON.stringify({ model: "tivals-ai", business_profile: businessProfile, messages: [{ role: "user", content: message + "\n\nPreference: " + style + presentation }] }),
       signal: c.signal
     });
     const d = await r.json().catch(() => ({}));
@@ -1552,12 +1565,13 @@ function visionText(d:any) {
 
 async function analyzeImage(dataUrl:string, question:string) {
   const open = Deno.env.get("OPENROUTER_API_KEY") || "";
+  const messages=[{role:"user",content:[{type:"text",text:String(question||"Describe this image and explain important visible text or details.").slice(0,3000)+" Respond clearly for a mobile Telegram chat; mention uncertainty rather than guessing."},{type:"image_url",image_url:{url:dataUrl}}]}];
   if (open) {
-    try {
+    for(const model of ["qwen/qwen3-vl-235b-a22b-thinking:free","openrouter/free"]) try {
       const r=await fetch(`${OPENROUTER_BASE}/chat/completions`,{
         method:"POST",
         headers:{Authorization:`Bearer ${open}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},
-        body:JSON.stringify({model:"openrouter/free",messages:[{role:"user",content:[{type:"text",text:question||"Describe this image and explain important visible text or details."},{type:"image_url",image_url:{url:dataUrl}}]}],max_tokens:1400,temperature:0.2})
+        body:JSON.stringify({model,messages,max_tokens:1400,temperature:0.2})
       });
       const d=await r.json().catch(()=>({}));
       const txt=visionText(d);
@@ -1565,6 +1579,12 @@ async function analyzeImage(dataUrl:string, question:string) {
     } catch {}
   }
 
+  const aiml=Deno.env.get("AIMLAPI_API_KEY")||"";
+  if(aiml)try{
+    const r=await fetch(`${AIMLAPI_BASE}/chat/completions`,{method:"POST",headers:{Authorization:`Bearer ${aiml}`,"Content-Type":"application/json"},body:JSON.stringify({model:"alibaba/qwen3.5-omni-flash",messages,max_tokens:1200,temperature:0.2})});
+    const d=await r.json().catch(()=>({})),txt=visionText(d);
+    if(r.ok&&txt)return txt;
+  }catch{}
   const app=Deno.env.get("APPMIX_API_KEY")||"";
   if(!app) throw new Error("Vision is temporarily unavailable.");
   for(const model of ["openai/gpt-4.1-free","google/gemini-3-flash-preview-free"]) {
@@ -1572,7 +1592,7 @@ async function analyzeImage(dataUrl:string, question:string) {
       const r=await fetch(`${APPMIX_BASE}/chat/completions`,{
         method:"POST",
         headers:{Authorization:`Bearer ${app}`,"Content-Type":"application/json"},
-        body:JSON.stringify({model,messages:[{role:"user",content:[{type:"text",text:question||"Describe this image and explain important visible text or details."},{type:"image_url",image_url:{url:dataUrl}}]}],max_tokens:1200,temperature:0.2})
+        body:JSON.stringify({model,messages,max_tokens:1200,temperature:0.2})
       });
       const d=await r.json().catch(()=>({}));
       const txt=visionText(d);
@@ -1799,6 +1819,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/start" || text.startsWith("/start ")) {
+      await telegram("setMyCommands",{commands:mainBotCommands()}).catch(()=>{});
       await setMiniAppMenu(chatId);
       if(String(message?.chat?.type||"")==="private")await sendBotTypeChooser(chatId,business);
       await sendFormatted(chatId, [
