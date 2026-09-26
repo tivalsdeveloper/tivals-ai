@@ -818,6 +818,24 @@ async function gmailMessages(tg: number, query: string, maxResults: number) {
   return { account: conn.account_label || conn?.metadata?.email || "Gmail", messages, result_size: Number(list?.resultSizeEstimate || messages.length) };
 }
 
+async function gmailMessage(tg: number, id: string) {
+  if (!/^[a-f0-9]{8,32}$/i.test(id)) throw new Error("Choose a message ID from /findemail results.");
+  const conn = await gmailConnection(tg);
+  const token = await gmailAccessToken(tg, conn);
+  const d = await gmailFetchJson(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`);
+  const headers = Object.fromEntries((d?.payload?.headers || []).map((h: any) => [String(h.name || "").toLowerCase(), String(h.value || "")]));
+  const parts: any[] = [];
+  const walk = (part: any) => { if (part?.mimeType === "text/plain" && part?.body?.data) parts.push(part); for (const child of part?.parts || []) walk(child); };
+  walk(d?.payload);
+  const encoded = String(parts[0]?.body?.data || "");
+  let body = "";
+  if (encoded && encoded.length < 100_000) {
+    const binary = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
+    body = new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0))).slice(0, 12000);
+  }
+  return { id:d?.id, thread_id:d?.threadId || "", from:headers.from || "", reply_to:headers["reply-to"] || headers.from || "", to:headers.to || "", subject:headers.subject || "(No subject)", date:headers.date || "", internet_message_id:headers["message-id"] || "", references:headers.references || "", snippet:String(d?.snippet || ""), body:body || String(d?.snippet || "") };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const u = new URL(req.url);
@@ -1105,6 +1123,12 @@ Deno.serve(async (req: Request) => {
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
+  }
+  if (action === "gmail_message") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      return json(await gmailMessage(tg, String(body.message_id || "")));
+    } catch(e) { return json({ error:String((e as Error)?.message || e) },400); }
   }
   if (action === "gmail_send") {
     try {
