@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-9"}}
   }).catch(()=>null);
 }
 
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-9"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -334,7 +334,7 @@ const plans = {
 
 async function getDashboard(tg:number) {
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget}] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
@@ -345,7 +345,8 @@ async function getDashboard(tg:number) {
     oauth("status",tg).catch(()=>({connections:[]})),
     isAdmin(tg),
     ownedBot(tg),
-    sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle()
+    sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle()
   ]);
   const active = Boolean(sub && sub.status==="active" && new Date(sub.subscription_expiration_date).getTime() > Date.now());
   const plan = admin ? "owner" : active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
@@ -375,7 +376,7 @@ async function getDashboard(tg:number) {
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
       owner_only_invites:bot?.owner_only_invites!==false
     },
-    connectors:["gmail","github","tiktok","website"].map(provider=>{
+    connectors:["gmail","github","tiktok",...(Number(shopifyOwner?.telegram_user_id||0)===tg?["shopify"]:[]),"website"].map(provider=>{
       const hit=list.find((x:any)=>x?.provider===provider);
       return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
     })
@@ -539,6 +540,13 @@ Deno.serve(async req => {
       const d = provider==="website" ? await oauth("create_website_link",tg) : await oauth("create_link",tg,provider);
       return json({ok:true,url:d?.url||""});
     }
+    if(action==="connect_shopify"){
+      const {data:owner}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
+      if(Number(owner?.telegram_user_id||0)!==tg)return json({error:"Only the Tivalsdeveloper store owner can connect Shopify."},403);
+      const d=await oauth("create_shopify_link",tg,"shopify",{shop:"fiu9ph-hg.myshopify.com"});
+      return json({ok:true,url:d.url||""});
+    }
+    if(action==="shopify_products")return json(await oauth("shopify_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
 
     if (action==="connect_own_bot") {
       const d=await connectOwnedBot(tg,String(body?.bot_token||""));
