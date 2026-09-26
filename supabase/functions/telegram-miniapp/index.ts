@@ -11,7 +11,7 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession:false, autoRefreshToken:false } });
 const voiceBuckets = new Map<number,{count:number;resetAt:number}>();
-const BOT_PROFILE_COLUMNS = "bot_id,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone";
+const BOT_PROFILE_COLUMNS = "bot_id,bot_kind,username,account_label,is_active,connected_at,updated_at,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone";
 
 const cors = {
   "Access-Control-Allow-Origin":"https://ai.tivalsdeveloper.site",
@@ -149,7 +149,7 @@ async function ownedBot(tg:number) {
 }
 async function syncOwnedBotSetup(tg:number) {
   const {data}=await sb.from("telegram_owned_bots")
-    .select("token_enc,webhook_secret_enc,is_active")
+    .select("token_enc,webhook_secret_enc,is_active,bot_kind")
     .eq("telegram_user_id",tg).maybeSingle();
   if(!data?.is_active||!data?.token_enc||!data?.webhook_secret_enc) return;
   const [token,secret]=await Promise.all([decrypt(String(data.token_enc)),decrypt(String(data.webhook_secret_enc))]);
@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-6"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:data.bot_kind==="business"?"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7":"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-7"}}
   }).catch(()=>null);
 }
 
@@ -251,7 +251,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     bot_name:String(me.first_name||"My AI").slice(0,64),
     token_enc:await encrypt(token),
     webhook_secret_enc:await encrypt(secret),
-    is_active:true,
+    is_active:true,bot_kind:"business",
     updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
   if(error) {
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-6"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -366,7 +366,7 @@ async function getDashboard(tg:number) {
     business_knowledge:{catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]},
     website_widget:websiteWidget || null,
     bot_connector:{
-      connected:Boolean(bot?.is_active),account_label:bot?.account_label||"",username:bot?.username||"",allowed:true,
+      connected:Boolean(bot?.is_active),bot_kind:bot?.bot_kind||"personal",account_label:bot?.account_label||"",username:bot?.username||"",allowed:true,
       bot_name:bot?.bot_name||"My AI",bot_purpose:bot?.bot_purpose||"general",
       personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
       subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
@@ -400,7 +400,7 @@ async function getPersonalBotDashboard(tg:number) {
     connectors:["gmail","github"].map(provider=>{const hit=connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
     gmail_monitor:{enabled:Boolean(monitor?.enabled),interval_minutes:Number(monitor?.interval_minutes||60),auto_draft_replies:monitor?.auto_draft_replies!==false,last_checked_at:monitor?.last_checked_at||null,last_success_at:monitor?.last_success_at||null,last_error:monitor?.last_error||""},
     bot_connector:{
-      connected:Boolean(bot?.is_active),account_label:bot?.account_label||"",username:bot?.username||"",
+      connected:Boolean(bot?.is_active),bot_kind:bot?.bot_kind||"personal",account_label:bot?.account_label||"",username:bot?.username||"",
       bot_name:bot?.bot_name||"My AI",bot_purpose:bot?.bot_purpose||"general",
       personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
       subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
@@ -425,7 +425,7 @@ Deno.serve(async req => {
   const action = String(body?.action || "dashboard");
 
   try {
-    if(action==="app_context") return json({ok:true,mode:(await verifyInitData(String(body?.init_data||""),BOT_TOKEN))?"business":"personal"});
+    if(action==="app_context"){const bot=await ownedBot(tg);const ownedLaunch=!(await verifyInitData(String(body?.init_data||""),BOT_TOKEN));return json({ok:true,mode:bot?.is_active&&bot?.bot_kind==="business"?"business":ownedLaunch?"personal":bot?.is_active?"personal":"unspecified"});}
     if(action==="voice_chat") {
       if(!takeVoiceRate(tg))return json({error:"Please wait a moment before speaking again."},429);
       const encoded=String(body?.audio_base64||"");
