@@ -11,7 +11,8 @@ const APINEX_BASE = "https://api.apinex.bond/v1";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
-const VERSION = 27;
+const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
+const VERSION = 28;
 
 type WidgetConfig = {
   public_key: string;
@@ -611,6 +612,12 @@ async function callOpenRouter(key: string, prompt: any[]) {
   }
 }
 
+async function callAiml(key: string, prompt: any[]) {
+  const model = "alibaba/qwen3.5-omni-flash";
+  const reply = await callProvider(`${AIMLAPI_BASE}/chat/completions`, key, model, prompt, {}, 12000);
+  return { reply, route: `aimlapi:${model}`, model };
+}
+
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
@@ -662,8 +669,9 @@ async function callSpecificModel(
   }
 }
 
-async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string }) {
   const providers: any[] = [];
+  providers.push({ name: "AIML API", configured: Boolean(keys.aiml) });
 
   if (keys.bazaar) {
     try {
@@ -765,7 +773,8 @@ Deno.serve(async (req: Request) => {
     app: Deno.env.get("APPMIX_API_KEY") || "",
     apinex: Deno.env.get("APINEX_API_KEY") || "",
     apinexBackup: Deno.env.get("APINEX_API_KEY_BACKUP") || "",
-    open: Deno.env.get("OPENROUTER_API_KEY") || ""
+    open: Deno.env.get("OPENROUTER_API_KEY") || "",
+    aiml: Deno.env.get("AIMLAPI_API_KEY") || ""
   };
 
   if (req.method === "GET") {
@@ -800,7 +809,8 @@ Deno.serve(async (req: Request) => {
         ...(keys.bazaar ? ["BazaarLink"] : []),
         ...(keys.app ? ["AppMix"] : []),
         ...(keys.apinex || keys.apinexBackup ? ["Apinex"] : []),
-        ...(keys.open ? ["OpenRouter"] : [])
+        ...(keys.open ? ["OpenRouter"] : []),
+        ...(keys.aiml ? ["AIML API"] : [])
       ]
     });
   }
@@ -882,7 +892,14 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
   }
 
-  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open) {
+  if (keys.aiml) {
+    try {
+      const result = await callAiml(keys.aiml, prompt);
+      return json({ reply: result.reply, model: result.model, provider: "AIML API", route: result.route, fallback: true }, 200, widget ? origin : "");
+    } catch (e) { failures.push({ provider: "AIML API", error: safeErr(e) }); }
+  }
+
+  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml) {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
