@@ -197,7 +197,7 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
 async function ownerApp(token:string,chatId:number,business="") {
   await Promise.all([
     telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}}),
-    telegram(token,"setMyCommands",{commands:personalBotCommands()})
+    registerBotCommands(token,chatId)
   ]).catch(()=>{});
   await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Personal Bot Studio</b>\n\nCustomize your bot’s personality, learning subjects, voice and group settings.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Personal Bot Studio",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
@@ -248,6 +248,14 @@ function personalBotCommands(){return[
   {command:"web",description:"Search current information"},{command:"gmail",description:"Use connected Gmail"},{command:"github",description:"Use connected GitHub"},{command:"website",description:"Check connected website"},{command:"image",description:"How to analyze an image"},{command:"voice",description:"How to use voice replies"},
   {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
 ]}
+function publicBotCommands(){
+  const allowed=new Set(["start","help","ask","newchat","chats","lesson","explain","quiz","practice","search","web","youtube","tools","grouphelp","image","voice","remind","reminders"]);
+  return personalBotCommands().filter(item=>allowed.has(item.command));
+}
+async function registerBotCommands(token:string,ownerChatId:number){
+  await telegram(token,"setMyCommands",{commands:publicBotCommands(),scope:{type:"default"}});
+  await telegram(token,"setMyCommands",{commands:personalBotCommands(),scope:{type:"chat",chat_id:ownerChatId}});
+}
 function mdToHtml(input: string) {
   let raw = String(input || "").replace(/\r\n/g, "\n").trim();
   if (!raw) return "I couldn't generate a response.";
@@ -730,7 +738,12 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"slash-tools"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
-      if(paywallOwner&&senderId===paywallOwner)await Promise.all([telegram(token,"setMyCommands",{commands:personalBotCommands()}),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}})]).catch(()=>{});
+      if(paywallOwner&&privateConversation){
+        try {
+          if(senderId===paywallOwner)await Promise.all([registerBotCommands(token,chatId),telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}})]);
+          else await telegram(token,"setMyCommands",{commands:publicBotCommands(),scope:{type:"default"}});
+        } catch(error){console.error("Bot command registration failed",String((error as Error)?.message||error));}
+      }
       if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId);return json({ok:true,route:"personal-app"});}
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
