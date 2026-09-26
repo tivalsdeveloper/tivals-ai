@@ -5,6 +5,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
+const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const APP_URL = "https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-3";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -179,21 +180,35 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="") {
-  await telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}}).catch(()=>{});
+  await Promise.all([
+    telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url:APP_URL}}}),
+    telegram(token,"setMyCommands",{commands:personalBotCommands()})
+  ]).catch(()=>{});
   await telegram(token,"sendMessage",{chat_id:chatId,text:"📱 <b>Personal Bot Studio</b>\n\nCustomize your bot’s personality, learning subjects, voice and group settings.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open Personal Bot Studio",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
 async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
     [{text:"📧 Gmail",callback_data:"tool_suggest:gmail"},{text:"🐙 GitHub",callback_data:"tool_suggest:github"}],
-    [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"✨ Personal AI",callback_data:"tool_suggest:ai"}]
+    [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"🔎 Web Search",callback_data:"tool_suggest:web"}],
+    [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"}]
   ]},...(business?{business_connection_id:business}:{})});
 }
 const TOOL_SUGGESTION_TEXT:Record<string,string>={
   gmail:"📧 **Gmail**\n\n`@gmail check my latest emails`\n`@gmail show unread emails`\n`@gmail send email to name@example.com about ...`\n\nOnly the bot owner can use connected Gmail, and sending always requires confirmation.",
   github:"🐙 **GitHub**\n\n`@github check my GitHub account`\n`@github inspect owner/repository`\n\nOnly the bot owner can access connected repositories.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
+  web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
   ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`"
 };
+function personalBotCommands(){return[
+  {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
+  {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminders",description:"View upcoming reminders"},
+  {command:"lesson",description:"Start a lesson on a topic"},{command:"explain",description:"Explain a concept clearly"},{command:"quiz",description:"Create a short quiz"},{command:"practice",description:"Give practice questions"},
+  {command:"search",description:"Search the live web"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
+  {command:"grouphelp",description:"How to use this bot in groups"},{command:"connect",description:"Owner: connect tools"},{command:"accounts",description:"Owner: view connected tools"},
+  {command:"emails",description:"Owner: show recent Gmail"},{command:"unread",description:"Owner: show unread Gmail"},{command:"sendemail",description:"Owner: prepare an email"},
+  {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
+]}
 function mdToHtml(input: string) {
   let raw = String(input || "").replace(/\r\n/g, "\n").trim();
   if (!raw) return "I couldn't generate a response.";
