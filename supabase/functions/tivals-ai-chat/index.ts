@@ -12,7 +12,8 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
-const VERSION = 28;
+const XKIRO_BASE = "https://api.xkiro.com/v1";
+const VERSION = 29;
 
 type WidgetConfig = {
   public_key: string;
@@ -618,6 +619,12 @@ async function callAiml(key: string, prompt: any[]) {
   return { reply, route: `aimlapi:${model}`, model };
 }
 
+async function callXkiro(key: string, prompt: any[]) {
+  const model = Deno.env.get("XKIRO_MODEL") || "openai/gpt-5.6-sol";
+  const reply = await callProvider(`${XKIRO_BASE}/chat/completions`, key, model, prompt, {}, 12000);
+  return { reply, route: `xkiro:${model}`, model };
+}
+
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
@@ -669,9 +676,14 @@ async function callSpecificModel(
   }
 }
 
-async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string }) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; xkiro: string }) {
   const providers: any[] = [];
   providers.push({ name: "AIML API", configured: Boolean(keys.aiml) });
+  providers.push({
+    name: "xKiro",
+    configured: Boolean(keys.xkiro),
+    model: Deno.env.get("XKIRO_MODEL") || "openai/gpt-5.6-sol"
+  });
 
   if (keys.bazaar) {
     try {
@@ -774,7 +786,8 @@ Deno.serve(async (req: Request) => {
     apinex: Deno.env.get("APINEX_API_KEY") || "",
     apinexBackup: Deno.env.get("APINEX_API_KEY_BACKUP") || "",
     open: Deno.env.get("OPENROUTER_API_KEY") || "",
-    aiml: Deno.env.get("AIMLAPI_API_KEY") || ""
+    aiml: Deno.env.get("AIMLAPI_API_KEY") || "",
+    xkiro: Deno.env.get("XKIRO_API_KEY") || ""
   };
 
   if (req.method === "GET") {
@@ -810,7 +823,8 @@ Deno.serve(async (req: Request) => {
         ...(keys.app ? ["AppMix"] : []),
         ...(keys.apinex || keys.apinexBackup ? ["Apinex"] : []),
         ...(keys.open ? ["OpenRouter"] : []),
-        ...(keys.aiml ? ["AIML API"] : [])
+        ...(keys.aiml ? ["AIML API"] : []),
+        ...(keys.xkiro ? ["xKiro"] : [])
       ]
     });
   }
@@ -892,6 +906,13 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "OpenRouter", error: safeErr(e) }); }
   }
 
+  if (keys.xkiro) {
+    try {
+      const result = await callXkiro(keys.xkiro, prompt);
+      return json({ reply: result.reply, model: result.model, provider: "xKiro", route: result.route, fallback: true }, 200, widget ? origin : "");
+    } catch (e) { failures.push({ provider: "xKiro", error: safeErr(e) }); }
+  }
+
   if (keys.aiml) {
     try {
       const result = await callAiml(keys.aiml, prompt);
@@ -899,7 +920,7 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "AIML API", error: safeErr(e) }); }
   }
 
-  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml) {
+  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml && !keys.xkiro) {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
