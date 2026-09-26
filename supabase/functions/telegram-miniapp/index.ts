@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:data.bot_kind==="business"?"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7":"https://ai.tivalsdeveloper.site/telegram-personal-bot.html?v=20260926-7"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8"}}
   }).catch(()=>null);
 }
 
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-7"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-8"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -425,7 +425,7 @@ Deno.serve(async req => {
   const action = String(body?.action || "dashboard");
 
   try {
-    if(action==="app_context"){const bot=await ownedBot(tg);const ownedLaunch=!(await verifyInitData(String(body?.init_data||""),BOT_TOKEN));return json({ok:true,mode:bot?.is_active&&bot?.bot_kind==="business"?"business":ownedLaunch?"personal":bot?.is_active?"personal":"unspecified"});}
+    if(action==="app_context")return json({ok:true,mode:"business"});
     if(action==="voice_chat") {
       if(!takeVoiceRate(tg))return json({error:"Please wait a moment before speaking again."},429);
       const encoded=String(body?.audio_base64||"");
