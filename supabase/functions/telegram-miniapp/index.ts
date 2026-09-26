@@ -398,7 +398,7 @@ async function getPersonalBotDashboard(tg:number) {
   return {
     plan:planData,
     usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
-    connectors:["gmail","github"].map(provider=>{const hit=connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
+    connectors:["gmail","github",...(connections.some((x:any)=>x?.provider==="shopify")?["shopify"]:[])].map(provider=>{const hit=connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
     gmail_monitor:{enabled:Boolean(monitor?.enabled),interval_minutes:Number(monitor?.interval_minutes||60),auto_draft_replies:monitor?.auto_draft_replies!==false,last_checked_at:monitor?.last_checked_at||null,last_success_at:monitor?.last_success_at||null,last_error:monitor?.last_error||""},
     bot_connector:{
       connected:Boolean(bot?.is_active),bot_kind:bot?.bot_kind||"personal",account_label:bot?.account_label||"",username:bot?.username||"",
