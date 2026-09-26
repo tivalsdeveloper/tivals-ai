@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-10"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-11"}}
   }).catch(()=>null);
 }
 
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-10"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-11"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -334,7 +334,7 @@ const plans = {
 
 async function getDashboard(tg:number) {
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner}] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
@@ -346,7 +346,8 @@ async function getDashboard(tg:number) {
     isAdmin(tg),
     ownedBot(tg),
     sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle()
+    sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle(),
+    sb.from("telegram_oauth_connections").select("provider,account_label").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle()
   ]);
   const active = Boolean(sub && sub.status==="active" && new Date(sub.subscription_expiration_date).getTime() > Date.now());
   const plan = admin ? "owner" : active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
@@ -376,8 +377,8 @@ async function getDashboard(tg:number) {
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
       owner_only_invites:bot?.owner_only_invites!==false
     },
-    connectors:["gmail","github","tiktok",...(Number(shopifyOwner?.telegram_user_id||0)===tg?["shopify"]:[]),"website"].map(provider=>{
-      const hit=list.find((x:any)=>x?.provider===provider);
+    connectors:["gmail","github","tiktok",...(Number(shopifyOwner?.telegram_user_id||0)===tg||shopifyConnection?["shopify"]:[]),"website"].map(provider=>{
+      const hit=provider==="shopify"?shopifyConnection:list.find((x:any)=>x?.provider===provider);
       return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
     })
   };
@@ -385,12 +386,13 @@ async function getDashboard(tg:number) {
 
 async function getPersonalBotDashboard(tg:number) {
   const today=new Date().toISOString().slice(0,10);
-  const [{data:usage},{data:bot},access,accountData,{data:monitor}]=await Promise.all([
+  const [{data:usage},{data:bot},access,accountData,{data:monitor},{data:shopifyConnection}]=await Promise.all([
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     ownedBot(tg),
     personalBotAccess(tg),
     oauth("status",tg).catch(()=>({connections:[]})),
-    sb.from("telegram_gmail_monitor_settings").select("enabled,interval_minutes,auto_draft_replies,last_checked_at,last_success_at,last_error").eq("telegram_user_id",tg).maybeSingle()
+    sb.from("telegram_gmail_monitor_settings").select("enabled,interval_minutes,auto_draft_replies,last_checked_at,last_success_at,last_error").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_oauth_connections").select("provider,account_label").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle()
   ]);
   const connections=Array.isArray(accountData?.connections)?accountData.connections:[];
   const planId=access.owner?"owner":access.plan;
@@ -398,7 +400,7 @@ async function getPersonalBotDashboard(tg:number) {
   return {
     plan:planData,
     usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
-    connectors:["gmail","github",...(connections.some((x:any)=>x?.provider==="shopify")?["shopify"]:[])].map(provider=>{const hit=connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
+    connectors:["gmail","github",...(shopifyConnection?["shopify"]:[])].map(provider=>{const hit=provider==="shopify"?shopifyConnection:connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
     gmail_monitor:{enabled:Boolean(monitor?.enabled),interval_minutes:Number(monitor?.interval_minutes||60),auto_draft_replies:monitor?.auto_draft_replies!==false,last_checked_at:monitor?.last_checked_at||null,last_success_at:monitor?.last_success_at||null,last_error:monitor?.last_error||""},
     bot_connector:{
       connected:Boolean(bot?.is_active),bot_kind:bot?.bot_kind||"personal",account_label:bot?.account_label||"",username:bot?.username||"",
