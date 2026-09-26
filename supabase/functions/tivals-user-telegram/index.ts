@@ -267,6 +267,7 @@ const INLINE_TOOL_RESULTS=[
 async function answerInlineToolSuggestions(token:string,query:any){const needle=String(query?.query||"").trim().toLowerCase();const results=INLINE_TOOL_RESULTS.filter(x=>!needle||`${x[0]} ${x[1]} ${x[2]}`.toLowerCase().includes(needle)).map(x=>({type:"article",id:`tivals-${x[0]}`,title:x[1],description:x[2],input_message_content:{message_text:x[3]}}));await telegram(token,"answerInlineQuery",{inline_query_id:query.id,results,cache_time:0,is_personal:true})}
 function personalBotCommands(){return[
   {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
+  {command:"store",description:"Browse products and shop"},
   {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminders",description:"View upcoming reminders"},
   {command:"lesson",description:"Start a lesson on a topic"},{command:"explain",description:"Explain a concept clearly"},{command:"quiz",description:"Create a short quiz"},{command:"practice",description:"Give practice questions"},
   {command:"search",description:"Search the live web"},{command:"youtube",description:"Search videos and preview in chat"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
@@ -276,7 +277,7 @@ function personalBotCommands(){return[
   {command:"disconnect_gmail",description:"Owner: disconnect Gmail"},{command:"disconnect_github",description:"Owner: disconnect GitHub"},{command:"disconnect_website",description:"Owner: disconnect website"}
 ]}
 function publicBotCommands(){
-  const allowed=new Set(["start","help","ask","newchat","chats","lesson","explain","quiz","practice","search","web","youtube","tools","grouphelp","image","voice","remind","reminders"]);
+  const allowed=new Set(["start","help","ask","store","newchat","chats","lesson","explain","quiz","practice","search","web","youtube","tools","grouphelp","image","voice","remind","reminders"]);
   return personalBotCommands().filter(item=>allowed.has(item.command));
 }
 async function registerBotCommands(token:string,ownerChatId:number){
@@ -779,6 +780,22 @@ Deno.serve(async (req: Request) => {
       if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId,conn.bot_kind);return json({ok:true,route:"personal-app"});}
       await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
       return json({ ok: true });
+    }
+    const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    if(storeCommand){
+      if(!paywallOwner){await reply(token,chatId,"The store is unavailable for this bot.",businessConnectionId);return json({ok:true,route:"store-unavailable"});}
+      const term=String(storeCommand[1]||"").trim().slice(0,80);
+      try{
+        const data=await oauth("shopify_products",paywallOwner,"shopify",{query:term});
+        const products=Array.isArray(data?.products)?data.products:[];
+        if(!products.length){await reply(token,chatId,term?`No published products found for “${term}”. Try /store to browse.`:"No published products are available right now.",businessConnectionId);return json({ok:true,route:"store-empty"});}
+        await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
+        for(const product of products){
+          const url=String(product.onlineStoreUrl||""),price=product.priceRangeV2?.minVariantPrice;
+          await telegram(token,"sendMessage",{chat_id:chatId,text:`<b>${esc(toolText(product.title,120))}</b>\n${esc(toolText(product.description||"",240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url}]]},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
+        }
+        return json({ok:true,route:"store",count:products.length});
+      }catch(error){await reply(token,chatId,"The store is temporarily unavailable. Please try again later.",businessConnectionId);console.error("Store lookup failed",String((error as Error)?.message||error));return json({ok:true,route:"store-error"});}
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
