@@ -656,11 +656,11 @@ async function configureShopifyApp(tg:number,rawShop:string,rawId:string,rawSecr
   const shop=shopDomain(rawShop),clientId=rawId.trim(),secret=rawSecret.trim();
   if(!shop)throw new Error("Enter your store's .myshopify.com domain.");
   if(clientId.length<8||clientId.length>200||secret.length<12||secret.length>300)throw new Error("Enter a valid Shopify app client ID and client secret.");
-  const {data:old}=await sb.from("telegram_shopify_app_credentials").select("shop_domain,client_id").eq("telegram_user_id",tg).maybeSingle();
-  const {data:connected}=await sb.from("telegram_oauth_connections").select("metadata").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle();
   const {error}=await sb.from("telegram_shopify_app_credentials").upsert({telegram_user_id:tg,shop_domain:shop,client_id:clientId,client_secret_enc:await encrypt(secret),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
   if(error)throw error;
-  if((old&&(old.shop_domain!==shop||old.client_id!==clientId))||(connected&&shopDomain(String(connected.metadata?.shop||""))!==shop))await sb.from("telegram_oauth_connections").delete().eq("telegram_user_id",tg).eq("provider","shopify");
+  // Never serve products with a token issued to a previously configured app.
+  const {error:disconnectError}=await sb.from("telegram_oauth_connections").delete().eq("telegram_user_id",tg).eq("provider","shopify");
+  if(disconnectError)throw disconnectError;
   return shop;
 }
 async function shopifyLink(req:Request,tg:number,rawShop:string) {
