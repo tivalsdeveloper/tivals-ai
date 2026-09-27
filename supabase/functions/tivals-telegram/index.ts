@@ -998,7 +998,7 @@ function gmailSendIntent(text: string) {
   return /^\/sendemail(?:\s|$)/i.test(value) || /\b(?:send|compose|write)\s+(?:an?\s+)?e-?mail\b/i.test(value);
 }
 function emailCommand(text:string) {
-  const m=String(text||"").trim().match(/^\/(findemail|reademail|replyemail)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  const m=String(text||"").trim().match(/^\/(email|findemail|reademail|replyemail)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
   return m ? {command:m[1].toLowerCase(),args:String(m[2]||"").trim()} : null;
 }
 function emailAddress(header:string) {
@@ -1032,6 +1032,12 @@ function emailSearchSummary(data:any){
 }
 async function handleEmailCommand(chatId:number|string,tg:number,command:{command:string;args:string},business?:string) {
   if(business||Number(chatId)!==tg) throw new Error("Gmail commands are available only in your direct bot chat.");
+  if(command.command==="email") {
+    if(!await connectedToolQuota(chatId,tg,business))return;
+    const d=await oauthCall("gmail_messages",tg,"gmail",{query:"",max_results:6});
+    await sendFormatted(chatId,emailSearchSummary(d));
+    return;
+  }
   if(!command.args){await sendFormatted(chatId,command.command==="findemail"?"Use `/findemail sender, subject, or Gmail search terms`":command.command==="reademail"?"Use `/reademail MESSAGE_ID` from /findemail results":"Use `/replyemail MESSAGE_ID | what you want to say` from /findemail results");return;}
   if(!await connectedToolQuota(chatId,tg,business))return;
   if(command.command==="findemail"){
