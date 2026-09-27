@@ -158,6 +158,7 @@ function managedBotCommands() {
     {command:"newchat",description:"Start a fresh private chat"},
     {command:"chats",description:"Continue a previous private chat"},
     {command:"remind",description:"Create a personal reminder"},
+    {command:"reminder",description:"Set hourly email checks"},
     {command:"reminders",description:"View upcoming reminders"},
     {command:"lesson",description:"Start a lesson on any subject"},
     {command:"explain",description:"Explain a concept clearly"},
@@ -591,6 +592,24 @@ async function accountStatus(chatId: number|string, tg: number, business?: strin
   return sendFormatted(chatId, `**Connected accounts**\n\n${lines.join("\n")}\n\nDisconnect with /disconnect_gmail, /disconnect_github, /disconnect_tiktok, or /disconnect_website.`, business);
 }
 
+async function emailReminder(ownerId:number,mode:string){
+  const {data:connection,error:connectionError}=await sb.from("telegram_oauth_connections").select("needs_reconnect").eq("telegram_user_id",ownerId).eq("provider","gmail").maybeSingle();
+  if(connectionError)throw connectionError;
+  const {data:settings,error:settingsError}=await sb.from("telegram_gmail_monitor_settings").select("enabled").eq("telegram_user_id",ownerId).maybeSingle();
+  if(settingsError)throw settingsError;
+  if(mode==="on"){
+    if(!connection||connection.needs_reconnect)throw new Error("Connect Gmail with /connect before enabling hourly email checks.");
+    const {error}=await sb.from("telegram_gmail_monitor_settings").upsert({telegram_user_id:ownerId,enabled:true,notify_chat_id:ownerId,interval_minutes:60,auto_draft_replies:true,last_checked_at:settings?.enabled?undefined:new Date().toISOString(),last_error:null,updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+    if(error)throw error;
+    return "Hourly Gmail checks are on. Your connected bot will show new unread emails with suggested replies. Nothing is sent until you approve. Use /reminder email off to stop.";
+  }
+  if(mode==="off"){
+    const {error}=await sb.from("telegram_gmail_monitor_settings").update({enabled:false,updated_at:new Date().toISOString()}).eq("telegram_user_id",ownerId);
+    if(error)throw error;
+    return "Hourly Gmail checks are off. Use /reminder email on to restart them.";
+  }
+  return `Hourly Gmail checks: ${settings?.enabled?"on":"off"}. ${connection?"Gmail connected.":"Connect Gmail with /connect first."} Use /reminder email on or /reminder email off.`;
+}
 function gmailIntent(text: string): { matched: boolean; query: string; title: string } {
   const t = text.trim();
   if (/^\/emails(?:\s|$)/i.test(t) || /^(?:check|show|read|get|see)\s+(?:my\s+)?(?:latest\s+|recent\s+)?emails?\b/i.test(t) || /^(?:any|do i have)\s+(?:new\s+)?emails?\b/i.test(t)) return { matched: true, query: "", title: "Latest emails" };
@@ -1977,7 +1996,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/store · /store product name — browse and buy published products\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/store · /store product name — browse and buy published products\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/reminder email on · /reminder email off · /reminder status\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
       return json({ok:true});
     }
 
@@ -2017,10 +2036,18 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"accounts"});
     }
 
+    const emailReminderCommand=text.match(/^\/reminder(?:@[A-Za-z0-9_]+)?(?:\s+(?:email\s+)?(on|off|status))?$/i);
+    if(emailReminderCommand){
+      if(!tg||String(message?.chat?.type||"")!=="private"||business){await sendFormatted(chatId,"Use /reminder in your direct bot chat to manage private Gmail checks.",business);return json({ok:true,route:"email-reminder-private-only"});}
+      await sendFormatted(chatId,await emailReminder(tg,String(emailReminderCommand[1]||"status").toLowerCase()));
+      return json({ok:true,route:"email-reminder"});
+    }
+
     if (text === "/disconnect_gmail" || text === "/disconnect_github" || text === "/disconnect_tiktok" || text === "/disconnect_website") {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
       const provider = text.endsWith("gmail") ? "gmail" : text.endsWith("github") ? "github" : text.endsWith("tiktok") ? "tiktok" : "website";
       await oauthCall("disconnect",tg,provider);
+      if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg);
       const providerLabel = provider === "gmail" ? "Gmail" : provider === "github" ? "GitHub" : provider === "tiktok" ? "TikTok" : "Tivals AI Website";
       await sendFormatted(chatId,`✅ ${providerLabel} disconnected.`,business);
       return json({ok:true,route:"disconnect"});
