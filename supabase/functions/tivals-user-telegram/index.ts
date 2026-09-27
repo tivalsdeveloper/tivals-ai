@@ -451,7 +451,7 @@ async function personalAi(profile:any,memoryKey:string,userText:string,persisten
   try {
     const history=persistentHistory||memoryMessages(memoryKey);
     const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:businessProfile,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
-    const result=await ai.json().catch(()=>({}));if(!ai.ok||!result?.reply)throw new Error(result?.error||"The AI is temporarily unavailable.");
+    const result=await ai.json().catch(()=>({}));if(result?.code==="ALL_PROVIDERS_FAILED"||result?.code==="NO_PROVIDER_KEYS")throw new Error("I couldn't answer just now. Please try your message again in a little while.");if(!ai.ok||!result?.reply)throw new Error(result?.error||"The AI is temporarily unavailable.");
     const answer=String(result.reply);if(!persistentHistory)remember(memoryKey,prompt,answer);return answer;
   } finally { clearTimeout(timer); }
 }
