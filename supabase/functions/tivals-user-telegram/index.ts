@@ -7,7 +7,7 @@ const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-13";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-14";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -785,7 +785,7 @@ Deno.serve(async (req: Request) => {
     if(storeCommand){
       const term=String(storeCommand[1]||"").trim().slice(0,80);
       try{
-        const data=await oauth("shopify_public_products",paywallOwner||0,"shopify",{query:term});
+        const data=await oauth("shopify_bot_products",paywallOwner||0,"shopify",{query:term});
         const products=Array.isArray(data?.products)?data.products:[];
         if(!products.length){await reply(token,chatId,term?`No published products found for “${term}”. Try /store to browse.`:"No products are published to the Shopify Online Store yet. The store owner can publish them in Shopify admin.",businessConnectionId);return json({ok:true,route:"store-empty"});}
         await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
