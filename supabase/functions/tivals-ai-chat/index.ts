@@ -13,7 +13,8 @@ const APPMIX_BASE = "https://api.apmix.ai/v1";
 const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const XKIRO_BASE = "https://api.xkiro.com/v1";
-const VERSION = 30;
+const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
+const VERSION = 31;
 
 type WidgetConfig = {
   public_key: string;
@@ -43,11 +44,12 @@ const APPMIX_FREE_MODELS = [
 
 const APINEX_FALLBACK_MODELS = ["free/gemini-3.1-pro"];
 
-type ProviderName = "bazaarlink" | "appmix" | "apinex" | "openrouter" | "xkiro";
+type ProviderName = "nvidia" | "bazaarlink" | "appmix" | "apinex" | "openrouter" | "xkiro";
 type SelectedModel = { provider: ProviderName; model: string };
 type PublicModel = { id: string; name: string; provider?: string; model?: string };
 
 const cooldownUntil: Record<ProviderName, number> = {
+  nvidia: 0,
   bazaarlink: 0,
   appmix: 0,
   apinex: 0,
@@ -59,6 +61,9 @@ let appMixWorkingModel = "";
 let apinexWorkingModel = "";
 let bazaarWorkingModel = "";
 let xkiroWorkingModel = "";
+let nvidiaWorkingModel = "";
+let nvidiaCatalog: { ids:string[]; expires:number } = { ids:[], expires:0 };
+const NVIDIA_CHAT_FALLBACK = ["meta/llama-3.3-70b-instruct", "microsoft/phi-4-mini-instruct"];
 
 const APP_ORIGINS = new Set([
   "https://ai.tivalsdeveloper.site",
@@ -334,6 +339,27 @@ function uniqueModels(models: string[]) {
   return [...new Set(models.filter(Boolean))];
 }
 
+function nvidiaChatId(id:string) {
+  return /^[\w.-]+\/[\w.:-]+$/.test(id) && !/(?:embed|rerank|retriev|image|video|diffusion|flux|audio|speech|whisper|tts|asr|guard|safety|moderation|nemo-embed)/i.test(id);
+}
+async function nvidiaModels(key:string) {
+  if(nvidiaCatalog.expires>Date.now())return nvidiaCatalog.ids;
+  try {
+    const {ids}=await listModels(NVIDIA_BASE,key,4500);
+    const chat=ids.filter(nvidiaChatId);
+    if(chat.length){nvidiaCatalog={ids:chat,expires:Date.now()+300000};return chat;}
+  } catch {}
+  return NVIDIA_CHAT_FALLBACK;
+}
+async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
+  if(inCooldown("nvidia"))throw new Error("cooldown");
+  const available=await nvidiaModels(key);
+  const candidates=uniqueModels([nvidiaWorkingModel,...NVIDIA_CHAT_FALLBACK,...available]).filter(id=>available.includes(id)&&!excluded.includes(id));
+  const result=await tryModels("nvidia",candidates,m=>callProvider(`${NVIDIA_BASE}/chat/completions`,key,m,prompt,{},12000),5);
+  nvidiaWorkingModel=result.model;
+  return result;
+}
+
 function isZeroPrice(v: unknown) {
   if (v === null || v === undefined || v === "") return false;
   const n = Number(v);
@@ -410,6 +436,7 @@ function prettyModelName(model: string, provider: ProviderName) {
 }
 
 function providerLabel(provider: ProviderName) {
+  if (provider === "nvidia") return "NVIDIA";
   if (provider === "bazaarlink") return "BazaarLink";
   if (provider === "appmix") return "AppMix";
   if (provider === "apinex") return "Apinex";
@@ -427,8 +454,9 @@ function publicModel(provider: ProviderName, model: string, name?: string): Publ
   };
 }
 
-async function getPublicModels(apinex: string, open: string, app: string, bazaar: string) {
+async function getPublicModels(apinex: string, open: string, app: string, bazaar: string, nvidia: string) {
   const models: PublicModel[] = [{ id: "auto", name: "Auto (Recommended)" }];
+  if(nvidia)for(const id of await nvidiaModels(nvidia))models.push(publicModel("nvidia",id));
 
   if (bazaar) {
     try {
@@ -468,6 +496,7 @@ function parseSelectedModel(value: unknown): SelectedModel | null {
     const provider = id.slice(0, colon) as ProviderName;
     const model = id.slice(colon + 1);
     const freeOnly =
+      (provider === "nvidia" && nvidiaChatId(model)) ||
       (provider === "bazaarlink" && (model === "auto:free" || /:free$/i.test(model))) ||
       (provider === "appmix" && /-free(?:$|\b)/i.test(model)) ||
       (provider === "apinex" && model.startsWith("free/")) ||
@@ -664,18 +693,24 @@ async function callXkiro(key: string, prompt: any[]) {
 async function callSpecificModel(
   selected: SelectedModel,
   prompt: any[],
-  keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string }
+  keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; nvidia: string }
 ) {
   const { provider, model } = selected;
   if (inCooldown(provider)) throw new Error("cooldown");
 
-  const key = provider === "bazaarlink" ? keys.bazaar
+  const key = provider === "nvidia" ? keys.nvidia
+    : provider === "bazaarlink" ? keys.bazaar
     : provider === "appmix" ? keys.app
     : provider === "apinex" ? keys.apinex
     : keys.open;
   if (!key) throw new Error("provider_not_configured");
 
   try {
+    if(provider==="nvidia"){
+      if(!(await nvidiaModels(key)).includes(model))throw new Error("model_unavailable");
+      const reply=await callProvider(`${NVIDIA_BASE}/chat/completions`,key,model,prompt,{},12000);
+      return {reply,route:`nvidia:${model}`,model};
+    }
     if (provider === "bazaarlink") {
       const reply = await callProvider(
         `${BAZAARLINK_BASE}/chat/completions`, key, model, prompt,
@@ -712,8 +747,9 @@ async function callSpecificModel(
   }
 }
 
-async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; xkiro: string }) {
+async function providerStatus(keys: { bazaar: string; app: string; apinex: string; apinexBackup: string; open: string; aiml: string; xkiro: string; nvidia: string }) {
   const providers: any[] = [];
+  providers.push(keys.nvidia?{name:"NVIDIA",configured:true,chat_models_visible:(await nvidiaModels(keys.nvidia)).length,cooldown_ms:Math.max(0,cooldownUntil.nvidia-Date.now())}:{name:"NVIDIA",configured:false});
   providers.push({ name: "AIML API", configured: Boolean(keys.aiml) });
   if (keys.xkiro) {
     try {
@@ -820,6 +856,7 @@ Deno.serve(async (req: Request) => {
   if (!widget && origin && !appOriginAllowed(origin)) return json({ error: "Origin not allowed." }, 403);
 
   const keys = {
+    nvidia: Deno.env.get("NVIDIA_API_KEY") || "",
     bazaar: Deno.env.get("BAZAARLINK_API_KEY") || "",
     app: Deno.env.get("APPMIX_API_KEY") || "",
     apinex: Deno.env.get("APINEX_API_KEY") || "",
@@ -833,7 +870,7 @@ Deno.serve(async (req: Request) => {
     const u = url;
 
     if (u.searchParams.get("models") === "1") {
-      const models = await getPublicModels(keys.apinex || keys.apinexBackup, keys.open, keys.app, keys.bazaar);
+      const models = await getPublicModels(keys.apinex || keys.apinexBackup, keys.open, keys.app, keys.bazaar, keys.nvidia);
       return json({ ok: true, version: VERSION, models, count: models.length }, 200, widget ? origin : origin);
     }
 
@@ -858,6 +895,7 @@ Deno.serve(async (req: Request) => {
       provider_racing: false,
       selected_model_supported: true,
       configured_providers: [
+        ...(keys.nvidia ? ["NVIDIA"] : []),
         ...(keys.bazaar ? ["BazaarLink"] : []),
         ...(keys.app ? ["AppMix"] : []),
         ...(keys.apinex || keys.apinexBackup ? ["Apinex"] : []),
@@ -906,8 +944,13 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  // Sequential fallback. BazaarLink is first because its auto:free route is designed
-  // specifically for free model selection and X-Free-Fallback:false prevents paid fallback.
+  // NVIDIA is first when configured; other providers remain available as fallbacks.
+  if(keys.nvidia){
+    try {
+      const result=await callNvidia(keys.nvidia,prompt,excluded.nvidia||[]);
+      return json({reply:result.reply,model:result.model,provider:"NVIDIA",route:result.route,fallback:!!selected},200,widget?origin:"");
+    } catch(e){failures.push({provider:"NVIDIA",error:safeErr(e)});}
+  }
   if (keys.bazaar) {
     try {
       const result = await callBazaarLink(keys.bazaar, prompt, excluded.bazaarlink || []);
@@ -959,7 +1002,7 @@ Deno.serve(async (req: Request) => {
     } catch (e) { failures.push({ provider: "AIML API", error: safeErr(e) }); }
   }
 
-  if (!keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml && !keys.xkiro) {
+  if (!keys.nvidia && !keys.bazaar && !keys.app && !keys.apinex && !keys.apinexBackup && !keys.open && !keys.aiml && !keys.xkiro) {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
