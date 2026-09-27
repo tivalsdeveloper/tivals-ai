@@ -7,7 +7,7 @@ const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-11";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-12";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -783,10 +783,9 @@ Deno.serve(async (req: Request) => {
     }
     const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(storeCommand){
-      if(!paywallOwner){await reply(token,chatId,"The store is unavailable for this bot.",businessConnectionId);return json({ok:true,route:"store-unavailable"});}
       const term=String(storeCommand[1]||"").trim().slice(0,80);
       try{
-        const data=await oauth("shopify_products",paywallOwner,"shopify",{query:term});
+        const data=await oauth("shopify_public_products",paywallOwner||0,"shopify",{query:term});
         const products=Array.isArray(data?.products)?data.products:[];
         if(!products.length){await reply(token,chatId,term?`No published products found for “${term}”. Try /store to browse.`:"No published products are available right now.",businessConnectionId);return json({ok:true,route:"store-empty"});}
         await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
