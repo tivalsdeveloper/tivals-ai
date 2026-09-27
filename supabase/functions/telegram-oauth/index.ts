@@ -625,7 +625,7 @@ async function createLink(req: Request, provider: string, tg: number) {
   try {
     const state = await createState(tg, provider);
     if (provider === "gmail") {
-      return json({ url: `${STATIC_BASE}/telegram-gmail.html?state=${encodeURIComponent(state)}&v=5` });
+      return json({ url: `${STATIC_BASE}/telegram-gmail.html?state=${encodeURIComponent(state)}&v=6` });
     }
     if (provider === "tiktok") {
       if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) throw new Error("TikTok connection is not configured yet.");
