@@ -3,6 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const SUPABASE_URL=Deno.env.get("SUPABASE_URL")||"";
 const SERVICE_KEY=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
+const MAIN_BOT_TOKEN=Deno.env.get("TELEGRAM_BOT_TOKEN")||"";
 const OAUTH_URL=`${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const AI_URL=`${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
 const GOOGLE_CLIENT_ID_CONFIGURED=Boolean(Deno.env.get("GOOGLE_CLIENT_ID")||Deno.env.get("GOOGLE_OAUTH_CLIENT_ID"));
@@ -42,11 +43,14 @@ Deno.serve(async req=>{
     const tg=Number(setting.telegram_user_id),chatId=Number(setting.notify_chat_id||tg),started=new Date().toISOString();
     await sb.from("telegram_gmail_monitor_settings").update({last_checked_at:started,updated_at:started}).eq("telegram_user_id",tg).eq("enabled",true);
     try{
-      const [{data:bot},{data:profile},entitlement]=await Promise.all([sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle(),sb.from("telegram_owned_bots").select("bot_name,personality,custom_instructions").eq("telegram_user_id",tg).maybeSingle(),access(tg)]);
-      if(!bot?.is_active||!bot?.token_enc)throw new Error("Personal bot is disconnected.");
-      const token=await decrypt(String(bot.token_enc));
+      const [{data:bot},{data:profile}]=await Promise.all([sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle(),sb.from("telegram_owned_bots").select("bot_name,personality,custom_instructions").eq("telegram_user_id",tg).maybeSingle()]);
+      const hasOwnedBot=Boolean(bot?.is_active&&bot?.token_enc);
+      const token=hasOwnedBot?await decrypt(String(bot.token_enc)):MAIN_BOT_TOKEN;
+      if(!token)throw new Error("No Telegram bot is available for Gmail notifications.");
+      const entitlement=hasOwnedBot?await access(tg):{allowed:true,plan:"main",limit:20};
       if(!entitlement.allowed){await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Personal bot trial ended.",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg);await telegram(token,chatId,{text:"⏸ <b>Gmail monitoring paused</b>\n\nYour personal bot trial has ended. Open /app to choose Basic or Pro.",parse_mode:"HTML"});continue;}
-      const result=await oauth(tg,"in:inbox is:unread newer_than:2d -from:me"),messages=Array.isArray(result?.messages)?result.messages:[];
+      const since=setting.last_checked_at?Math.floor(new Date(setting.last_checked_at).getTime()/1000):0;
+      const result=await oauth(tg,`in:inbox is:unread newer_than:2d -from:me${Number.isFinite(since)&&since>0?` after:${since}`:""}`),messages=Array.isArray(result?.messages)?result.messages:[];
       for(const message of messages){
         const event={telegram_user_id:tg,gmail_message_id:String(message.id||""),gmail_thread_id:message.thread_id||null,sender:String(message.from||"Unknown sender").slice(0,500),sender_email:senderAddress(String(message.reply_to||message.from||""))||null,subject:String(message.subject||"(No subject)").slice(0,500),snippet:String(message.snippet||"").slice(0,4000),internet_message_id:String(message.internet_message_id||"").slice(0,1000)||null,email_references:String(message.references||"").slice(0,2000)||null,internal_date:message.internal_date||null,status:"detected"};
         if(!event.gmail_message_id)continue;const inserted=await sb.from("telegram_gmail_monitor_events").insert(event).select("id").maybeSingle();if(inserted.error){if(String(inserted.error.code)==="23505")continue;throw inserted.error;}
