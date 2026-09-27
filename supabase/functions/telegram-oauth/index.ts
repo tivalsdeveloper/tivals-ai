@@ -101,6 +101,7 @@ async function createState(tg: number, provider: string) {
   return state;
 }
 async function saveConnection(row: any, provider: string, info: any) {
+  if(provider==="gmail"&&!info.refresh)throw new Error("Google did not provide offline Gmail access. Please retry and approve access so the connection can renew automatically.");
   let refreshTokenEnc:string|null=null;
   if(info.refresh) refreshTokenEnc=await encrypt(info.refresh);
   else {
@@ -713,9 +714,7 @@ async function shopifyProducts(tg:number,term:string) {
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
   if(!r.ok||d.errors?.length){const message=String(d.errors?.[0]?.message||"Shopify product lookup failed.");throw new Error(/access denied|read_products/i.test(message)?"Shopify denied product access. In your Shopify app, grant read_products, release the new app version, and reconnect the store.":message);}
   // Only expose products with a published storefront URL to bot visitors.
-  const catalog=d.data?.products?.nodes||[];
-  const products=catalog.filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}});
-  return {shop,products:products.slice(0,6),catalogCount:catalog.length,unavailableCount:catalog.length-products.length};
+  return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}}).slice(0,6)};
 }
 async function publicShopifyProducts(term:string) {
   const {data:owner,error}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
@@ -819,9 +818,10 @@ async function gmailAccessToken(tg:number,conn?:any) {
   const connection=conn||await gmailConnection(tg);
   const expiresAt=connection.expires_at?new Date(connection.expires_at).getTime():0;
   const current=await decrypt(String(connection.access_token_enc||""));
-  let clientId=GOOGLE_CLIENT_ID||String(connection?.metadata?.oauth_client_id||"");
-  if(!clientId&&current){const info=await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(current)}`).then(r=>r.json()).catch(()=>({}));clientId=String(info?.aud||"");if(clientId)await sb.from("telegram_oauth_connections").update({metadata:{...(connection.metadata||{}),oauth_client_id:clientId},updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");}
   if(current&&expiresAt>Date.now()+5*60_000)return current;
+  if(connection.needs_reconnect)throw new Error("Gmail authorization needs renewal. Connect Gmail once through /connect; automatic refresh resumes after Google grants offline access.");
+  let clientId=String(connection?.metadata?.oauth_client_id||"")||GOOGLE_CLIENT_ID;
+  if(!clientId&&current){const info=await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(current)}`).then(r=>r.json()).catch(()=>({}));clientId=String(info?.aud||"");if(clientId)await sb.from("telegram_oauth_connections").update({metadata:{...(connection.metadata||{}),oauth_client_id:clientId},updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");}
   const refresh=await decrypt(String(connection.refresh_token_enc||""));
   if(!refresh||!clientId){
     await sb.from("telegram_oauth_connections").update({needs_reconnect:true,refresh_failures:Number(connection.refresh_failures||0)+1,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");
@@ -831,9 +831,13 @@ async function gmailAccessToken(tg:number,conn?:any) {
   const r=await fetch("https://oauth2.googleapis.com/token",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams(refreshBody)});
   const d=await r.json().catch(()=>({}));
   if(!r.ok||!d?.access_token){
+    const reason=String(d?.error||"").toLowerCase();
+    const revoked=reason==="invalid_grant";
     const failures=Number(connection.refresh_failures||0)+1;
-    await sb.from("telegram_oauth_connections").update({needs_reconnect:failures>=3,refresh_failures:failures,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");
-    throw new Error(d?.error_description||"Google rejected the Gmail refresh token. Reconnect Gmail if Google access was revoked.");
+    await sb.from("telegram_oauth_connections").update({needs_reconnect:revoked,refresh_failures:failures,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("provider","gmail");
+    if(revoked)throw new Error("Google revoked or expired this Gmail authorization. Connect Gmail once through /connect to renew offline access.");
+    if(reason==="invalid_client"||reason==="unauthorized_client")throw new Error("Gmail refresh is blocked by the app's Google OAuth configuration. The app owner needs to correct its OAuth credentials; reconnecting will not fix this.");
+    throw new Error("Gmail could not renew its access right now. Please try again later.");
   }
   const now=new Date().toISOString(),expires=new Date(Date.now()+Math.max(60,Number(d.expires_in||3600))*1000).toISOString();
   const {error}=await sb.from("telegram_oauth_connections").update({access_token_enc:await encrypt(String(d.access_token)),expires_at:expires,last_refreshed_at:now,persistent_until:new Date(Date.now()+30*24*60*60_000).toISOString(),refresh_failures:0,needs_reconnect:false,updated_at:now}).eq("telegram_user_id",tg).eq("provider","gmail");
@@ -1269,7 +1273,7 @@ Deno.serve(async (req: Request) => {
   }
   if(action==="gmail_refresh_health")return json({ok:true,client_id_configured:Boolean(GOOGLE_CLIENT_ID),client_secret_configured:Boolean(GOOGLE_CLIENT_SECRET)});
   if(action==="gmail_maintain"){
-    const {data:rows,error}=await sb.from("telegram_oauth_connections").select("telegram_user_id,provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata,last_refreshed_at,persistent_until,refresh_failures,needs_reconnect").eq("provider","gmail").limit(500);if(error)return json({error:error.message},500);
+    const {data:rows,error}=await sb.from("telegram_oauth_connections").select("telegram_user_id,provider,account_label,access_token_enc,refresh_token_enc,scope,expires_at,metadata,last_refreshed_at,persistent_until,refresh_failures,needs_reconnect").eq("provider","gmail").eq("needs_reconnect",false).limit(500);if(error)return json({error:error.message},500);
     let maintained=0,failed=0;for(const row of rows||[]){try{await gmailAccessToken(Number(row.telegram_user_id),row);maintained+=1;}catch{failed+=1;}}
     return json({ok:true,accounts:(rows||[]).length,maintained,failed});
   }
