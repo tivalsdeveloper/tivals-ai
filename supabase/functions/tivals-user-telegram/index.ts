@@ -4,6 +4,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const AI_URL = `${SUPABASE_URL}/functions/v1/tivals-ai-chat`;
+const PIXAZO_STUDIO_URL = `${SUPABASE_URL}/functions/v1/pixazo-studio`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
@@ -874,7 +875,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"tool-suggestions"});
     }
     if (text === "/") {
-      await reply(token,chatId,"**Slash tools**\n\n/findemail QUERY · /reademail ID · /replyemail ID | instructions · /sendemail recipient and message\n/gmail · /github · /website · /web · /youtube · /ai · /image\n\nThe same supported tools also accept @. Email is never sent without your confirmation.");
+      await reply(token,chatId,"**Slash tools**\n\n/findemail QUERY · /reademail ID · /replyemail ID | instructions · /sendemail recipient and message\n/gmail · /github · /website · /web · /youtube · /ai · /image · /video\n\nThe same supported tools also accept @. Email is never sent without your confirmation.");
       return json({ok:true,route:"slash-tools"});
     }
     if (/^\/start(?:\s|$)/i.test(text)) {
@@ -917,7 +918,14 @@ Deno.serve(async (req: Request) => {
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
-    if(/^\/(?:image|voice)$/i.test(text)){const tool=text.slice(1).toLowerCase();await reply(token,chatId,TOOL_SUGGESTION_TEXT[tool],businessConnectionId);return json({ok:true,route:`tool-help-${tool}`});}
+    const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i);
+    if(mediaCommand){
+      const kind=String(mediaCommand[1]).toLowerCase() as "image"|"video"; const prompt=String(mediaCommand[2]||"").trim();
+      if(!prompt){await reply(token,chatId,"Usage: /"+kind+" describe what you want to generate.",businessConnectionId);return json({ok:true,route:kind+"-help"});}
+      try{await reply(token,chatId,"Generating your "+kind+" with the connected AI model…",businessConnectionId);await generateMedia(token,chatId,kind,prompt,businessConnectionId);return json({ok:true,route:kind+"-generation"});}
+      catch(e){await reply(token,chatId,kind+" generation is unavailable right now. "+String((e as Error)?.message||e),businessConnectionId);return json({ok:true,route:kind+"-generation-error"});}
+    }
+    if(/^\/voice$/i.test(text)){await reply(token,chatId,TOOL_SUGGESTION_TEXT.voice,businessConnectionId);return json({ok:true,route:"tool-help-voice"});}
     if(/^\/grouphelp(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await reply(token,chatId,"In groups, mention me or reply to one of my messages. Educational commands: `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. In channels, use `/ask question` or an educational command. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
       return json({ok:true,route:"group-help"});
