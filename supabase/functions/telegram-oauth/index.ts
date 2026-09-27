@@ -674,13 +674,13 @@ async function shopifyProducts(tg:number,term:string) {
     if(updateError)throw updateError;
   }
   const search=term.trim().slice(0,80).replace(/[\\"']/g," ");
-  const query="query($q:String){products(first:6,query:$q){nodes{id title handle onlineStoreUrl description(truncateAt:160) priceRangeV2{minVariantPrice{amount currencyCode}}}}}";
+  const query="query($q:String){products(first:50,query:$q){nodes{id title handle onlineStoreUrl description(truncateAt:160) priceRangeV2{minVariantPrice{amount currencyCode}}}}}";
   const r=await fetch(`https://${shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":token},body:JSON.stringify({query,variables:{q:search?`title:*${search}*`:"status:active"}})});
   const d=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
   if(!r.ok||d.errors?.length)throw new Error(d.errors?.[0]?.message||"Shopify product lookup failed.");
   // Only expose products with a published storefront URL to bot visitors.
-  return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&url.hostname===shop;}catch{return false}})};
+  return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}}).slice(0,6)};
 }
 async function publicShopifyProducts(term:string) {
   const {data:owner,error}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
