@@ -932,17 +932,26 @@ async function gmailMessage(tg: number, id: string) {
   const parts: any[] = [];
   const walk = (part: any) => { if ((part?.mimeType === "text/plain" || part?.mimeType === "text/html") && part?.body?.data) parts.push(part); for (const child of part?.parts || []) walk(child); };
   walk(d?.payload);
-  const encoded = String((parts.find(p=>p.mimeType==="text/plain")||parts[0])?.body?.data || "");
-  let body = "";
-  if (encoded && encoded.length < 100_000) {
+  const plain = parts.find(p=>p.mimeType==="text/plain");
+  const html = parts.find(p=>p.mimeType==="text/html");
+  const decodePart = (part:any) => {
+    const encoded=String(part?.body?.data||"");
+    if(!encoded||encoded.length>=100_000)return "";
     const binary = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
-    body = new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0))).slice(0, 12000);
+    return new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0))).slice(0, 50000);
+  };
+  const cssHeavy = (value:string) => /@font-face|@media\s+screen|font-family\s*:|\[data-ogsc\]|\.button-invert\s*\{/.test(value.slice(0,1500));
+  let body=decodePart(plain);
+  if(cssHeavy(body)&&html)body=decodePart(html);
+  if(body){
     if (/<!--|<(?:html|body|div|p|br|a|style|script)\b/i.test(body)) {
-      body = body.replace(/<!--[\s\S]*?-->/g," ").replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/\s*(?:script|style)\s*>/gi," ")
+      body = body.replace(/<!--[\s\S]*?-->/g," ").replace(/<head\b[^>]*>[\s\S]*?<\/\s*head\s*>/gi," ").replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/\s*(?:script|style)\s*>/gi," ")
         .replace(/<\s*br\s*\/?\s*>/gi,"\n").replace(/<\/?(?:p|div|li|tr|h[1-6])\b[^>]*>/gi,"\n")
         .replace(/<[^>]*>/g," ").replace(/&(?:nbsp|amp|lt|gt|quot|#39|#x27|#(\d+)|#x([\da-f]+));/gi,(_m,n,x)=>n?String.fromCodePoint(Math.min(Number(n),0x10ffff)):x?String.fromCodePoint(Math.min(parseInt(x,16),0x10ffff)):({nbsp:" ",amp:"&",lt:"<",gt:">",quot:'"',"#39":"'","#x27":"'"} as Record<string,string>)[_m.slice(1,-1).toLowerCase()]||_m);
     }
     body = body.replace(/\bhttps?:\/\/\S{120,}/g,"[long link omitted]").replace(/[ \t]{2,}/g," ").replace(/\n\s*\n\s*\n+/g,"\n\n").trim();
+    if(cssHeavy(body))body="";
+    body=body.slice(0,4500);
   }
   return { id:d?.id, thread_id:d?.threadId || "", from:headers.from || "", reply_to:headers["reply-to"] || headers.from || "", to:headers.to || "", subject:headers.subject || "(No subject)", date:headers.date || "", internet_message_id:headers["message-id"] || "", references:headers.references || "", snippet:String(d?.snippet || ""), body:body || String(d?.snippet || "") };
 }
