@@ -1236,6 +1236,7 @@ function toolsHelpText() {
     "• `/store` or `/store product name` — browse Tivalsdeveloper products",
     "• `@youtube Python tutorial`",
     "• `@image futuristic AI robot`",
+    "• `/video cinematic sunrise over Thohoyandou` → generate a video",
     "• `@ai explain recursion`",
     "",
     "All @tool requests also work as /tool commands. Connect account tools first with /connect."
@@ -1550,6 +1551,16 @@ function findImageUrl(value: any): string {
   return visit(value);
 }
 
+async function generateVideo(prompt: string) {
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  const r = await fetch(PIXAZO_STUDIO_URL, { method:"POST", headers:{ "content-type":"application/json", authorization:`Bearer ${key}`, apikey:key }, body:JSON.stringify({type:"video",prompt}) });
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d?.error || "Video generation failed.");
+  const u = String(d?.output || d?.url || (Array.isArray(d?.media)?d.media[0]:"") || "");
+  if(!/^https?:\/\//i.test(u)) throw new Error("Video provider returned no playable video.");
+  return u;
+}
+
 async function generateImage(prompt: string) {
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
   const r = await fetch(PIXAZO_STUDIO_URL, {
@@ -1592,17 +1603,10 @@ function audioFormat(mime:string) {
 }
 
 async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
-  const key=Deno.env.get("NVIDIA_API_KEY")||""; if(!key) return "";
-  try{
-    const format=String(mime||"audio/ogg").split(";")[0]||"audio/ogg";
-    const audio=`data:${format};base64,${bytesToB64(bytes)}`;
-    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"microsoft/phi-4-multimodal-instruct",messages:[{role:"user",content:`<audio src="${audio}" /> Transcribe this voice note exactly. Return only the spoken words.`}],max_tokens:1200,temperature:0})});
-    const d=await r.json().catch(()=>({})); const c=d?.choices?.[0]?.message?.content; const text=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||x||"")).join(" ").trim():"";
-    if(r.ok&&text)return text.slice(0,4000);
-  }catch(e){console.error("NVIDIA transcription failed",e)} return "";
+  const key=Deno.env.get("NVIDIA_API_KEY")||""; if(!key)return "";
+  try{const format=String(mime||"audio/ogg").split(";")[0]||"audio/ogg";const audio=`data:${format};base64,${bytesToB64(bytes)}`;const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"microsoft/phi-4-multimodal-instruct",messages:[{role:"user",content:`<audio src="${audio}" /> Transcribe this voice note exactly. Return only the spoken words.`}],max_tokens:1200,temperature:0})});const d=await r.json().catch(()=>({}));const c=d?.choices?.[0]?.message?.content;const text=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||x||"")).join(" ").trim():"";if(r.ok&&text)return text.slice(0,4000)}catch(e){console.error("NVIDIA transcription failed",e)}return "";
 }
 async function transcribeVoice(bytes:Uint8Array,mime:string) {
-  const nvidiaText=await nvidiaTranscribe(bytes,mime); if(nvidiaText)return nvidiaText;
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
   if(key)try{
     const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});
@@ -2037,6 +2041,14 @@ Deno.serve(async (req: Request) => {
       await planStatus(chatId,tg,business);
       return json({ok:true,route:"plan"});
     }
+    if (/^\/video(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i.test(text)) {
+      const match = text.match(/^\/video(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i);
+      const prompt = String(match?.[1] || "").trim();
+      if (!prompt) { await sendFormatted(chatId, "Usage: `/video describe the video you want`", business); return json({ok:true,route:"video-help"}); }
+      try { await sendFormatted(chatId, "🎬 Generating your video…", business); const url=await generateVideo(prompt); await telegram("sendVideo",{chat_id:chatId,video:url,caption:`🎬 <b>Generated video</b>\n${esc(prompt.slice(0,600))}`,parse_mode:"HTML",...(business?{business_connection_id:business}:{})}); return json({ok:true,route:"video"}); }
+      catch(e) { await sendFormatted(chatId, `Video generation is unavailable right now. ${String((e as Error)?.message||e)}`, business); return json({ok:true,route:"video-error"}); }
+    }
+
     if (text === "/tools") {
       await sendFormatted(chatId, toolsHelpText(), business);
       return json({ok:true,route:"tools"});
