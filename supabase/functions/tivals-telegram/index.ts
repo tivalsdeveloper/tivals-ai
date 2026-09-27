@@ -9,7 +9,7 @@ const OAUTH_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/telegra
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const APPMIX_BASE = "https://api.apmix.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
-const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-12";
+const TELEGRAM_APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-13";
 const PERSONAL_BOT_APP_URL = TELEGRAM_APP_URL;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -1827,7 +1827,7 @@ Deno.serve(async (req: Request) => {
         if(!shopOwner?.telegram_user_id)throw new Error("Store owner not found");
         const data=await oauthCall("shopify_public_products",Number(shopOwner.telegram_user_id),"shopify",{query:term});
         const products=Array.isArray(data?.products)?data.products:[];
-        if(!products.length){await sendFormatted(chatId,term?`No published products found for ${term}. Try /store to browse.`:"No published products are available right now.",business);return json({ok:true,route:"store-empty"});}
+        if(!products.length){await sendFormatted(chatId,term?`No published products found for ${term}. Try /store to browse.`:"No products are published to the Shopify Online Store yet. The store owner can publish them in Shopify admin.",business);return json({ok:true,route:"store-empty"});}
         await sendFormatted(chatId,`🛍️ **Tivalsdeveloper store**\n\n${term?`Results for ${term}. `:""}Tap a product to view details or buy it. Search with /store product name.`,business);
         for(const item of products){
           const price=item.priceRangeV2?.minVariantPrice;
