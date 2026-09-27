@@ -713,7 +713,9 @@ async function shopifyProducts(tg:number,term:string) {
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
   if(!r.ok||d.errors?.length){const message=String(d.errors?.[0]?.message||"Shopify product lookup failed.");throw new Error(/access denied|read_products/i.test(message)?"Shopify denied product access. In your Shopify app, grant read_products, release the new app version, and reconnect the store.":message);}
   // Only expose products with a published storefront URL to bot visitors.
-  return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}}).slice(0,6)};
+  const catalog=d.data?.products?.nodes||[];
+  const products=catalog.filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}});
+  return {shop,products:products.slice(0,6),catalogCount:catalog.length,unavailableCount:catalog.length-products.length};
 }
 async function publicShopifyProducts(term:string) {
   const {data:owner,error}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
