@@ -90,7 +90,7 @@ async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
     {role:"user",content:`<audio src="data:${String(mime||"audio/ogg")};base64,${b64}" /> Transcribe this voice note exactly. Return only the spoken words.`}
   ];
   for(const message of attempts)try{
-    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"microsoft/phi-4-multimodal-instruct",messages:[message],max_tokens:1200,temperature:0})});
+    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",messages:[message],max_tokens:1200,temperature:0})});
     const d=await r.json().catch(()=>({})); const c=d?.choices?.[0]?.message?.content; const text=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||x||"")).join(" ").trim():"";
     if(r.ok&&text)return text.slice(0,4000); console.error("NVIDIA transcription response",r.status,d?.detail||d?.error||"no transcript");
   }catch(e){console.error("NVIDIA transcription request failed",e)}
