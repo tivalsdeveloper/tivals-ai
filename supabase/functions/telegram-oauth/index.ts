@@ -682,6 +682,12 @@ async function shopifyProducts(tg:number,term:string) {
   // Only expose products with a published storefront URL to bot visitors.
   return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&url.hostname===shop;}catch{return false}})};
 }
+async function publicShopifyProducts(term:string) {
+  const {data:owner,error}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
+  if(error||!owner?.telegram_user_id)throw new Error("The store is temporarily unavailable.");
+  // The stored token remains private to its owner; callers see published products only.
+  return shopifyProducts(Number(owner.telegram_user_id),term);
+}
 
 async function tiktokConnection(tg: number) {
   const { data, error } = await sb.from("telegram_oauth_connections")
@@ -1198,6 +1204,10 @@ Deno.serve(async (req: Request) => {
   if(action==="shopify_products"){
     if(!Number.isSafeInteger(tg)||tg<=0)return json({error:"Invalid Telegram user."},400);
     try{return json(await shopifyProducts(tg,String(body.query||"")));}
+    catch(e){return json({error:String((e as Error)?.message||e)},400);}
+  }
+  if(action==="shopify_public_products"){
+    try{return json(await publicShopifyProducts(String(body.query||"")));}
     catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
   if(action==="gmail_refresh_health")return json({ok:true,client_id_configured:Boolean(GOOGLE_CLIENT_ID),client_secret_configured:Boolean(GOOGLE_CLIENT_SECRET)});
