@@ -214,13 +214,20 @@ async function connectManagedBot(ownerId:number,bot:any) {
   if(claimError)throw claimError;
   if(claimed&&Number(claimed.telegram_user_id)!==ownerId)throw new Error("This bot is already connected to another account.");
 
+  const {data:choice,error:choiceError}=await sb.from("telegram_user_settings")
+    .select("pending_bot_kind,pending_bot_expires_at").eq("telegram_user_id",ownerId).maybeSingle();
+  if(choiceError)throw choiceError;
+  const kind=choice?.pending_bot_kind==="business"&&new Date(choice.pending_bot_expires_at||0).getTime()>Date.now()?"business":"personal";
+
   const secret=managedBotSecret();
   const botName=String(bot?.first_name||"My Tivals AI").slice(0,64);
   const {error}=await sb.from("telegram_owned_bots").upsert({
     telegram_user_id:ownerId,bot_id:botId,username:bot?.username||null,
     account_label:bot?.username?`@${bot.username}`:botName,bot_name:botName,
     token_enc:await managedBotEncrypt(token),webhook_secret_enc:await managedBotEncrypt(secret),
-    is_active:true,bot_kind:"personal",updated_at:new Date().toISOString()
+    is_active:true,bot_kind:kind,
+    welcome_message:kind==="business"?`Welcome to ${botName}. How can I help you with our products or services?`:`Hi! I am ${botName}. How can I help you today?`,
+    updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
   if(error)throw error;
 
@@ -233,17 +240,18 @@ async function connectManagedBot(ownerId:number,bot:any) {
     });
     await Promise.all([
       managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:PERSONAL_BOT_APP_URL}}}),
-      managedBotApi(token,"setMyShortDescription",{short_description:"A personal, human-like AI assistant and tutor"}),
-      managedBotApi(token,"setMyDescription",{description:`${botName} is your personal AI assistant. It can teach programming, mathematics and other subjects, and works in approved groups and channels.`}),
+      managedBotApi(token,"setMyShortDescription",{short_description:kind==="business"?"Business AI assistant for products, services and support":"Personal AI assistant and tutor"}),
+      managedBotApi(token,"setMyDescription",{description:kind==="business"?`${botName} is a business AI assistant. Add your business details, products and FAQs in the Mini App.`:`${botName} is your personal AI assistant. It can teach programming, mathematics and other subjects, and works in approved groups and channels.`}),
       managedBotApi(token,"setMyCommands",{commands:managedBotPublicCommands(),scope:{type:"default"}})
     ]);
   } catch(e) {
     await sb.from("telegram_owned_bots").update({is_active:false,updated_at:new Date().toISOString()}).eq("telegram_user_id",ownerId).eq("bot_id",botId);
     throw e;
   }
-  return bot?.username?`@${bot.username}`:botName;
+  await sb.from("telegram_user_settings").update({pending_bot_kind:null,pending_bot_expires_at:null}).eq("telegram_user_id",ownerId);
+  return {label:bot?.username?`@${bot.username}`:botName,kind};
 }
-async function offerManagedBotCreation(chatId:number|string,tg:number) {
+async function offerManagedBotCreation(chatId:number|string,tg:number,kind:"personal"|"business"="personal") {
   if(!tg)throw new Error("Telegram user ID is unavailable.");
   await telegram("setWebhook",{
     url:`${SUPABASE_URL}/functions/v1/tivals-telegram`,
@@ -251,21 +259,23 @@ async function offerManagedBotCreation(chatId:number|string,tg:number) {
     allowed_updates:["message","callback_query","pre_checkout_query","business_connection","business_message","managed_bot"],
     drop_pending_updates:false
   });
+  const {error:choiceError}=await sb.from("telegram_user_settings").upsert({telegram_user_id:tg,pending_bot_kind:kind,pending_bot_expires_at:new Date(Date.now()+15*60_000).toISOString()},{onConflict:"telegram_user_id"});
+  if(choiceError)throw choiceError;
   await telegram("sendMessage",{
     chat_id:chatId,
-    text:"🤖 Create your personal Tivals AI bot\n\nTap the button below, choose its name and username, and Telegram will create it securely. You can then customize its personality, subjects, voice, group behavior and channel behavior in the dashboard.",
-    reply_markup:{keyboard:[[{text:"Create my personal bot",request_managed_bot:{request_id:Number(Date.now()%2147483647),suggested_name:"My Tivals AI"}}]],resize_keyboard:true,one_time_keyboard:true}
+    text:`Create your ${kind} Tivals AI bot\n\nTap the button below, choose its name and username, and Telegram will create and connect it automatically. Then open /app to customize it.`,
+    reply_markup:{keyboard:[[{text:`Create my ${kind} bot`,request_managed_bot:{request_id:Number(Date.now()%2147483647),suggested_name:kind==="business"?"My Business AI":"My Personal AI"}}]],resize_keyboard:true,one_time_keyboard:true}
   });
 }
 
 async function sendBotTypeChooser(chatId:number|string,business?:string) {
   const payload:any={
     chat_id:chatId,
-    text:"🤖 <b>Create your AI bot</b>\n\nChoose the type of bot you want. Personal bots have their own private Studio. Business bots open the Business Bot Studio for company details, services, bookings, website automation and connected tools.",
+    text:"<b>Welcome to Tivals AI</b>\n\nChoose the bot you want to create. Telegram will ask for its name and username, then connect it automatically. You can add Gmail, GitHub, Shopify and other tools in /app. Send /tools for examples.",
     parse_mode:"HTML",
     reply_markup:{inline_keyboard:[
-      [{text:"✨ Create Personal Bot",callback_data:"create_bot:personal"}],
-      [{text:"🏢 Create Business Bot",web_app:{url:`${TELEGRAM_APP_URL}#business`}}]
+      [{text:"Create Business Bot",callback_data:"create_bot:business"}],
+      [{text:"Create Personal Bot",callback_data:"create_bot:personal"}]
     ]}
   };
   if(business)payload.business_connection_id=business;
@@ -1703,11 +1713,11 @@ Deno.serve(async (req: Request) => {
     const ownerId=Number(update.managed_bot?.user?.id||0);
     const bot=update.managed_bot?.bot;
     try {
-      const label=await connectManagedBot(ownerId,bot);
+      const {label,kind}=await connectManagedBot(ownerId,bot);
       await telegram("sendMessage",{
         chat_id:ownerId,
-        text:`✅ ${label} is ready.\n\nIt can now chat naturally, teach programming, mathematics and other subjects, and work in groups or channels you approve. Open the dashboard to customize it.`,
-        reply_markup:{inline_keyboard:[[{text:"Customize my bot",web_app:{url:PERSONAL_BOT_APP_URL}}]]}
+        text:`${label} is ready as your ${kind} bot.\n\nOpen the Mini App to customize its name and welcome message${kind==="business"?", add business details, products and FAQs":" and choose its personality and subjects"}. Then open your new bot and send /start.`,
+        reply_markup:{inline_keyboard:[[{text:"Customize my bot",web_app:{url:TELEGRAM_APP_URL}}]]}
       });
       return json({ok:true,route:"managed-bot-connected",bot_id:Number(bot?.id||0)});
     } catch(e) {
@@ -1721,16 +1731,17 @@ Deno.serve(async (req: Request) => {
   if (update?.callback_query) {
     const q=update.callback_query;
     const data=String(q?.data||"");
-    if(data==="create_bot:personal") {
+    if(data==="create_bot:personal"||data==="create_bot:business") {
+      const kind=data==="create_bot:business"?"business":"personal";
       const ownerId=Number(q?.from?.id||0);
       const callbackChat=q?.message?.chat?.id;
-      await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Opening personal bot creator…"}).catch(()=>{});
+      await telegram("answerCallbackQuery",{callback_query_id:q.id,text:`Opening ${kind} bot creator…`}).catch(()=>{});
       if(!ownerId||!callbackChat||String(q?.message?.chat?.type||"")!=="private") {
-        if(callbackChat)await sendFormatted(callbackChat,"Open a direct chat with me and send `/createbot` to create your personal bot.");
+        if(callbackChat)await sendFormatted(callbackChat,`Open a direct chat with me and send ${kind==="business"?"/createbusinessbot":"/createbot"} to create your bot.`);
         return json({ok:true,route:"managed-bot-private-only"});
       }
       try {
-        await offerManagedBotCreation(callbackChat,ownerId);
+        await offerManagedBotCreation(callbackChat,ownerId,kind);
         return json({ok:true,route:"managed-bot-offer"});
       } catch(e) {
         await sendFormatted(callbackChat,"Managed bot creation must first be enabled for Tivals AI in the @BotFather Mini App. You can still open `/app` and connect an existing BotFather bot token.");
@@ -1911,15 +1922,14 @@ Deno.serve(async (req: Request) => {
         await sendFormatted(chatId,"Open a direct chat with me and send `/createbusinessbot` to open the Business Bot Studio.",business);
         return json({ok:true,route:"business-bot-private-only"});
       }
-      await setMiniAppMenu(chatId);
-      await sendBotTypeChooser(chatId,business);
-      return json({ok:true,route:"business-bot-studio"});
+      try{await offerManagedBotCreation(chatId,tg,"business");return json({ok:true,route:"managed-business-bot-offer"})}
+      catch(e){await sendFormatted(chatId,"Managed bot creation requires enabling bot management for Tivals AI in @BotFather. You can still create a bot in BotFather and connect its token in /app.");return json({ok:false,route:"managed-bot-unavailable",error:String((e as Error)?.message||e)},200)}
     }
 
     if (text === "/start" || text.startsWith("/start ")) {
       await telegram("setMyCommands",{commands:mainBotCommands()}).catch(()=>{});
       await setMiniAppMenu(chatId);
-      if(String(message?.chat?.type||"")==="private")await sendBotTypeChooser(chatId,business);
+      if(String(message?.chat?.type||"")==="private"){await sendBotTypeChooser(chatId,business);return json({ok:true,route:"bot-welcome"});}
       await sendFormatted(chatId, [
         "👋 **Welcome to Tivals AI**",
         "",
