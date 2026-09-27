@@ -15,7 +15,7 @@
     <h1>Connect Gmail to Tivals AI</h1>
     <p>Tivals AI will ask Google for permission to read Gmail, check new mail hourly when you enable it, and prepare replies. Every email still requires your confirmation before it is sent.</p>
     <button class="btn" id="connect">Continue with Google</button>
-    <p class="muted" id="status">Offline access keeps Gmail connected for at least 30 days with automatic token refresh, unless you revoke Google access. You can disconnect it anytime with <b>/disconnect_gmail</b>.</p>
+    <p class="muted" id="status">Tivals AI requests offline access so it can renew Gmail tokens automatically. Google may still expire or revoke access; if that happens, reconnect once through the bot. You can disconnect with <b>/disconnect_gmail</b>.</p>
   </main>
 
   <script type="module">
@@ -47,10 +47,10 @@
         let providerToken = hash.get('provider_token') || '';
         let providerRefreshToken = hash.get('provider_refresh_token') || '';
 
-        if (!providerToken) {
+        if (!providerToken || !providerRefreshToken) {
           const { data } = await supabase.auth.getSession();
-          providerToken = data?.session?.provider_token || '';
-          providerRefreshToken = data?.session?.provider_refresh_token || '';
+          providerToken ||= data?.session?.provider_token || '';
+          providerRefreshToken ||= data?.session?.provider_refresh_token || '';
         }
 
         if (!providerToken) return false;
