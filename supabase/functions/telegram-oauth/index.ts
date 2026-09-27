@@ -567,10 +567,10 @@ async function githubCreateIssue(tg: number, repository: string, title: string, 
   });
   return { ok:true, number:d?.number || null, html_url:d?.html_url || null, title:d?.title || safeTitle };
 }
-function githubFilePath(value:string) {
+function githubFilePath(value:string,writable=false) {
   const path=value.trim().replace(/^\/+/,"");
   if(!path || path.length>300 || path.split("/").some(x=>!x || x==="." || x==="..")) throw new Error("Choose a valid repository file path.");
-  if(/^\.github\/workflows\//i.test(path)) throw new Error("Workflow files cannot be changed through Telegram.");
+  if(writable && /^\.github\/workflows\//i.test(path)) throw new Error("Workflow files cannot be changed through Telegram.");
   return path;
 }
 async function githubFile(tg:number,repository:string,pathValue:string) {
@@ -582,8 +582,19 @@ async function githubFile(tg:number,repository:string,pathValue:string) {
   const content=String(d?.content || "").replace(/\s/g,"");
   return {repository:fullName,path,sha:String(d.sha),size:Number(d?.size || 0),encoding:d?.encoding || "base64",content_base64:content};
 }
+async function githubDirectory(tg:number,repository:string,pathValue="") {
+  const fullName=githubRepositoryName(repository);
+  const path=pathValue.trim().replace(/^\/+|\/+$/g,"");
+  if(path) githubFilePath(path);
+  const {token}=await githubInstallationAccess(tg);
+  const suffix=path?`/${path.split("/").map(encodeURIComponent).join("/")}`:"";
+  const url=`https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/contents${suffix}`;
+  const entries=await githubJson(token,url);
+  if(!Array.isArray(entries)) throw new Error("That path is a file. Use read file to see its contents.");
+  return {repository:fullName,path,entries:entries.slice(0,100).map((entry:any)=>({name:String(entry.name||""),path:String(entry.path||""),type:String(entry.type||""),size:Number(entry.size||0)})),truncated:entries.length>100};
+}
 async function githubUpsertFile(tg:number,repository:string,pathValue:string,contentBase64:string,message:string,sha="") {
-  const fullName=githubRepositoryName(repository),path=githubFilePath(pathValue);
+  const fullName=githubRepositoryName(repository),path=githubFilePath(pathValue,true);
   const {token,permissions}=await githubInstallationAccess(tg);
   if(permissions?.contents!=="write") throw new Error("The GitHub App does not have Contents write permission.");
   const clean=contentBase64.replace(/\s/g,"");
@@ -1317,6 +1328,12 @@ Deno.serve(async (req: Request) => {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
       return json(await githubFile(tg,String(body.repository || ""),String(body.path || "")));
+    } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
+  }
+  if (action === "github_directory") {
+    try {
+      if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error:"Invalid Telegram user." },400);
+      return json(await githubDirectory(tg,String(body.repository || ""),String(body.path || "")));
     } catch(e) { return json({error:String((e as Error)?.message || e)},400); }
   }
   if (action === "github_upsert_file") {
