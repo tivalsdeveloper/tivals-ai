@@ -930,13 +930,19 @@ async function gmailMessage(tg: number, id: string) {
   const d = await gmailFetchJson(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`);
   const headers = Object.fromEntries((d?.payload?.headers || []).map((h: any) => [String(h.name || "").toLowerCase(), String(h.value || "")]));
   const parts: any[] = [];
-  const walk = (part: any) => { if (part?.mimeType === "text/plain" && part?.body?.data) parts.push(part); for (const child of part?.parts || []) walk(child); };
+  const walk = (part: any) => { if ((part?.mimeType === "text/plain" || part?.mimeType === "text/html") && part?.body?.data) parts.push(part); for (const child of part?.parts || []) walk(child); };
   walk(d?.payload);
-  const encoded = String(parts[0]?.body?.data || "");
+  const encoded = String((parts.find(p=>p.mimeType==="text/plain")||parts[0])?.body?.data || "");
   let body = "";
   if (encoded && encoded.length < 100_000) {
     const binary = atob(encoded.replace(/-/g, "+").replace(/_/g, "/"));
     body = new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0))).slice(0, 12000);
+    if (/<!--|<(?:html|body|div|p|br|a|style|script)\b/i.test(body)) {
+      body = body.replace(/<!--[\s\S]*?-->/g," ").replace(/<(?:script|style)\b[^>]*>[\s\S]*?<\/\s*(?:script|style)\s*>/gi," ")
+        .replace(/<\s*br\s*\/?\s*>/gi,"\n").replace(/<\/?(?:p|div|li|tr|h[1-6])\b[^>]*>/gi,"\n")
+        .replace(/<[^>]*>/g," ").replace(/&(?:nbsp|amp|lt|gt|quot|#39|#x27|#(\d+)|#x([\da-f]+));/gi,(_m,n,x)=>n?String.fromCodePoint(Math.min(Number(n),0x10ffff)):x?String.fromCodePoint(Math.min(parseInt(x,16),0x10ffff)):({nbsp:" ",amp:"&",lt:"<",gt:">",quot:'"',"#39":"'","#x27":"'"} as Record<string,string>)[_m.slice(1,-1).toLowerCase()]||_m);
+    }
+    body = body.replace(/\bhttps?:\/\/\S{120,}/g,"[long link omitted]").replace(/[ \t]{2,}/g," ").replace(/\n\s*\n\s*\n+/g,"\n\n").trim();
   }
   return { id:d?.id, thread_id:d?.threadId || "", from:headers.from || "", reply_to:headers["reply-to"] || headers.from || "", to:headers.to || "", subject:headers.subject || "(No subject)", date:headers.date || "", internet_message_id:headers["message-id"] || "", references:headers.references || "", snippet:String(d?.snippet || ""), body:body || String(d?.snippet || "") };
 }
