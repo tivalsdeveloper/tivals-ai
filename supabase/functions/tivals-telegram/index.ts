@@ -1419,6 +1419,7 @@ async function askTivalsAI(message: string, tg = 0) {
       signal: c.signal
     });
     const d = await r.json().catch(() => ({}));
+    if(d?.code==="ALL_PROVIDERS_FAILED"||d?.code==="NO_PROVIDER_KEYS")throw new Error("I couldn't answer just now. Please try your message again in a little while.");
     if (!r.ok || !d?.reply) throw new Error(d?.error || `Tivals AI failed (${r.status}).`);
     return String(d.reply);
   } finally {
