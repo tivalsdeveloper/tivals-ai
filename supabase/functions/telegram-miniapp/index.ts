@@ -119,7 +119,7 @@ async function voiceBusinessProfile(tg:number) {
 async function voiceAiReply(tg:number,transcript:string,history:any[]) {
   const safeHistory=(Array.isArray(history)?history:[]).slice(-6).map((m:any)=>({role:m?.role==="assistant"?"assistant":"user",content:String(m?.content||"").slice(0,1500)})).filter((m:any)=>m.content);
   const r=await fetch(TIVALS_AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"tivals-ai",business_profile:await voiceBusinessProfile(tg),messages:[...safeHistory,{role:"user",content:transcript+"\n\nReply naturally for a spoken conversation. Be clear and concise."}]})});
-  const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error(d?.error||"Tivals AI could not answer.");
+  const d=await r.json().catch(()=>({}));if(d?.code==="ALL_PROVIDERS_FAILED"||d?.code==="NO_PROVIDER_KEYS")throw new Error("I couldn't answer just now. Please try again in a little while.");if(!r.ok||!d?.reply)throw new Error(d?.error||"Tivals AI could not answer.");
   return String(d.reply).slice(0,3500);
 }
 async function paidAccess(tg:number) {
