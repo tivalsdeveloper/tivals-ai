@@ -706,12 +706,25 @@ function githubRepositoryCreateIntent(text:string) {
 }
 
 function githubFileWriteIntent(text:string) {
-  return /\b(?:create|edit|update|change|replace)\s+(?:a\s+|the\s+)?file\b/i.test(String(text || ""));
+  return /\b(?:create|edit|update|change|replace|fix)\s+(?:a\s+|the\s+)?(?:file|code|source(?:\s+code)?)\b/i.test(String(text || ""));
 }
 
 function githubFileTarget(text:string) {
   const match=String(text || "").match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\s]+)/);
   return match ? {repository:match[1],path:match[2].replace(/^\/+/,"")} : null;
+}
+
+function githubBrowseTarget(text:string) {
+  const match=String(text || "").match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?::([^\s]+))?/);
+  return match ? {repository:match[1],path:(match[2]||"").replace(/^\/+|\/+$/g,"")} : null;
+}
+
+function githubListIntent(text:string) {
+  return /\b(?:list|show|browse)\s+(?:(?:the|all)\s+)?(?:files|folders|directory|source\s+files)\b/i.test(text);
+}
+
+function githubReadIntent(text:string) {
+  return /\b(?:read|show|open|view)\s+(?:(?:the|this)\s+)?(?:file|code|source(?:\s+code)?)\b/i.test(text);
 }
 
 function decodeGithubText(contentBase64:string) {
@@ -1168,6 +1181,9 @@ function toolsHelpText() {
     "• `@gmail send email to name@example.com about ...`",
     "• `@github check my GitHub account`",
     "• `@github inspect tivalsdeveloper/tivals-ai`",
+    "• `@github list files owner/repository` (or `owner/repository:path/to/folder`)",
+    "• `@github read file owner/repository:path/to/file.ts`",
+    "• `@github fix code owner/repository:path/to/file.ts to ...`",
     "• `@github create issue in owner/repository about ...`",
     "• `@github edit file owner/repository:path with ...`",
     "• `@github create file owner/repository:path containing ...`",
@@ -1292,6 +1308,24 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
       const contentBase64=bytesToB64(new TextEncoder().encode(draft.content));
       await showGithubFileConfirmation(chatId,tg,target.repository,target.path,contentBase64,draft.message,String(current?.sha || ""),"AI-generated text");
       return "github-file-draft";
+    }
+    if(githubListIntent(request)) {
+      const target=githubBrowseTarget(request);
+      if(!target) throw new Error("Include a repository, such as `@github list files owner/repository`.");
+      const result=await oauthCall("github_directory",tg,"github",target);
+      const entries=Array.isArray(result?.entries)?result.entries:[];
+      const lines=entries.map((entry:any)=>`${entry.type==="dir"?"📁":"📄"} ${entry.path}`);
+      await sendFormatted(chatId,`**${result.repository}${result.path?`:${result.path}`:""}**\n\n${lines.join("\n")||"This folder is empty."}${result.truncated?"\n\nOnly the first 100 entries are shown.":""}\n\nTo open a folder: \`@github list files ${result.repository}:folder/path\`\nTo read code: \`@github read file ${result.repository}:path/to/file\``,business);
+      return "github-directory";
+    }
+    if(githubReadIntent(request)) {
+      const target=githubFileTarget(request);
+      if(!target) throw new Error("Include a file, such as `@github read file owner/repository:path/to/file.ts`.");
+      const file=await oauthCall("github_file",tg,"github",target);
+      if(Number(file?.size||0)>120_000) throw new Error("This file is too large to read in Telegram (120 KB maximum).");
+      const source=decodeGithubText(String(file?.content_base64||""));
+      await sendFormatted(chatId,`**${file.repository}:${file.path}**\n\n${source.length>12000?"Showing the first 12,000 characters. Open GitHub for the full file.\n\n":""}\`\`\`\n${source.slice(0,12000).replace(/\`\`\`/g,"` ` `")}\n\`\`\`\nhttps://github.com/${file.repository}/blob/HEAD/${file.path.split("/").map(encodeURIComponent).join("/")}`,business);
+      return "github-file-read";
     }
     const selectedRepository = selectGithubRepository(request, d);
     if (selectedRepository) {
