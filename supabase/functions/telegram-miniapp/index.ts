@@ -508,7 +508,7 @@ Deno.serve(async req => {
       if(enabled&&!bot?.is_active)return json({error:"Connect your personal Telegram bot first."},400);
       const status=await oauth("status",tg),gmail=(status?.connections||[]).find((x:any)=>x?.provider==="gmail");
       if(enabled&&(!gmail||gmail.needs_reconnect))return json({error:"Connect Gmail before enabling hourly monitoring."},400);
-      const row={telegram_user_id:tg,enabled,notify_chat_id:tg,interval_minutes:60,auto_draft_replies:true,last_error:null,updated_at:new Date().toISOString()};
+      const row={telegram_user_id:tg,enabled,notify_chat_id:tg,interval_minutes:60,auto_draft_replies:true,...(enabled?{last_checked_at:new Date().toISOString()}:{}),last_error:null,updated_at:new Date().toISOString()};
       const {data,error}=await sb.from("telegram_gmail_monitor_settings").upsert(row,{onConflict:"telegram_user_id"}).select("enabled,interval_minutes,auto_draft_replies,last_checked_at,last_success_at,last_error").single();if(error)throw error;
       return json({ok:true,gmail_monitor:data});
     }
