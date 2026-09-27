@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-11"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-12"}}
   }).catch(()=>null);
 }
 
@@ -269,7 +269,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260926-11"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-12"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
   } catch(e) {
@@ -377,9 +377,9 @@ async function getDashboard(tg:number) {
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
       owner_only_invites:bot?.owner_only_invites!==false
     },
-    connectors:["gmail","github","tiktok",...(Number(shopifyOwner?.telegram_user_id||0)===tg||shopifyConnection?["shopify"]:[]),"website"].map(provider=>{
+    connectors:["gmail","github","tiktok","shopify","website"].map(provider=>{
       const hit=provider==="shopify"?shopifyConnection:list.find((x:any)=>x?.provider===provider);
-      return { provider, connected:Boolean(hit), account_label:hit?.account_label || "" };
+      return { provider, connected:Boolean(hit), account_label:hit?.account_label || "", ...(provider==="shopify"?{public_store:true,can_connect:Number(shopifyOwner?.telegram_user_id||0)===tg}:{}) };
     })
   };
 }
@@ -400,7 +400,7 @@ async function getPersonalBotDashboard(tg:number) {
   return {
     plan:planData,
     usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
-    connectors:["gmail","github",...(shopifyConnection?["shopify"]:[])].map(provider=>{const hit=provider==="shopify"?shopifyConnection:connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect)};}),
+    connectors:["gmail","github","shopify"].map(provider=>{const hit=provider==="shopify"?shopifyConnection:connections.find((x:any)=>x?.provider===provider);return{provider,connected:Boolean(hit&&!hit.needs_reconnect),account_label:hit?.account_label||"",persistent_until:hit?.persistent_until||null,needs_reconnect:Boolean(hit?.needs_reconnect),...(provider==="shopify"?{public_store:true,can_connect:Boolean(shopifyConnection)}:{})};}),
     gmail_monitor:{enabled:Boolean(monitor?.enabled),interval_minutes:Number(monitor?.interval_minutes||60),auto_draft_replies:monitor?.auto_draft_replies!==false,last_checked_at:monitor?.last_checked_at||null,last_success_at:monitor?.last_success_at||null,last_error:monitor?.last_error||""},
     bot_connector:{
       connected:Boolean(bot?.is_active),bot_kind:bot?.bot_kind||"personal",account_label:bot?.account_label||"",username:bot?.username||"",
@@ -549,6 +549,7 @@ Deno.serve(async req => {
       return json({ok:true,url:d.url||""});
     }
     if(action==="shopify_products")return json(await oauth("shopify_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
+    if(action==="shopify_public_products")return json(await oauth("shopify_public_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
 
     if (action==="connect_own_bot") {
       const d=await connectOwnedBot(tg,String(body?.bot_token||""));
