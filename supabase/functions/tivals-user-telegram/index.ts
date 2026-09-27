@@ -918,7 +918,7 @@ Deno.serve(async (req: Request) => {
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
-    const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i);
+    const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(mediaCommand){
       const kind=String(mediaCommand[1]).toLowerCase() as "image"|"video"; const prompt=String(mediaCommand[2]||"").trim();
       if(!prompt){await reply(token,chatId,"Usage: /"+kind+" describe what you want to generate.",businessConnectionId);return json({ok:true,route:kind+"-help"});}
