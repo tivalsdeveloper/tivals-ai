@@ -794,7 +794,19 @@ Deno.serve(async (req: Request) => {
           await telegram(token,"sendMessage",{chat_id:chatId,text:`<b>${esc(toolText(product.title,120))}</b>\n${esc(toolText(product.description||"",240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url}]]},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
         }
         return json({ok:true,route:"store",count:products.length});
-      }catch(error){await reply(token,chatId,"The store is temporarily unavailable. Please try again later.",businessConnectionId);console.error("Store lookup failed",String((error as Error)?.message||error));return json({ok:true,route:"store-error"});}
+      }catch(error){
+        const detail=String((error as Error)?.message||error);
+        console.error("Store lookup failed",detail);
+        const accessDenied=/Shopify denied product access|access denied for products field|read_products/i.test(detail);
+        const expired=/Shopify access expired|Reconnect your store/i.test(detail);
+        const message=accessDenied
+          ?"🛍️ Store products are unavailable because Shopify has not granted this store's app product access. The store owner can enable read_products, release the app version, and reconnect their store in the bot's Mini App."
+          :expired
+          ?"🛍️ This store's Shopify connection has expired. The store owner can reconnect it in the bot's Mini App."
+          :"🛍️ Store products could not be loaded right now. Please try again later.";
+        await reply(token,chatId,message,businessConnectionId);
+        return json({ok:true,route:"store-error"});
+      }
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
