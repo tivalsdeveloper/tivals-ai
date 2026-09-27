@@ -706,12 +706,19 @@ function githubRepositoryCreateIntent(text:string) {
 }
 
 function githubFileWriteIntent(text:string) {
-  return /\b(?:create|edit|update|change|replace|fix)\s+(?:a\s+|the\s+)?(?:file|code|source(?:\s+code)?)\b/i.test(String(text || ""));
+  return /\b(?:create|edit|update|change|replace|fix|append)\s+(?:a\s+|the\s+)?(?:file|code|source(?:\s+code)?)\b|\b(?:add|append)\s+(?:this\s+)?(?:text|code|content)?\s*(?:to|into)\s+(?:the\s+)?file\b/i.test(String(text || ""));
 }
 
 function githubFileTarget(text:string) {
   const match=String(text || "").match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\s]+)/);
-  return match ? {repository:match[1],path:match[2].replace(/^\/+/,"")} : null;
+  if(match)return {repository:match[1],path:match[2].replace(/^\/+|[.,;]+$/g,"")};
+  const natural=String(text||"").match(/\b(?:in|on)\s+(?:the\s+)?(?:repository|repo)\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[\s,;]+(?:create|add|edit|fix|update|read|open)\s+(?:a\s+|the\s+)?(?:new\s+)?(?:file|code)\s+([A-Za-z0-9_./-]+)/i);
+  return natural?{repository:natural[1],path:natural[2].replace(/^\/+|[.,;]+$/g,"")}:null;
+}
+
+function githubLiteralAddition(text:string){
+  const match=text.match(/\b(?:add|append)\s+(?:this\s+)?(?:text|code|content)?\s*(?:to|into)\s+(?:the\s+)?file\s+\S+\s*\|\s*([\s\S]+)/i);
+  return match?.[1]?.trim()||"";
 }
 
 function githubBrowseTarget(text:string) {
@@ -1187,6 +1194,7 @@ function toolsHelpText() {
     "• `@github create issue in owner/repository about ...`",
     "• `@github edit file owner/repository:path with ...`",
     "• `@github create file owner/repository:path containing ...`",
+    "• `@github add to file owner/repository:path | exact text`",
     "• Send a document with caption `@github upload owner/repository:path`",
     "• `@github create repository NAME as private`",
     "• `@website check my website account`",
@@ -1304,7 +1312,10 @@ async function handleToolRequest(chatId: number|string, tg: number, toolReq: Too
       if(!creating && !current?.sha) throw new Error("That file does not exist. Use `create file` instead.");
       if(Number(current?.size || 0)>120_000) throw new Error("AI editing is limited to text files up to 120 KB. Upload a replacement file instead.");
       const existing=current?.content_base64 ? decodeGithubText(String(current.content_base64)) : null;
-      const draft=await createGithubFileDraftWithAI(request,tg,existing);
+      const addition=!creating?githubLiteralAddition(request):"";
+      if(!addition && existing && existing.length>16000) throw new Error("AI editing is limited to 16,000 characters so the complete file can be reviewed. Use `add to file ... | exact text` or upload a replacement.");
+      const draft=addition?{content:`${existing||""}${existing&&!existing.endsWith("\n")?"\n":""}${addition}\n`,message:`Append to ${target.path}`} : await createGithubFileDraftWithAI(request,tg,existing);
+      if(new TextEncoder().encode(draft.content).length>120_000) throw new Error("The updated file exceeds the 120 KB text limit.");
       const contentBase64=bytesToB64(new TextEncoder().encode(draft.content));
       await showGithubFileConfirmation(chatId,tg,target.repository,target.path,contentBase64,draft.message,String(current?.sha || ""),"AI-generated text");
       return "github-file-draft";
