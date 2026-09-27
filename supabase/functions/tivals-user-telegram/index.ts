@@ -274,7 +274,7 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
   ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`",
   image:"🖼️ **Image understanding**\n\nAttach a photo and add your question as the caption. I can describe it, read visible text and answer questions about it.",
   voice:"🎙️ **Voice**\n\nSend a Telegram voice note. I will transcribe it, answer naturally and return a spoken reply when voice replies are enabled.",
-  reminder:"⏰ **Reminders**\n\nUse `/remind tomorrow at 7 PM | Study mathematics` or say `Remind me tomorrow at 7 PM to study mathematics`.",
+  reminder:"⏰ **Reminders**\n\nUse `/remind tomorrow at 7 PM | Study mathematics` for a personal reminder. The bot owner can use `/reminder email on` to check Gmail hourly and get suggested replies.",
   chats:"💬 **Personal chats**\n\nUse `/newchat` to start fresh and `/chats` to continue an earlier conversation.",
   tutor:"🎓 **Learning tools**\n\nUse `/lesson topic`, `/explain topic`, `/quiz topic`, or `/practice topic`."
 };
@@ -291,7 +291,7 @@ async function answerInlineToolSuggestions(token:string,query:any){const needle=
 function personalBotCommands(){return[
   {command:"start",description:"Start a conversation"},{command:"help",description:"Show commands and AI tools"},{command:"ask",description:"Ask in a group or channel"},
   {command:"store",description:"Browse products and shop"},
-  {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminders",description:"View upcoming reminders"},
+  {command:"newchat",description:"Start a fresh private chat"},{command:"chats",description:"Continue a previous private chat"},{command:"remind",description:"Create a personal reminder"},{command:"reminder",description:"Set hourly email checks"},{command:"reminders",description:"View upcoming reminders"},
   {command:"lesson",description:"Start a lesson on a topic"},{command:"explain",description:"Explain a concept clearly"},{command:"quiz",description:"Create a short quiz"},{command:"practice",description:"Give practice questions"},
   {command:"search",description:"Search the live web"},{command:"youtube",description:"Search videos and preview in chat"},{command:"tools",description:"Show all @ AI tools"},{command:"app",description:"Open the owner dashboard"},{command:"dashboard",description:"Open the owner dashboard"},{command:"settings",description:"Open bot settings"},
   {command:"grouphelp",description:"How to use this bot in groups"},{command:"connect",description:"Owner: connect tools"},{command:"accounts",description:"Owner: view connected tools"},
@@ -529,6 +529,24 @@ async function reminderDraft(profile:any,text:string,timeZone:string) {
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20_000);try{const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},{role:"user",content:prompt}]}),signal:controller.signal});const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error("I could not prepare that reminder.");return parseReminderJson(String(d.reply));}finally{clearTimeout(timer);}
 }
 function reminderDisplay(date:string,timeZone:string) {try{return new Intl.DateTimeFormat("en-ZA",{timeZone,dateStyle:"medium",timeStyle:"short"}).format(new Date(date));}catch{return new Date(date).toISOString();}}
+async function emailReminder(ownerId:number, mode:string) {
+  const {data:connection,error:connectionError}=await sb.from("telegram_oauth_connections").select("needs_reconnect").eq("telegram_user_id",ownerId).eq("provider","gmail").maybeSingle();
+  if(connectionError)throw connectionError;
+  const {data:settings,error:settingsError}=await sb.from("telegram_gmail_monitor_settings").select("enabled,last_success_at,last_error").eq("telegram_user_id",ownerId).maybeSingle();
+  if(settingsError)throw settingsError;
+  if(mode==="on"){
+    if(!connection||connection.needs_reconnect)throw new Error("Connect Gmail with /connect before turning on hourly email checks.");
+    const {error}=await sb.from("telegram_gmail_monitor_settings").upsert({telegram_user_id:ownerId,enabled:true,notify_chat_id:ownerId,interval_minutes:60,auto_draft_replies:true,last_checked_at:settings?.enabled?undefined:new Date().toISOString(),last_error:null,updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+    if(error)throw error;
+    return "Hourly Gmail checks are on. New unread emails will be shown here with suggested replies. Nothing is sent until you approve a reply. Use /reminder email off to stop.";
+  }
+  if(mode==="off"){
+    const {error}=await sb.from("telegram_gmail_monitor_settings").update({enabled:false,updated_at:new Date().toISOString()}).eq("telegram_user_id",ownerId);
+    if(error)throw error;
+    return "Hourly Gmail checks are off. Use /reminder email on to restart them.";
+  }
+  return `Hourly Gmail checks: ${settings?.enabled?"on":"off"}. ${connection?"Gmail connected.":"Connect Gmail with /connect first."} Use /reminder email on or /reminder email off. Personal reminders use /remind tomorrow at 7 PM | Study mathematics.`;
+}
 async function createReminder(ownerId:number,creatorId:number,chatId:number,message:string,when:Date,timeZone:string) {
   if(!message)throw new Error("Add a message after the reminder time.");if(when.getTime()<=Date.now()+60_000)throw new Error("Choose a reminder time at least one minute in the future.");if(when.getTime()>Date.now()+366*24*60*60_000)throw new Error("Reminders can be scheduled up to one year ahead.");
   const {data,error}=await sb.from("telegram_personal_reminders").insert({bot_owner_id:ownerId,creator_id:creatorId,chat_id:chatId,message,remind_at:when.toISOString(),timezone:timeZone,status:"pending"}).select("id,message,remind_at,timezone").single();if(error)throw error;return data;
@@ -827,11 +845,11 @@ Deno.serve(async (req: Request) => {
     const disconnect=text.match(/^\/disconnect_(gmail|github|tiktok|website)$/i);
     if(disconnect&&ownerPrivate){const provider=disconnect[1].toLowerCase();await oauth("disconnect",paywallOwner,provider);if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner);await reply(token,chatId,`✅ ${disconnect[1]} disconnected from your personal bot.`);return json({ok:true,route:"owner-disconnect",provider});}
     if(/^\/(?:tools|help)$/i.test(text)){
-      await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
+      await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n/reminder email on · /reminder email off · /reminder status\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
     if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await sendYouTubeSearch(token,chatId,query,businessConnectionId);return json({ok:true,route:"youtube"})}
-    if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|emails|unread|findemail|reademail|replyemail|sendemail|disconnect_)/i.test(text)||parseToolRequest(text))) {
+    if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
     }
     if (text === "@") {
@@ -895,6 +913,12 @@ Deno.serve(async (req: Request) => {
     }
     if(privateConversation&&/^\/reminders(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await showReminders(token,chatId,paywallOwner,senderId);return json({ok:true,route:"reminders"});
+    }
+    const emailReminderCommand=text.match(/^\/reminder(?:@[A-Za-z0-9_]+)?(?:\s+(?:email\s+)?(on|off|status))?$/i);
+    if(emailReminderCommand){
+      if(!ownerPrivate){await reply(token,chatId,"Only the bot owner can enable Gmail checks in a direct chat.");return json({ok:true,route:"email-reminder-owner-only"});}
+      await reply(token,chatId,await emailReminder(paywallOwner,String(emailReminderCommand[1]||"status").toLowerCase()));
+      return json({ok:true,route:"email-reminder"});
     }
     if(privateConversation&&reminderIntent(text)){
       const explicit=/^\/remind\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\|/i.test(text);if(!explicit)await consumeOwnerAiUsage(paywallOwner);
