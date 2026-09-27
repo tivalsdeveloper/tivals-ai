@@ -1591,7 +1591,18 @@ function audioFormat(mime:string) {
   return "ogg";
 }
 
+async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
+  const key=Deno.env.get("NVIDIA_API_KEY")||""; if(!key) return "";
+  try{
+    const format=String(mime||"audio/ogg").split(";")[0]||"audio/ogg";
+    const audio=`data:${format};base64,${bytesToB64(bytes)}`;
+    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"microsoft/phi-4-multimodal-instruct",messages:[{role:"user",content:`<audio src="${audio}" /> Transcribe this voice note exactly. Return only the spoken words.`}],max_tokens:1200,temperature:0})});
+    const d=await r.json().catch(()=>({})); const c=d?.choices?.[0]?.message?.content; const text=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||x||"")).join(" ").trim():"";
+    if(r.ok&&text)return text.slice(0,4000);
+  }catch(e){console.error("NVIDIA transcription failed",e)} return "";
+}
 async function transcribeVoice(bytes:Uint8Array,mime:string) {
+  const nvidiaText=await nvidiaTranscribe(bytes,mime); if(nvidiaText)return nvidiaText;
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
   if(key)try{
     const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});
