@@ -209,11 +209,12 @@ async function syncBotPresentation(token:string,profile:any) {
   const purpose=String(profile?.bot_purpose||"general");
   const subjects=Array.isArray(profile?.subjects)?profile.subjects.slice(0,8).join(", "):"";
   const description=String(profile?.custom_instructions||profile?.personality||"").trim().slice(0,430);
-  const short=purpose==="coding"?"A personal programming tutor":purpose==="math"?"A personal mathematics tutor":purpose==="education"?`A personal tutor${subjects?` for ${subjects}`:""}`:"A personal AI assistant";
+  const kind=profile?.bot_kind==="business"?"Business":"Personal";
+  const short=purpose==="coding"?`${kind} programming tutor`:purpose==="math"?`${kind} mathematics tutor`:purpose==="education"?`${kind} tutor${subjects?` for ${subjects}`:""}`:`${kind} AI assistant`;
   await Promise.all([
     botApi(token,"setMyName",{name}),
     botApi(token,"setMyShortDescription",{short_description:short.slice(0,120)}),
-    botApi(token,"setMyDescription",{description:(description||`${name} is a helpful, natural AI assistant.`).slice(0,512)}),
+    botApi(token,"setMyDescription",{description:`${kind} bot · ${(description||`${name} is a helpful, natural AI assistant.`)}`.slice(0,512)}),
     botApi(token,"setMyCommands",{commands:botCommands(purpose)})
   ]);
 }
@@ -225,7 +226,8 @@ async function botApi(token:string, method:string, payload?:Record<string,unknow
   if(!r.ok || d?.ok===false) throw new Error(d?.description || `Telegram ${method} failed.`);
   return d?.result;
 }
-async function connectOwnedBot(tg:number,rawToken:string) {
+async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
+  if(!["personal","business"].includes(botKind))throw new Error("Choose Personal bot or Business bot.");
   const access=await personalBotAccess(tg);if(!access.allowed)throw new Error("Your personal bot free trial has ended. Choose Basic or Pro to reconnect or continue using it.");
   const token=String(rawToken||"").trim();
   if(!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid BotFather token.");
@@ -251,7 +253,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     bot_name:String(me.first_name||"My AI").slice(0,64),
     token_enc:await encrypt(token),
     webhook_secret_enc:await encrypt(secret),
-    is_active:true,bot_kind:"business",
+    is_active:true,bot_kind:botKind,
     updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
   if(error) {
@@ -271,7 +273,7 @@ async function connectOwnedBot(tg:number,rawToken:string) {
     await botApi(token,"setChatMenuButton",{
       menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-14"}}
     }).catch(()=>null);
-    await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general"}).catch(()=>null);
+    await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general",bot_kind:botKind});
   } catch(e) {
     await sb.from("telegram_owned_bots")
       .update({is_active:false,updated_at:new Date().toISOString()})
@@ -557,7 +559,7 @@ Deno.serve(async req => {
     if(action==="shopify_bot_products")return json(await oauth("shopify_bot_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
 
     if (action==="connect_own_bot") {
-      const d=await connectOwnedBot(tg,String(body?.bot_token||""));
+      const d=await connectOwnedBot(tg,String(body?.bot_token||""),String(body?.bot_kind||"personal"));
       return json({ok:true,...d});
     }
 
@@ -575,6 +577,7 @@ Deno.serve(async req => {
       const groups=["off","mentions","all"];
       const channels=["off","commands","all"];
       const botName=String(body?.bot_name||"").trim().slice(0,64);
+      if(body?.bot_kind!==undefined && !["personal","business"].includes(String(body.bot_kind)))return json({error:"Choose Personal bot or Business bot."},400);
       if(!botName)return json({error:"Enter a name for your bot."},400);
       const subjects=(Array.isArray(body?.subjects)?body.subjects:String(body?.subjects||"").split(","))
         .map((x:any)=>String(x).trim().slice(0,80)).filter(Boolean).slice(0,20);
@@ -582,6 +585,7 @@ Deno.serve(async req => {
       if(!validTimezone(timezone))return json({error:"Choose a valid timezone, for example Africa/Johannesburg."},400);
       const row={
         bot_name:botName,
+        ...(body?.bot_kind!==undefined?{bot_kind:String(body.bot_kind)}:{}),
         bot_purpose:purposes.includes(String(body?.bot_purpose))?String(body.bot_purpose):"general",
         personality:String(body?.personality||"").trim().slice(0,1000)||"Friendly, natural and helpful",
         custom_instructions:String(body?.custom_instructions||"").trim().slice(0,8000),subjects,
@@ -600,7 +604,18 @@ Deno.serve(async req => {
       if(currentError)throw currentError;if(!current?.is_active||!current?.token_enc)return json({error:"Connect your Telegram bot first."},400);
       const {data,error}=await sb.from("telegram_owned_bots").update(row).eq("telegram_user_id",tg).select(BOT_PROFILE_COLUMNS).single();
       if(error)throw error;
-      await syncBotPresentation(await decrypt(String(current.token_enc)),data).catch(()=>null);
+      try{await syncBotPresentation(await decrypt(String(current.token_enc)),data)}catch(e){return json({ok:true,bot:data,profile_sync_error:String((e as Error)?.message||e)});}
+      return json({ok:true,bot:data});
+    }
+
+    if(action==="set_bot_kind") {
+      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Your bot trial has ended. Choose Basic or Pro to continue."},403);
+      const kind=String(body?.bot_kind||"");if(!["personal","business"].includes(kind))return json({error:"Choose Personal bot or Business bot."},400);
+      const {data:current,error:lookupError}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
+      if(lookupError)throw lookupError;if(!current?.is_active||!current?.token_enc)return json({error:"Connect your Telegram bot first."},400);
+      const {data,error}=await sb.from("telegram_owned_bots").update({bot_kind:kind,updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).select(BOT_PROFILE_COLUMNS).single();
+      if(error)throw error;
+      try{await syncBotPresentation(await decrypt(String(current.token_enc)),data)}catch(e){return json({ok:true,bot:data,profile_sync_error:String((e as Error)?.message||e)});}
       return json({ok:true,bot:data});
     }
 
