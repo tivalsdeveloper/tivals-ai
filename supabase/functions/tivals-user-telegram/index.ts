@@ -835,7 +835,7 @@ Deno.serve(async (req: Request) => {
       try{
         const data=await oauth("shopify_bot_products",paywallOwner||0,"shopify",{query:term});
         const products=Array.isArray(data?.products)?data.products:[];
-        if(!products.length){await reply(token,chatId,term?`No published products found for “${term}”. Try /store to browse.`:"No products are published to the Shopify Online Store yet. The store owner can publish them in Shopify admin.",businessConnectionId);return json({ok:true,route:"store-empty"});}
+        if(!products.length){const count=Number(data?.catalogCount||0);await reply(token,chatId,count>0?`🛍️ The store has ${count} ${count===1?"product":"products"}, but Shopify has not supplied a public Online Store link for ${count===1?"it":"them"} yet. The store owner can publish the products to the Online Store sales channel in Shopify admin, then try /store again.`:term?`No products found for “${term}”. Try /store to browse.`:"No active products are available in this store yet.",businessConnectionId);return json({ok:true,route:"store-empty"});}
         await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
         for(const product of products){
           const url=String(product.onlineStoreUrl||""),price=product.priceRangeV2?.minVariantPrice;
