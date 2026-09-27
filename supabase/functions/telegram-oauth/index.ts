@@ -642,30 +642,52 @@ async function isShopifyOwner(tg:number){
   const {data}=await sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle();
   return Number(data?.telegram_user_id||0)===tg;
 }
+async function shopifyApp(tg:number){
+  const {data,error}=await sb.from("telegram_shopify_app_credentials").select("shop_domain,client_id,client_secret_enc").eq("telegram_user_id",tg).maybeSingle();
+  if(error)throw error;
+  if(data)return {shop:shopDomain(String(data.shop_domain)),clientId:String(data.client_id),clientSecret:await decrypt(String(data.client_secret_enc))};
+  if(await isShopifyOwner(tg))return {shop:SHOPIFY_STORE,clientId:SHOPIFY_CLIENT_ID,clientSecret:SHOPIFY_CLIENT_SECRET};
+  return null;
+}
+async function configureShopifyApp(tg:number,rawShop:string,rawId:string,rawSecret:string){
+  if(!Number.isSafeInteger(tg)||tg<=0)throw new Error("Invalid Telegram user.");
+  const {data:bot,error:botError}=await sb.from("telegram_owned_bots").select("telegram_user_id").eq("telegram_user_id",tg).eq("is_active",true).maybeSingle();
+  if(botError||!bot)throw new Error("Connect your Telegram bot before adding a Shopify store.");
+  const shop=shopDomain(rawShop),clientId=rawId.trim(),secret=rawSecret.trim();
+  if(!shop)throw new Error("Enter your store's .myshopify.com domain.");
+  if(clientId.length<8||clientId.length>200||secret.length<12||secret.length>300)throw new Error("Enter a valid Shopify app client ID and client secret.");
+  const {data:old}=await sb.from("telegram_shopify_app_credentials").select("shop_domain,client_id").eq("telegram_user_id",tg).maybeSingle();
+  const {data:connected}=await sb.from("telegram_oauth_connections").select("metadata").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle();
+  const {error}=await sb.from("telegram_shopify_app_credentials").upsert({telegram_user_id:tg,shop_domain:shop,client_id:clientId,client_secret_enc:await encrypt(secret),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+  if(error)throw error;
+  if((old&&(old.shop_domain!==shop||old.client_id!==clientId))||(connected&&shopDomain(String(connected.metadata?.shop||""))!==shop))await sb.from("telegram_oauth_connections").delete().eq("telegram_user_id",tg).eq("provider","shopify");
+  return shop;
+}
 async function shopifyLink(req:Request,tg:number,rawShop:string) {
   if(!internal(req))return json({error:"Unauthorized"},401);
-  if(!SHOPIFY_CLIENT_ID||!SHOPIFY_CLIENT_SECRET)return json({error:"Shopify app setup is pending. Add the app credentials in the server settings before connecting a store."},503);
   if(!Number.isSafeInteger(tg)||tg<=0)return json({error:"Invalid Telegram user."},400);
-  if(!(await isShopifyOwner(tg)))return json({error:"Only the Tivalsdeveloper store owner can connect this Shopify store."},403);
-  const shop=shopDomain(rawShop);
-  if(shop!==SHOPIFY_STORE)return json({error:"This connector is currently for the Tivalsdeveloper Shopify store."},400);
+  const app=await shopifyApp(tg);
+  if(!app?.clientId||!app?.clientSecret)return json({error:"Set up a Shopify app for your store in the Mini App first."},400);
+  const shop=app.shop;
+  if(!shop||rawShop&&shopDomain(rawShop)!==shop)return json({error:"Your app is configured for a different Shopify store."},400);
   const state=await createState(tg,"shopify");
   const {error}=await sb.from("telegram_oauth_states").update({shop_domain:shop}).eq("state",state);
   if(error)throw error;
-  const q=new URLSearchParams({client_id:SHOPIFY_CLIENT_ID,scope:"read_products",redirect_uri:SHOPIFY_REDIRECT_URI,state});
+  const q=new URLSearchParams({client_id:app.clientId,scope:"read_products",redirect_uri:SHOPIFY_REDIRECT_URI,state});
   return json({url:`https://${shop}/admin/oauth/authorize?${q}`});
 }
 async function shopifyProducts(tg:number,term:string) {
-  if(!(await isShopifyOwner(tg)))throw new Error("Shopify is available only to the connected store owner.");
   const {data:conn,error}=await sb.from("telegram_oauth_connections").select("access_token_enc,refresh_token_enc,expires_at,account_label,metadata").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle();
   if(error)throw error;
   const shop=shopDomain(String(conn?.metadata?.shop||""));
-  if(shop!==SHOPIFY_STORE||!conn?.access_token_enc)throw new Error("Connect Shopify in the Mini App first.");
+  if(!shop||!conn?.access_token_enc)throw new Error("Connect Shopify in the Mini App first.");
   let token=await decrypt(String(conn.access_token_enc));
   if(conn.expires_at&&new Date(conn.expires_at).getTime()<Date.now()+120_000){
     const refresh=await decrypt(String(conn.refresh_token_enc||""));
     if(!refresh)throw new Error("Shopify access expired. Reconnect your store.");
-    const request=new URLSearchParams({client_id:SHOPIFY_CLIENT_ID,client_secret:SHOPIFY_CLIENT_SECRET,grant_type:"refresh_token",refresh_token:refresh});
+    const app=await shopifyApp(tg);
+    if(!app||app.shop!==shop)throw new Error("Shopify app settings have changed. Reconnect your store.");
+    const request=new URLSearchParams({client_id:app.clientId,client_secret:app.clientSecret,grant_type:"refresh_token",refresh_token:refresh});
     const response=await fetch(`https://${shop}/admin/oauth/access_token`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:request});
     const next=await response.json().catch(()=>({}));
     if(!response.ok||!next.access_token)throw new Error("Shopify access expired. Reconnect your store.");
@@ -678,7 +700,7 @@ async function shopifyProducts(tg:number,term:string) {
   const r=await fetch(`https://${shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":token},body:JSON.stringify({query,variables:{q:search?`title:*${search}*`:"status:active"}})});
   const d=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
-  if(!r.ok||d.errors?.length)throw new Error(d.errors?.[0]?.message||"Shopify product lookup failed.");
+  if(!r.ok||d.errors?.length){const message=String(d.errors?.[0]?.message||"Shopify product lookup failed.");throw new Error(/access denied|read_products/i.test(message)?"Shopify denied product access. In your Shopify app, grant read_products, release the new app version, and reconnect the store.":message);}
   // Only expose products with a published storefront URL to bot visitors.
   return {shop,products:(d.data?.products?.nodes||[]).filter((p:any)=>{try{const url=new URL(String(p.onlineStoreUrl||""));return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false}}).slice(0,6)};
 }
@@ -687,6 +709,13 @@ async function publicShopifyProducts(term:string) {
   if(error||!owner?.telegram_user_id)throw new Error("The store is temporarily unavailable.");
   // The stored token remains private to its owner; callers see published products only.
   return shopifyProducts(Number(owner.telegram_user_id),term);
+}
+async function botShopifyProducts(tg:number,term:string){
+  if(Number.isSafeInteger(tg)&&tg>0){
+    const {data}=await sb.from("telegram_oauth_connections").select("telegram_user_id").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle();
+    if(data)return shopifyProducts(tg,term);
+  }
+  return publicShopifyProducts(term);
 }
 
 async function tiktokConnection(tg: number) {
@@ -900,30 +929,36 @@ Deno.serve(async (req: Request) => {
   const u = new URL(req.url);
 
   if(req.method==="GET"&&u.pathname.endsWith("/shopify/callback")){
-    const done=(message:string,success=false)=>success
-      ? Response.redirect("https://t.me/Tivalsdeveloper1Bot?start=shopify_connected",303)
+    const done=(message:string,success=false,botUsername="")=>success
+      ? Response.redirect(`https://t.me/${/^[A-Za-z0-9_]{5,32}$/.test(botUsername)?botUsername:"Tivalsdeveloper1Bot"}?start=shopify_connected`,303)
       : new Response(`Shopify connection failed: ${message}\nReturn to your Telegram bot and try again.`,{status:400,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}});
     const state=u.searchParams.get("state")||"",shop=shopDomain(u.searchParams.get("shop")||""),code=u.searchParams.get("code")||"";
     const st=await stateRow(state,"shopify");
-    if(!st||shop!==SHOPIFY_STORE||shop!==st.shop_domain||!code||!SHOPIFY_CLIENT_SECRET)return done("This link is invalid or expired. Open the Mini App and try again.");
+    const app=st?await shopifyApp(Number(st.telegram_user_id)):null;
+    if(!st||!shop||shop!==st.shop_domain||shop!==app?.shop||!code||!app?.clientSecret)return done("This link is invalid or expired. Open the Mini App and try again.");
     const received=u.searchParams.get("hmac")||"";
     const message=[...u.searchParams.entries()].filter(([k])=>k!=="hmac"&&k!=="signature").sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join("&");
-    const key=await crypto.subtle.importKey("raw",enc.encode(SHOPIFY_CLIENT_SECRET),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+    const key=await crypto.subtle.importKey("raw",enc.encode(app.clientSecret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
     const expected=new Uint8Array(await crypto.subtle.sign("HMAC",key,enc.encode(message)));
     const supplied=/^[0-9a-f]{64}$/i.test(received)?new Uint8Array(received.match(/.{2}/g)!.map(x=>parseInt(x,16))):new Uint8Array(0);
     let diff=expected.length^supplied.length;
     for(let i=0;i<expected.length;i++)diff|=expected[i]^(supplied[i]||0);
     if(diff)return done("Shopify authorization could not be verified.");
     try{
-      const body=new URLSearchParams({client_id:SHOPIFY_CLIENT_ID,client_secret:SHOPIFY_CLIENT_SECRET,code});
+      const body=new URLSearchParams({client_id:app.clientId,client_secret:app.clientSecret,code});
       const exchange=await fetch(`https://${shop}/admin/oauth/access_token`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded","accept":"application/json"},body});
       const credentials=await exchange.json().catch(()=>({}));
       if(!exchange.ok||!credentials.access_token)throw new Error("Shopify did not grant access. Check the app permissions.");
+      if(!String(credentials.scope||"").split(",").map((s:string)=>s.trim()).includes("read_products"))throw new Error("The Shopify app is missing read_products. Update its permissions and reconnect.");
       const probe=await fetch(`https://${shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":credentials.access_token},body:JSON.stringify({query:"{shop{name myshopifyDomain}}"})});
       const result=await probe.json().catch(()=>({}));
       if(!probe.ok||result.errors?.length||result.data?.shop?.myshopifyDomain?.toLowerCase()!==shop)throw new Error("Could not verify the Shopify store.");
+      const productProbe=await fetch(`https://${shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":credentials.access_token},body:JSON.stringify({query:"{products(first:1){nodes{id}}}"})});
+      const productResult=await productProbe.json().catch(()=>({}));
+      if(!productProbe.ok||productResult.errors?.length)throw new Error("Shopify denied product access. Grant read_products in the app, release its version, then reconnect.");
       await saveConnection(st,"shopify",{providerUserId:shop,label:shop,access:credentials.access_token,refresh:String(credentials.refresh_token||""),expiresAt:credentials.expires_in?new Date(Date.now()+Number(credentials.expires_in)*1000).toISOString():null,scope:String(credentials.scope||"read_products"),metadata:{shop}});
-      return done(`${shop} is connected.`,true);
+      const {data:bot}=await sb.from("telegram_owned_bots").select("username").eq("telegram_user_id",st.telegram_user_id).maybeSingle();
+      return done(`${shop} is connected.`,true,String(bot?.username||""));
     }catch(e){return done(String((e as Error)?.message||e));}
   }
 
@@ -1183,6 +1218,11 @@ Deno.serve(async (req: Request) => {
     try{return await shopifyLink(req,tg,String(body.shop||""));}
     catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
+  if(action==="configure_shopify_app"){
+    if(!internal(req))return json({error:"Unauthorized"},401);
+    try{return json({shop:await configureShopifyApp(tg,String(body.shop||""),String(body.client_id||""),String(body.client_secret||""))});}
+    catch(e){return json({error:String((e as Error)?.message||e)},400);}
+  }
   if (action === "create_github_user_link") {
     if (!internal(req)) return json({error:"Unauthorized"},401);
     try { return json(await githubUserAuthorizationLink(tg)); }
@@ -1208,6 +1248,10 @@ Deno.serve(async (req: Request) => {
   }
   if(action==="shopify_public_products"){
     try{return json(await publicShopifyProducts(String(body.query||"")));}
+    catch(e){return json({error:String((e as Error)?.message||e)},400);}
+  }
+  if(action==="shopify_bot_products"){
+    try{return json(await botShopifyProducts(tg,String(body.query||"")));}
     catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
   if(action==="gmail_refresh_health")return json({ok:true,client_id_configured:Boolean(GOOGLE_CLIENT_ID),client_secret_configured:Boolean(GOOGLE_CLIENT_SECRET)});
