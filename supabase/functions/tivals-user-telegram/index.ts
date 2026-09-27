@@ -130,7 +130,7 @@ function parseToolRequest(text:string) {
   return{tool:String(m[1]).toLowerCase(),request:String(m[2]||"").trim()};
 }
 function emailCommand(text:string) {
-  const m=String(text||"").trim().match(/^\/(findemail|reademail|replyemail)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  const m=String(text||"").trim().match(/^\/(email|findemail|reademail|replyemail)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
   return m?{command:m[1].toLowerCase(),args:String(m[2]||"").trim()}:null;
 }
 function emailAddress(header:string) {
@@ -588,6 +588,12 @@ async function showEmailConfirmation(token:string,chatId:number,tg:number,profil
   await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Confirm email</b>\n\n<b>To:</b> ${esc(draft.recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(preview)}\n\n<i>Nothing is sent until you confirm. This draft expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Send email",callback_data:`gmail_send:${id}`},{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]]}});
 }
 async function handleEmailCommand(token:string,chatId:number,tg:number,profile:any,command:{command:string;args:string}) {
+  if(command.command==="email") {
+    await consumeOwnerAiUsage(tg);
+    const d=await oauth("gmail_messages",tg,"gmail",{query:"",max_results:6});
+    await reply(token,chatId,emailSearchSummary(d));
+    return;
+  }
   if(!command.args){await reply(token,chatId,command.command==="findemail"?"Use `/findemail sender, subject, or Gmail search terms`":command.command==="reademail"?"Use `/reademail MESSAGE_ID` from /findemail results":"Use `/replyemail MESSAGE_ID | what you want to say` from /findemail results");return;}
   await consumeOwnerAiUsage(tg);
   if(command.command==="findemail"){
@@ -849,7 +855,7 @@ Deno.serve(async (req: Request) => {
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
     if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await sendYouTubeSearch(token,chatId,query,businessConnectionId);return json({ok:true,route:"youtube"})}
-    if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
+    if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|email|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
     }
     if (text === "@") {
