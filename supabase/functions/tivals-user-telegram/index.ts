@@ -204,9 +204,14 @@ async function oauth(action:string,tg:number,provider="",extra:Record<string,unk
   if(!r.ok) throw new Error(d?.error||"Connector request failed.");
   return d;
 }
-function githubTarget(request:string){const m=request.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?::([^\s]+))?/);return m?{repository:m[1],path:String(m[2]||"").replace(/^\/+|\/+$/g,"")}:null}
+function githubTarget(request:string){
+  const m=request.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?::([^\s]+))?/);
+  if(!m)return null;
+  const natural=request.match(/\b(?:in|on)\s+(?:the\s+)?(?:repository|repo)\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+[\s,;]+(?:create|add|edit|fix|update|read|open)\s+(?:a\s+|the\s+)?(?:new\s+)?(?:file|code)\s+([A-Za-z0-9_./-]+)/i);
+  return {repository:m[1],path:String(m[2]||natural?.[1]||"").replace(/^\/+|[.,;]+$/g,"")};
+}
 function githubDecode(encoded:string){const raw=atob(encoded.replace(/\s/g,""));return new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(raw,c=>c.charCodeAt(0)))}
-async function githubConfirmDraft(token:string,chatId:number,tg:number,action:"create_repository"|"upsert_file",repository:string,payload:Record<string,unknown>,preview:string){
+async function githubConfirmDraft(token:string,chatId:number,tg:number,action:"create_repository"|"upsert_file"|"create_issue",repository:string,payload:Record<string,unknown>,preview:string){
   const id=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:tg,chat_id:chatId,action,repository,payload,status:"pending",expires_at:new Date(Date.now()+600000).toISOString()});if(error)throw error;
   await telegram(token,"sendMessage",{chat_id:chatId,text:`🐙 <b>Confirm GitHub change</b>\n\n${esc(preview.slice(0,2200))}\n\nNothing changes until you confirm. Expires in 10 minutes.`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Confirm",callback_data:`github_personal_apply:${id}`},{text:"❌ Cancel",callback_data:`github_personal_cancel:${id}`}]]}});
 }
@@ -219,7 +224,7 @@ async function githubConfirmAction(token:string,q:any,tg:number,action:string,id
   const {data:claimed,error:claimError}=await sb.from("telegram_pending_github_actions").update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").gt("expires_at",new Date().toISOString()).select("*").maybeSingle();if(claimError)throw claimError;
   if(!claimed){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Already processing.",show_alert:true});return"github-duplicate"}
   await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Working on GitHub…"});
-  try{const d=claimed.action==="create_repository"?await oauth("github_create_repository",tg,"github",claimed.payload):await oauth("github_upsert_file",tg,"github",{repository:claimed.repository,...claimed.payload});await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`✅ GitHub ${claimed.action==="create_repository"?"repository created":"file updated"}\n${d.html_url||d.full_name||claimed.repository}`);return"github-applied"}
+  try{const d=claimed.action==="create_repository"?await oauth("github_create_repository",tg,"github",claimed.payload):claimed.action==="create_issue"?await oauth("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload.title,issue_body:claimed.payload.body}):await oauth("github_upsert_file",tg,"github",{repository:claimed.repository,...claimed.payload});await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`✅ GitHub ${claimed.action==="create_repository"?"repository created":claimed.action==="create_issue"?"issue created":"file updated"}\n${d.html_url||d.full_name||claimed.repository}`);return"github-applied"}
   catch(e){await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`GitHub could not confirm the change. Check GitHub before retrying. ${String((e as Error).message||e)}`);return"github-failed"}
 }
 async function ownerConnectMenu(token:string,chatId:number,tg:number,business="") {
@@ -262,7 +267,7 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
   reademail:"📖 **Read an email**\n\nFirst use `/findemail QUERY`, then copy its ID into `/reademail ID`.",
   replyemail:"↩️ **Reply to an email**\n\nFirst find and read the message. Then use `/replyemail ID | Thank them and ask for more details`. You must confirm before sending.",
   sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",
-  github:"🐙 **GitHub**\n\n`@github inspect owner/repository`\n`@github list files owner/repository`\n`@github read file owner/repository:path/to/file`\n`@github fix code owner/repository:path/to/file to ...`\n`@github create repository my-project as private`\n\nOnly the bot owner can access connected repositories.",
+  github:"🐙 **GitHub**\n\n`@github inspect owner/repository`\n`@github list files owner/repository`\n`@github read file owner/repository:path/to/file`\n`@github create file owner/repository:path/to/file containing ...`\n`@github add to file owner/repository:path/to/file | exact text`\n`@github fix code owner/repository:path/to/file to ...`\n`@github create issue in owner/repository | Title | Details`\n`@github create repository my-project as private`\n\nOnly the bot owner can access connected repositories.",
   shopify:"🛍️ **Shopify products**\n\nUse `/shopify` to see products, or `@shopify product name` to search your connected store. Connect the store in the Mini App first.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
   web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
@@ -630,6 +635,13 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
     await consumeOwnerAiUsage(tg);const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await answerWithTool(token,chatId,profile,memoryKey,"Gmail",resolved.title,gmailModelData(data,resolved.title));return"gmail";
   }
   if(tool==="github"){
+    if(/\bcreate\s+(?:an?\s+)?issue\b/i.test(request)){
+      const match=request.match(/\bcreate\s+(?:an?\s+)?issue\s+in\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*\|\s*([^|]+)\|\s*([\s\S]+)/i);
+      if(!match)throw new Error("Use @github create issue in owner/repository | Title | Details");
+      const repository=match[1],title=match[2].trim().slice(0,240),body=match[3].trim().slice(0,20000);
+      if(!title||!body)throw new Error("Include an issue title and details.");
+      await githubConfirmDraft(token,chatId,tg,"create_issue",repository,{title,body},`Repository: ${repository}\nIssue: ${title}\n${body.slice(0,1200)}`);return"github-issue-draft";
+    }
     if(/\bcreate\s+(?:a\s+|an\s+)?(?:new\s+)?(?:github\s+)?repo(?:sitory)?\b/i.test(request)){
       const name=request.match(/\bcreate\s+(?:a\s+|an\s+)?(?:new\s+)?(?:github\s+)?repo(?:sitory)?\s+([A-Za-z0-9_.-]+)/i)?.[1]||"";
       if(!name||name.toUpperCase()==="NAME")throw new Error("Replace NAME with your actual repository name, for example: @github create repository my-project as private");
@@ -648,15 +660,26 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
       const d=await oauth("github_file",tg,"github",target);if(Number(d.size)>120000)throw new Error("This file exceeds the 120 KB reader limit.");
       const source=githubDecode(String(d.content_base64||""));await reply(token,chatId,`📄 **${target.repository}:${target.path}**\n\n${source.length>9000?"First 9,000 characters:\n":""}\`\`\`\n${source.slice(0,9000).replace(/\`\`\`/g,"` ` `")}\n\`\`\``);return"github-file";
     }
-    if(/\b(?:fix|edit|update|change)\s+(?:(?:the|this)\s+)?(?:file|code|source(?:\s+code)?)\b/i.test(request)){
+    if(/\b(?:fix|edit|update|change|create|append)\s+(?:(?:a|the|this)\s+)?(?:file|code|source(?:\s+code)?)\b|\b(?:add|append)\s+(?:this\s+)?(?:text|code|content)?\s*(?:to|into)\s+(?:the\s+)?file\b/i.test(request)){
       if(!target?.path)throw new Error("Use @github fix code owner/repository:path/to/file to ...");
-      const d=await oauth("github_file",tg,"github",target);if(Number(d.size)>120000)throw new Error("This file exceeds the 120 KB editing limit.");
-      const current=githubDecode(String(d.content_base64||""));await consumeOwnerAiUsage(tg);
-      const prompt=`Return only JSON with string fields content and commit_message. Include the entire updated source file, without markdown fences. Do not include secrets. Request: ${request.slice(0,1800)}\nCurrent file:\n${current.slice(0,16000)}`;
-      const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},{role:"user",content:prompt}]})});const ai=await r.json().catch(()=>({}));if(!r.ok||!ai.reply)throw new Error("Could not prepare the code fix.");
-      const answer=String(ai.reply),start=answer.indexOf("{"),end=answer.lastIndexOf("}");let draft:any;try{draft=JSON.parse(answer.slice(start,end+1))}catch{throw new Error("Could not parse the code fix. Give a more specific instruction.")}
+      const creating=/\bcreate\s+(?:a\s+|the\s+)?file\b/i.test(request);
+      let d:any=null;try{d=await oauth("github_file",tg,"github",target)}catch(e){if(!creating||!/not found/i.test(String((e as Error)?.message||e)))throw e}
+      if(creating&&d?.sha)throw new Error("That file already exists. Use edit file instead.");
+      if(!creating&&!d?.sha)throw new Error("That file does not exist. Use create file instead.");
+      if(Number(d?.size||0)>120000)throw new Error("This file exceeds the 120 KB editing limit.");
+      const current=d?.content_base64?githubDecode(String(d.content_base64)):"";
+      const addition=!creating?request.match(/\b(?:add|append)\s+(?:this\s+)?(?:text|code|content)?\s*(?:to|into)\s+(?:the\s+)?file\s+\S+\s*\|\s*([\s\S]+)/i)?.[1]?.trim():"";
+      let draft:any;
+      if(addition)draft={content:`${current}${current&&!current.endsWith("\n")?"\n":""}${addition}\n`,commit_message:`Append to ${target.path}`};
+      else{
+        if(current.length>16000)throw new Error("AI editing is limited to 16,000 characters so the full file is reviewed. Use `add to file ... | exact text` or upload a replacement.");
+        await consumeOwnerAiUsage(tg);
+        const prompt=`Return only JSON with string fields content and commit_message. Include the entire ${creating?"new":"updated"} source file, without markdown fences. Do not include secrets. Request: ${request.slice(0,1800)}\nCurrent file:\n${creating?"[new file]":current.slice(0,16000)}`;
+        const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},{role:"user",content:prompt}]})});const ai=await r.json().catch(()=>({}));if(!r.ok||!ai.reply)throw new Error("Could not prepare the code change.");
+        const answer=String(ai.reply),start=answer.indexOf("{"),end=answer.lastIndexOf("}");try{draft=JSON.parse(answer.slice(start,end+1))}catch{throw new Error("Could not parse the code change. Give a more specific instruction.")}
+      }
       if(typeof draft.content!=="string"||new TextEncoder().encode(draft.content).length>120000)throw new Error("The proposed code exceeds the 120 KB text limit.");
-      await githubConfirmDraft(token,chatId,tg,"upsert_file",target.repository,{path:target.path,content_base64:bytesToB64(new TextEncoder().encode(draft.content)),message:String(draft.commit_message||`Fix ${target.path}`).slice(0,200),sha:d.sha},`File: ${target.repository}:${target.path}\nCommit: ${draft.commit_message||"Fix code"}\nPreview:\n${draft.content.slice(0,1500)}`);return"github-fix-draft";
+      await githubConfirmDraft(token,chatId,tg,"upsert_file",target.repository,{path:target.path,content_base64:bytesToB64(new TextEncoder().encode(draft.content)),message:String(draft.commit_message||`${creating?"Create":"Update"} ${target.path}`).slice(0,200),sha:d?.sha||""},`File: ${target.repository}:${target.path}\nCommit: ${draft.commit_message||"Update file"}\nPreview:\n${draft.content.slice(0,1500)}`);return"github-file-draft";
     }
     await consumeOwnerAiUsage(tg);const data=await oauth("github_repositories",tg,"github",{max_results:20}),repo=selectGithubRepository(request,data);if(repo){const context=await oauth("github_repository_context",tg,"github",{repository:repo});await answerWithTool(token,chatId,profile,memoryKey,"GitHub repository",request||`Inspect ${repo}`,githubContextModelData(context));return"github-repository";}await answerWithTool(token,chatId,profile,memoryKey,"GitHub",request||"Check my GitHub account",githubModelData(data));return"github";
   }
