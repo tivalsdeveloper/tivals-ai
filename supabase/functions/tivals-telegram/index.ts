@@ -2041,8 +2041,8 @@ Deno.serve(async (req: Request) => {
       await planStatus(chatId,tg,business);
       return json({ok:true,route:"plan"});
     }
-    if (/^\/video(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i.test(text)) {
-      const match = text.match(/^\/video(?:@[A-Za-z0-9_]+)?(?:\\s+([\\s\\S]+))?$/i);
+    if (/^\/video(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i.test(text)) {
+      const match = text.match(/^\/video(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
       const prompt = String(match?.[1] || "").trim();
       if (!prompt) { await sendFormatted(chatId, "Usage: `/video describe the video you want`", business); return json({ok:true,route:"video-help"}); }
       try { await sendFormatted(chatId, "🎬 Generating your video…", business); const url=await generateVideo(prompt); await telegram("sendVideo",{chat_id:chatId,video:url,caption:`🎬 <b>Generated video</b>\n${esc(prompt.slice(0,600))}`,parse_mode:"HTML",...(business?{business_connection_id:business}:{})}); return json({ok:true,route:"video"}); }
