@@ -401,7 +401,7 @@ function personalBotSystem(profile:any) {
     "Sound natural and genuinely conversational: vary sentence rhythm, use contractions when appropriate, respond to what was actually said, and avoid repeating greetings, menus, or scripted introductions.",
     "Use the conversation history to continue the topic naturally. Ask at most one useful follow-up question when important details are missing.",
     "You are an AI and must never falsely claim to be human, conscious, or physically present.",
-    "This is a personal assistant, not a business assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
+    profile?.bot_kind==="business"?"This is a business assistant for the creator's business. Use the supplied business profile, catalog and FAQ when available. If business information is missing, ask instead of inventing it.":"This is a personal assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
     "Never invent business details, prices, bookings, contact information, account data, or completed actions.",
     "Never pretend to have done a real-world action you did not do. Be honest when uncertain.",
     "Telegram presentation: lead with the answer, use short paragraphs, and add informative headings only when they help. Avoid Markdown tables, unnecessary emoji, repeated greetings and long introductions. Present search results as numbered items; email results as sender, subject, date and summary. For programming, use fenced language-tagged code blocks and keep each block focused."
@@ -444,12 +444,13 @@ function remember(key:string,user:string,assistant:string) {
   conversationMemory.set(key,{messages:[...memoryMessages(key),{role:"user",content:user.slice(0,3000)},{role:"assistant",content:assistant.slice(0,3000)}].slice(-8),expires:Date.now()+30*60_000});
   if(conversationMemory.size>2000)for(const [k,v] of conversationMemory)if(v.expires<=Date.now())conversationMemory.delete(k);
 }
-async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>) {
+async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>,ownerId=0) {
   const prompt=commandPrompt(userText);
+  const businessProfile=profile?.bot_kind==="business"?await telegramBusinessProfile(ownerId):null;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45_000);
   try {
     const history=persistentHistory||memoryMessages(memoryKey);
-    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
+    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:businessProfile,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
     const result=await ai.json().catch(()=>({}));if(!ai.ok||!result?.reply)throw new Error(result?.error||"The AI is temporarily unavailable.");
     const answer=String(result.reply);if(!persistentHistory)remember(memoryKey,prompt,answer);return answer;
   } finally { clearTimeout(timer); }
@@ -937,9 +938,8 @@ Deno.serve(async (req: Request) => {
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
-    // Personal bots are intentionally isolated from business profiles, catalogs,
-    // bookings and business-account automation.
-    const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory);
+    // Business bots receive their creator's business profile; personal bots remain isolated.
+    const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
     if(shouldSpeak){
