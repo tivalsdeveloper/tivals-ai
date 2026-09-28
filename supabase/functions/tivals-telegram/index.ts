@@ -1665,15 +1665,14 @@ async function synthesizeVoice(text:string) {
   const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice replies are temporarily unavailable.");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${backup}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("Voice replies are temporarily unavailable.");const audio=await fetch(url);if(!audio.ok)throw new Error("Voice replies are temporarily unavailable.");return new Uint8Array(await audio.arrayBuffer());
 }
 
-async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,business?:string,chatType="private") {
+async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,business?:string,chatType="private",readyTranscript?:string) {
   // Group voice notes are accepted only after the webhook verifies the message addresses this bot.
   const size=Number(voice?.file_size||0),duration=Number(voice?.duration||0);
   if(size>6_000_000||duration>90) throw new Error("Please send a voice note shorter than 90 seconds.");
   const quota=await consumeUsage(tg,"ai");
   if(!quota.ok){await sendLimitReached(chatId,quota.plan as PlanName,"ai",business);return "voice-limit";}
   await telegram("sendChatAction",{chat_id:chatId,action:"record_voice",...(business?{business_connection_id:business}:{})}).catch(()=>{});
-  const bytes=await telegramFileBytes(String(voice?.file_id||""),6_000_000);
-  const transcript=await transcribeVoice(bytes,String(voice?.mime_type||"audio/ogg"));
+  const transcript=readyTranscript||await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
   const reply=await askTivalsAI(transcript,tg);
   try {
     await telegramVoice(chatId,await synthesizeVoice(reply),reply,business);
@@ -1915,7 +1914,7 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  const text = String(message?.text || "").trim();
+  let text = String(message?.text || "").trim();
   const caption = String(message?.caption || "").trim();
   const photos = Array.isArray(message?.photo) ? message.photo : [];
   const imageDoc = message?.document && /^image\//i.test(String(message.document?.mime_type || "")) ? message.document : null;
@@ -1928,8 +1927,19 @@ Deno.serve(async (req: Request) => {
   try {
     if(voice) {
       if(!tg) throw new Error("Telegram user ID is unavailable.");
-      const route=await handleVoiceMessage(chatId,effectiveTg,voice,business,String(message?.chat?.type||"private"));
-      return json({ok:true,route});
+      const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);
+      if(duration>90||size>6_000_000)throw new Error("Please send a voice note shorter than 90 seconds.");
+      await telegram("sendChatAction",{chat_id:chatId,action:"typing",...(business?{business_connection_id:business}:{})}).catch(()=>{});
+      const transcript=await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
+      // Reuse the typed-message tool route only in the sender's private bot chat.
+      // Business customers and group members cannot operate the owner's connected accounts.
+      const isOwnerChat=String(message?.chat?.type||"private")==="private"&&!business;
+      if(isOwnerChat&&(parseToolRequest(transcript)||emailCommand(transcript)||gmailIntent(transcript).matched||gmailSendIntent(transcript)||youtubeQuery(transcript)||imagePrompt(transcript))){
+        text=transcript;
+      }else{
+        const route=await handleVoiceMessage(chatId,effectiveTg,voice,business,String(message?.chat?.type||"private"),transcript);
+        return json({ok:true,route});
+      }
     }
 
     if(uploadDoc && /^@github\s+upload\b/i.test(caption)) {
