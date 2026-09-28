@@ -292,7 +292,7 @@ async function voiceNarration(text:string){
     .replace(/\s+/g," ").trim().slice(0,3000);
 }
 
-function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
+async function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
   const token = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
   const form = new FormData();
