@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -432,6 +433,17 @@ async function generateMedia(token:string,chatId:number|string,type:"image"|"vid
   const caption=(type==="image"?"🎨 Generated image\\n":"🎬 Generated video\\n")+prompt.slice(0,600);
   if(type==="video"){try{await telegram(token,"sendVideo",{chat_id:chatId,video:url,caption,...(business?{business_connection_id:business}:{})})}catch{await telegram(token,"sendDocument",{chat_id:chatId,document:url,caption,...(business?{business_connection_id:business}:{})})}}else await telegram(token,"sendPhoto",{chat_id:chatId,photo:url,caption,...(business?{business_connection_id:business}:{})});
 }
+const toolVoiceOutput=new AsyncLocalStorage<{text:string}>();
+async function withToolVoice<T>(enabled:boolean,token:string,chatId:number,business:string,run:()=>Promise<T>):Promise<T>{
+  if(!enabled)return run();
+  const output={text:""};
+  const result=await toolVoiceOutput.run(output,run);
+  if(output.text){
+    try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(output.text)),"Tool result. Full details above.",business)}
+    catch(e){console.error("Tool voice reply failed",String((e as Error)?.message||e))}
+  }
+  return result;
+}
 async function reply(token: string, chatId: number, text: string, businessConnectionId = "") {
   const html = mdToHtml(text);
   for (const part of splitHtml(html)) {
@@ -452,6 +464,7 @@ async function reply(token: string, chatId: number, text: string, businessConnec
       });
     }
   }
+  const state=toolVoiceOutput.getStore();if(state)state.text=String(text||"");
 }
 
 async function telegramBusinessProfile(tg:number) {
@@ -886,6 +899,7 @@ Deno.serve(async (req: Request) => {
     const senderId = Number(message?.from?.id || 0);
     let text = String(message?.text || message?.caption || "").trim();
     const voice=message?.voice||null;
+    const speakTool=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
     const photos=Array.isArray(message?.photo)?message.photo:[];
     const imageDocument=/^image\//i.test(String(message?.document?.mime_type||""))?message.document:null;
     const businessConnectionId = String(message?.business_connection_id || "");
@@ -935,7 +949,7 @@ Deno.serve(async (req: Request) => {
       await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice on · /voice auto · /voice off\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n/reminder email on · /reminder email off · /reminder status\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
-    if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await sendYouTubeSearch(token,chatId,query,businessConnectionId);return json({ok:true,route:"youtube"})}
+    if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>sendYouTubeSearch(token,chatId,query,businessConnectionId));return json({ok:true,route:"youtube"})}
     if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|email|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
     }
@@ -986,7 +1000,7 @@ Deno.serve(async (req: Request) => {
       }
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
-    if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
+    if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request));return json({ok:true,route});}
     const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(mediaCommand){
       const kind=String(mediaCommand[1]).toLowerCase() as "image"|"video"; const prompt=String(mediaCommand[2]||"").trim();
@@ -1035,14 +1049,14 @@ Deno.serve(async (req: Request) => {
     const emailCmd=emailCommand(text);
     if(emailCmd){
       if(!ownerPrivate)throw new Error("Gmail commands are private and only available to the bot owner.");
-      await handleEmailCommand(token,chatId,paywallOwner,conn,emailCmd);
+      await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleEmailCommand(token,chatId,paywallOwner,conn,emailCmd));
       return json({ok:true,route:emailCmd.command});
     }
     const explicitTool=parseToolRequest(text),mailIntent=gmailIntent(text);
     if(ownerPrivate&&(explicitTool||mailIntent.matched||gmailSendIntent(text))){
       const tool=explicitTool?.tool||(mailIntent.matched||gmailSendIntent(text)?"gmail":"ai"),request=explicitTool?.request||text;
       if(tool==="ai"||tool==="chat")text=request;
-      else {const route=await handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request);return json({ok:true,route});}
+      else {const route=await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request));return json({ok:true,route});}
     } else if((explicitTool||mailIntent.matched||gmailSendIntent(text))&&!ownerPrivate){
       await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});
     }
