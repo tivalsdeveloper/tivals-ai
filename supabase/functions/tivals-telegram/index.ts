@@ -1209,6 +1209,19 @@ function parseToolRequest(text: string): ToolRequest | null {
   return { tool, request: String(m[2] || "").trim() };
 }
 
+function normalizeSpokenToolCommand(value:string) {
+  const text=String(value||"").trim();
+  const spoken=text.match(/^(?:at|slash|use)\s+(gmail|email|github|shopify|website|site|web|youtube|image|voice|reminder|tutor|ai|chat|tiktok|find\s+email|read\s+email|reply\s+email|send\s+email)\b[\s,:-]*(.*)$/i);
+  if(spoken){
+    const tool=spoken[1].toLowerCase().replace(/\s+/g,"");
+    const request=spoken[2].replace(/^to\s+/i,"").trim();
+    return (["findemail","reademail","replyemail","sendemail"].includes(tool)?"/":"@")+tool+(request?" "+request:"");
+  }
+  if(/^check\s+(?:my\s+)?github(?:\s+account)?[.!?]?$/i.test(text))return "@github check my GitHub account";
+  if(/^check\s+(?:my\s+)?(?:gmail|emails?)(?:\s+account)?[.!?]?$/i.test(text))return "@gmail check my latest emails";
+  return text;
+}
+
 function toolsHelpText() {
   return [
     "**Choose a Tivals AI tool with @tool**",
@@ -1931,11 +1944,12 @@ Deno.serve(async (req: Request) => {
       if(duration>90||size>6_000_000)throw new Error("Please send a voice note shorter than 90 seconds.");
       await telegram("sendChatAction",{chat_id:chatId,action:"typing",...(business?{business_connection_id:business}:{})}).catch(()=>{});
       const transcript=await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
+      const voiceRequest=normalizeSpokenToolCommand(transcript);
       // Reuse the typed-message tool route only in the sender's private bot chat.
       // Business customers and group members cannot operate the owner's connected accounts.
       const isOwnerChat=String(message?.chat?.type||"private")==="private"&&!business;
-      if(isOwnerChat&&(parseToolRequest(transcript)||emailCommand(transcript)||gmailIntent(transcript).matched||gmailSendIntent(transcript)||youtubeQuery(transcript)||imagePrompt(transcript))){
-        text=transcript;
+      if(isOwnerChat&&(parseToolRequest(voiceRequest)||emailCommand(voiceRequest)||gmailIntent(voiceRequest).matched||gmailSendIntent(voiceRequest)||youtubeQuery(voiceRequest)||imagePrompt(voiceRequest))){
+        text=voiceRequest;
       }else{
         const route=await handleVoiceMessage(chatId,effectiveTg,voice,business,String(message?.chat?.type||"private"),transcript);
         return json({ok:true,route});
