@@ -375,7 +375,7 @@ async function getDashboard(tg:number) {
       personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
       subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
       teaching_style:bot?.teaching_style||"adaptive",language:bot?.language||"auto",
-      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"voice_messages",
+      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"always",
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
       owner_only_invites:bot?.owner_only_invites!==false
     },
@@ -410,7 +410,7 @@ async function getPersonalBotDashboard(tg:number) {
       personality:bot?.personality||"Friendly, natural and helpful",custom_instructions:bot?.custom_instructions||"",
       subjects:Array.isArray(bot?.subjects)?bot.subjects:[],education_level:bot?.education_level||"all",
       teaching_style:bot?.teaching_style||"adaptive",language:bot?.language||"auto",
-      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"voice_messages",
+      welcome_message:bot?.welcome_message||"Hi! How can I help you today?",voice_mode:bot?.voice_mode||"always",
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",owner_only_invites:bot?.owner_only_invites!==false,
       timezone:bot?.timezone||"Africa/Johannesburg"
     }
@@ -593,7 +593,7 @@ Deno.serve(async req => {
         teaching_style:teaching.includes(String(body?.teaching_style))?String(body.teaching_style):"adaptive",
         language:String(body?.language||"auto").trim().slice(0,60)||"auto",
         welcome_message:String(body?.welcome_message||"").trim().slice(0,500)||"Hi! How can I help you today?",
-        voice_mode:voices.includes(String(body?.voice_mode))?String(body.voice_mode):"voice_messages",
+        voice_mode:voices.includes(String(body?.voice_mode))?String(body.voice_mode):"always",
         group_mode:groups.includes(String(body?.group_mode))?String(body.group_mode):"mentions",
         channel_mode:channels.includes(String(body?.channel_mode))?String(body.channel_mode):"commands",
         owner_only_invites:body?.owner_only_invites!==false,
