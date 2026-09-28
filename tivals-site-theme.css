@@ -13,3 +13,5 @@ html,body,.app,.appShell{background:#0c0d0b!important;color:#eeeae0!important;fo
 :where(button,a,input,select,textarea):focus-visible{outline:2px solid #b5d4b8!important;outline-offset:2px!important}
 @media(max-width:650px){.widgetGrid{grid-template-columns:1fr!important}.widgetField.full,.bizSection{grid-column:1!important}.bizSection{padding-top:17px}.widgetStat b{font-size:17px!important}}
 @media(max-width:760px){.chat{background:#0c0d0b!important}.composerWrap{background:linear-gradient(transparent,#0c0d0b 25%)!important}.sidebar{background:#151712!important}}
+
+body:has(#authGate:not([hidden])){background:#0c0d0b!important}
