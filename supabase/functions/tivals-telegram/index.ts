@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -488,8 +489,22 @@ async function sendHtml(chatId: number|string, html: string, business?: string) 
   }
 }
 
+const toolVoiceOutput=new AsyncLocalStorage<{text:string}>();
 async function sendFormatted(chatId: number|string, text: string, business?: string) {
-  return sendHtml(chatId, mdToHtml(text), business);
+  const result=await sendHtml(chatId, mdToHtml(text), business);
+  const state=toolVoiceOutput.getStore();
+  if(state)state.text=String(text||"");
+  return result;
+}
+async function withToolVoice<T>(enabled:boolean,chatId:number|string,business:string|undefined,run:()=>Promise<T>):Promise<T>{
+  if(!enabled)return run();
+  const output={text:""};
+  const result=await toolVoiceOutput.run(output,run);
+  if(output.text){
+    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(output.text)),"Tool result. Full details above.",business)}
+    catch(e){console.error("Tool voice reply failed",String((e as Error)?.message||e))}
+  }
+  return result;
 }
 async function sendToolSuggestions(chatId:number|string,business?:string) {
   const p:any={
@@ -557,6 +572,11 @@ async function telegramSettings(tg:number) {
     .select("response_style,notifications,tool_suggestions,voice_mode")
     .eq("telegram_user_id",tg).maybeSingle();
   return data || { response_style:"balanced", notifications:true, tool_suggestions:true };
+}
+
+async function voiceToolEnabled(tg:number,voice:any){
+  const mode=String((await telegramSettings(tg)).voice_mode||"voice_messages");
+  return mode==="always"||(Boolean(voice)&&mode!=="off");
 }
 
 async function connectMenu(chatId: number|string, tg: number, business?: string) {
@@ -2179,13 +2199,13 @@ Deno.serve(async (req: Request) => {
     const emailCmd=emailCommand(text);
     if(emailCmd){
       if(!tg)throw new Error("Telegram user ID is unavailable.");
-      await handleEmailCommand(chatId,effectiveTg,emailCmd,business);
+      await withToolVoice(await voiceToolEnabled(effectiveTg,voice),chatId,business,()=>handleEmailCommand(chatId,effectiveTg,emailCmd,business));
       return json({ok:true,route:emailCmd.command});
     }
 
     const toolReq = parseToolRequest(text);
     if (toolReq) {
-      const route = await handleToolRequest(chatId, effectiveTg, toolReq, business);
+      const route = await withToolVoice(await voiceToolEnabled(effectiveTg,voice),chatId,business,()=>handleToolRequest(chatId, effectiveTg, toolReq, business));
       return json({ok:true, route:`tool-${route}`});
     }
 
@@ -2198,13 +2218,13 @@ Deno.serve(async (req: Request) => {
     const gi = gmailIntent(text);
     if (gi.matched && !business) {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
-      await handleGmail(chatId,effectiveTg,gi,business);
+      await withToolVoice(await voiceToolEnabled(effectiveTg,voice),chatId,business,()=>handleGmail(chatId,effectiveTg,gi,business));
       return json({ok:true,route:"gmail"});
     }
 
     const yt = youtubeQuery(text);
     if (yt) {
-      await sendYouTubeResults(chatId,yt,await searchYouTube(yt),business);
+      await withToolVoice(await voiceToolEnabled(effectiveTg,voice),chatId,business,async()=>sendYouTubeResults(chatId,yt,await searchYouTube(yt),business));
       return json({ok:true,route:"youtube"});
     }
 
