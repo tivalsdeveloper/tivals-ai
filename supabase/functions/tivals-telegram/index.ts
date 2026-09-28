@@ -2083,7 +2083,7 @@ Deno.serve(async (req: Request) => {
       const match = text.match(/^\/video(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
       const prompt = String(match?.[1] || "").trim();
       if (!prompt) { await sendFormatted(chatId, "Usage: `/video describe the video you want`", business); return json({ok:true,route:"video-help"}); }
-      try { await sendFormatted(chatId, "🎬 Generating your video…", business); const url=await generateVideo(prompt); await telegram("sendVideo",{chat_id:chatId,video:url,caption:`🎬 <b>Generated video</b>\n${esc(prompt.slice(0,600))}`,parse_mode:"HTML",...(business?{business_connection_id:business}:{})}); return json({ok:true,route:"video"}); }
+      try { await sendFormatted(chatId, "🎬 Generating your video…", business); const url=await generateVideo(prompt); try { await telegram("sendVideo",{chat_id:chatId,video:url,caption:`🎬 <b>Generated video</b>\n${esc(prompt.slice(0,600))}`,parse_mode:"HTML",...(business?{business_connection_id:business}:{})}); } catch { await telegram("sendDocument",{chat_id:chatId,document:url,caption:`Generated video: ${prompt.slice(0,600)}`,...(business?{business_connection_id:business}:{})}); } return json({ok:true,route:"video"}); }
       catch(e) { await sendFormatted(chatId, `Video generation is unavailable right now. ${String((e as Error)?.message||e)}`, business); return json({ok:true,route:"video-error"}); }
     }
 
