@@ -542,9 +542,9 @@ async function setMiniAppMenu(chatId: number|string) {
 }
 
 async function telegramSettings(tg:number) {
-  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true };
+  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true, voice_mode:"voice_messages" };
   const { data } = await sb.from("telegram_user_settings")
-    .select("response_style,notifications,tool_suggestions")
+    .select("response_style,notifications,tool_suggestions,voice_mode")
     .eq("telegram_user_id",tg).maybeSingle();
   return data || { response_style:"balanced", notifications:true, tool_suggestions:true };
 }
@@ -1643,8 +1643,9 @@ async function nvidiaAudio(bytes:Uint8Array,mime:string):Promise<{bytes:Uint8Arr
     return {bytes:wav,mime:"audio/wav"};
   }finally{decoder.free()}
 }
+let nvidiaSpeechBusyUntil=0;
 async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
-  const key=Deno.env.get("NVIDIA_API_KEY")||"";if(!key)return "";
+  const key=Deno.env.get("NVIDIA_API_KEY")||"";if(!key||Date.now()<nvidiaSpeechBusyUntil)return "";
   try{
     const audio=await nvidiaAudio(bytes,mime);
     const url=`data:${audio.mime};base64,${bytesToB64(audio.bytes)}`;
@@ -1652,6 +1653,7 @@ async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
     const d=await r.json().catch(()=>({}));const c=d?.choices?.[0]?.message?.content;
     const transcript=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||"")).join(" ").trim():"";
     if(r.ok&&transcript)return transcript.slice(0,4000);
+    if(r.status===429||r.status===503)nvidiaSpeechBusyUntil=Date.now()+120_000;
     console.error("NVIDIA transcription response",r.status,d?.detail||d?.error||"no transcript");
   }catch(e){console.error("NVIDIA transcription request failed",e)}
   return "";
@@ -1662,13 +1664,14 @@ async function transcribeVoice(bytes:Uint8Array,mime:string) {
   if(key)try{
     const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});
     const d=await r.json().catch(()=>({})),text=String(d?.text||"").trim();if(r.ok&&text)return text.slice(0,4000);
+    console.error("OpenRouter transcription response",r.status);
   }catch{}
   const backup=Deno.env.get("AIMLAPI_API_KEY")||"";if(!backup)throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
   try{
     const kind=audioFormat(mime),form=new FormData();form.append("model","#g1_whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${kind}`);
-    const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id)throw new Error("create_failed");
+    const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${backup}`},body:form});const c=await created.json().catch(()=>({}));if(!created.ok||!c?.generation_id){console.error("AI/ML transcription create failed",created.status);throw new Error("create_failed");}
     for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${backup}`}});const d=await r.json().catch(()=>({}));const text=String(d?.output?.text||d?.result?.text||d?.result?.results?.channels?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.alternatives?.[0]?.transcript||d?.result?.results?.channels?.[0]?.alternatives?.[0]?.transcript||d?.output?.results?.channels?.[0]?.alternatives?.[0]?.transcript||"").trim();if(r.ok&&text)return text.slice(0,4000);if(["error","failed","cancelled"].includes(String(d?.status||"").toLowerCase()))break;}
-  }catch{}
+  }catch(e){console.error("AI/ML transcription failed",String((e as Error)?.message||e));}
   throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.");
 }
 
@@ -1688,6 +1691,8 @@ async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,busin
   const transcript=readyTranscript||await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
   const reply=await askTivalsAI(transcript,tg);
   try {
+    const settings=await telegramSettings(tg);
+    if(settings.voice_mode==="off"){await sendFormatted(chatId,reply,business);return "voice-text";}
     await telegramVoice(chatId,await synthesizeVoice(reply),reply,business);
   } catch(e) {
     console.error("Tivals voice reply error",String((e as Error)?.message||e));
@@ -2079,7 +2084,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (text === "/help") {
-      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply, or open /app for live voice mode.\n\n/store · /store product name — browse and buy published products\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/reminder email on · /reminder email off · /reminder status\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
+      await sendFormatted(chatId, "**Tivals AI**\n\nSend a voice note for a spoken AI reply. Use /voice on to hear replies to text, /voice auto for voice notes only, or /voice off. Open /app for live voice mode.\n\n/store · /store product name — browse and buy published products\n/createbot · /createbusinessbot · /connect · /accounts\n/emails · /unread · /findemail QUERY · /reademail ID\n/replyemail ID | instructions · /sendemail recipient and message\n/reminder email on · /reminder email off · /reminder status\n/github · /gmail · /tiktok · /website · /youtube · /image · /ai\n/subscribe · /plan · /app · /tools\n\nAll @ tools work with / too. Sending email always requires your confirmation.", business);
       return json({ok:true});
     }
 
@@ -2125,6 +2130,23 @@ Deno.serve(async (req: Request) => {
       if (!tg) throw new Error("Telegram user ID is unavailable.");
       await accountStatus(chatId,tg,business);
       return json({ok:true,route:"accounts"});
+    }
+
+    const voiceSetting=text.match(/^\/voice(?:@[A-Za-z0-9_]+)?(?:\s+(on|off|auto|status))?$/i);
+    if(voiceSetting){
+      if(!tg||String(message?.chat?.type||"private")!=="private"||business){
+        await sendFormatted(chatId,"Change voice replies in your direct chat with the bot.",business);
+        return json({ok:true,route:"voice-private-only"});
+      }
+      const option=String(voiceSetting[1]||"status").toLowerCase();
+      if(option!=="status"){
+        const voiceMode=option==="on"?"always":option==="off"?"off":"voice_messages";
+        const {error}=await sb.from("telegram_user_settings").upsert({telegram_user_id:tg,voice_mode:voiceMode},{onConflict:"telegram_user_id"});
+        if(error)throw error;
+      }
+      const mode=String((await telegramSettings(tg)).voice_mode||"voice_messages");
+      await sendFormatted(chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.");
+      return json({ok:true,route:"voice-setting"});
     }
 
     const emailReminderCommand=text.match(/^\/reminder(?:@[A-Za-z0-9_]+)?(?:\s+(?:email\s+)?(on|off|status))?$/i);
@@ -2196,7 +2218,12 @@ Deno.serve(async (req: Request) => {
       await sendLimitReached(chatId, aiQuota.plan as PlanName, "ai", business);
       return json({ok:true,route:"ai-limit-normal"});
     }
-    await sendFormatted(chatId,await askTivalsAI(text,effectiveTg),business);
+    const answer=await askTivalsAI(text,effectiveTg);
+    const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"voice_messages");
+    if(voiceMode==="always"){
+      try{await telegramVoice(chatId,await synthesizeVoice(answer),answer,business)}
+      catch(e){console.error("Tivals text-to-voice reply failed",String((e as Error)?.message||e));await sendFormatted(chatId,answer,business)}
+    }else await sendFormatted(chatId,answer,business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
