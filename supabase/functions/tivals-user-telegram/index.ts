@@ -434,13 +434,18 @@ async function generateMedia(token:string,chatId:number|string,type:"image"|"vid
   if(type==="video"){try{await telegram(token,"sendVideo",{chat_id:chatId,video:url,caption,...(business?{business_connection_id:business}:{})})}catch{await telegram(token,"sendDocument",{chat_id:chatId,document:url,caption,...(business?{business_connection_id:business}:{})})}}else await telegram(token,"sendPhoto",{chat_id:chatId,photo:url,caption,...(business?{business_connection_id:business}:{})});
 }
 const toolVoiceOutput=new AsyncLocalStorage<{text:string}>();
+function queueVoiceReply(token:string,chatId:number,spoken:string,business=""){
+  EdgeRuntime.waitUntil((async()=>{
+    try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(spoken)),"Voice reply",business)}
+    catch(e){console.error("Background voice reply failed",String((e as Error)?.message||e))}
+  })());
+}
 async function withToolVoice<T>(enabled:boolean,token:string,chatId:number,business:string,run:()=>Promise<T>):Promise<T>{
   if(!enabled)return run();
   const output={text:""};
   const result=await toolVoiceOutput.run(output,run);
   if(output.text){
-    try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(output.text)),"Tool result. Full details above.",business)}
-    catch(e){console.error("Tool voice reply failed",String((e as Error)?.message||e))}
+    queueVoiceReply(token,chatId,output.text,business);
   }
   return result;
 }
@@ -561,9 +566,10 @@ function remember(key:string,user:string,assistant:string) {
 }
 async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>,ownerId=0) {
   const prompt=commandPrompt(userText);
-  const businessProfile=profile?.bot_kind==="business"?await telegramBusinessProfile(ownerId):null;
+  const [businessProfile,shopify]=profile?.bot_kind==="business"
+    ?await Promise.all([telegramBusinessProfile(ownerId),connectedShopifyContext(ownerId,prompt)])
+    :[null,null];
   if(profile?.bot_kind==="business"){
-    const shopify=await connectedShopifyContext(ownerId,prompt);
     if(shopify){const target:any=businessProfile||{business_name:""};target.shopify=shopify;if(!target.business_name)target.business_name=shopify.shop;return await callPersonalAiWithContext(profile,memoryKey,prompt,target,persistentHistory);}
   }
   return await callPersonalAiWithContext(profile,memoryKey,prompt,businessProfile,persistentHistory);
@@ -1116,11 +1122,8 @@ Deno.serve(async (req: Request) => {
     const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"always")==="always"||(Boolean(voice)&&String(conn.voice_mode||"always")!=="off");
-    let voiceDelivered=false;
-    if(shouldSpeak){
-      try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(answer)),answer,businessConnectionId);voiceDelivered=true}catch(e){console.error("Voice reply failed",String((e as Error)?.message||e))}
-    }
-    if(!voiceDelivered||answer.length>700||answer.includes("```"))await reply(token,chatId,answer,businessConnectionId);
+    await reply(token,chatId,answer,businessConnectionId);
+    if(shouldSpeak)queueVoiceReply(token,chatId,answer,businessConnectionId);
     return json({ ok: true,route:voice?"voice":"ai" });
   } catch (e) {
     const message=String((e as Error)?.name==="AbortError"?"The AI took too long to respond. Please try again.":(e as Error)?.message||e).slice(0,900);
