@@ -70,7 +70,7 @@ async function voiceNarration(text:string){
     .replace(/\s+/g," ").trim().slice(0,3000);
 }
 
-function telegramVoice(token:string,chatId:number,audio:Uint8Array,caption:string,business="") {
+async function telegramVoice(token:string,chatId:number,audio:Uint8Array,caption:string,business="") {
   const form=new FormData();form.append("chat_id",String(chatId));form.append("voice",new Blob([audio],{type:"audio/mpeg"}),"reply.mp3");
   const hasFullText=String(caption||"").length>700||String(caption||"").includes("```");
   form.append("caption",hasFullText?"Voice reply. Full formatted answer follows.":mdToHtml(caption));
