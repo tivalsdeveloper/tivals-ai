@@ -297,7 +297,9 @@ function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, bus
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("voice", new Blob([audio], { type:"audio/mpeg" }), "tivals-ai-reply.mp3");
-  form.append("caption", String(reply || "").length>3000?"Voice reply (first part). Full answer follows.":"Voice reply. Full answer follows.");
+  const hasFullText=String(reply||"").length>700||String(reply||"").includes("```");
+  form.append("caption",hasFullText?"Voice reply. Full formatted answer follows.":mdToHtml(reply));
+  form.append("parse_mode","HTML");
   if (business) form.append("business_connection_id", business);
   const r = await fetch(`${TELEGRAM_API}/bot${token}/sendVoice`, { method:"POST", body:form });
   const d = await r.json().catch(() => ({}));
@@ -1699,11 +1701,12 @@ async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,busin
   const transcript=readyTranscript||await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
   const reply=await askTivalsAI(transcript,tg);
   const settings=await telegramSettings(tg);
+  let voiceDelivered=false;
   if(settings.voice_mode!=="off"){
-    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(reply)),reply,business)}
+    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(reply)),reply,business);voiceDelivered=true}
     catch(e){console.error("Tivals voice reply error",String((e as Error)?.message||e))}
   }
-  await sendFormatted(chatId,reply,business);
+  if(!voiceDelivered||reply.length>700||reply.includes("```"))await sendFormatted(chatId,reply,business);
   return settings.voice_mode==="off"?"voice-text":"voice";
 }
 
@@ -2226,11 +2229,12 @@ Deno.serve(async (req: Request) => {
     }
     const answer=await askTivalsAI(text,effectiveTg);
     const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"voice_messages");
+    let voiceDelivered=false;
     if(voiceMode==="always"){
-      try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(answer)),answer,business)}
+      try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(answer)),answer,business);voiceDelivered=true}
       catch(e){console.error("Tivals text-to-voice reply failed",String((e as Error)?.message||e))}
     }
-    await sendFormatted(chatId,answer,business);
+    if(!voiceDelivered||answer.length>700||answer.includes("```"))await sendFormatted(chatId,answer,business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
