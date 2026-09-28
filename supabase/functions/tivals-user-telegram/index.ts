@@ -932,7 +932,7 @@ Deno.serve(async (req: Request) => {
     const senderId = Number(message?.from?.id || 0);
     let text = String(message?.text || message?.caption || "").trim();
     const voice=message?.voice||null;
-    const speakTool=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
+    const speakTool=String(conn.voice_mode||"always")==="always"||(Boolean(voice)&&String(conn.voice_mode||"always")!=="off");
     const photos=Array.isArray(message?.photo)?message.photo:[];
     const imageDocument=/^image\//i.test(String(message?.document?.mime_type||""))?message.document:null;
     const businessConnectionId = String(message?.business_connection_id || "");
@@ -1051,7 +1051,7 @@ Deno.serve(async (req: Request) => {
         if(error)throw error;
         conn.voice_mode=voiceMode;
       }
-      const mode=String(conn.voice_mode||"voice_messages");
+      const mode=String(conn.voice_mode||"always");
       await reply(token,chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.",businessConnectionId);
       return json({ok:true,route:"voice-setting"});
     }
@@ -1115,7 +1115,7 @@ Deno.serve(async (req: Request) => {
     // Business bots receive their creator's business profile; personal bots remain isolated.
     const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
-    const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
+    const shouldSpeak=String(conn.voice_mode||"always")==="always"||(Boolean(voice)&&String(conn.voice_mode||"always")!=="off");
     let voiceDelivered=false;
     if(shouldSpeak){
       try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(answer)),answer,businessConnectionId);voiceDelivered=true}catch(e){console.error("Voice reply failed",String((e as Error)?.message||e))}
