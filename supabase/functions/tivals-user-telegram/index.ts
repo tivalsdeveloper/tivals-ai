@@ -479,15 +479,41 @@ async function telegramBusinessProfile(tg:number) {
   return profile ? {...profile,catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]} : null;
 }
 
+const shopifyContextCache=new Map<string,{expires:number;value:any}>();
+async function connectedShopifyContext(ownerId:number,userText:string) {
+  if(!Number.isSafeInteger(ownerId)||ownerId<=0)return null;
+  const {data:connection,error}=await sb.from("telegram_oauth_connections")
+    .select("account_label,needs_reconnect").eq("telegram_user_id",ownerId).eq("provider","shopify").maybeSingle();
+  if(error||!connection)return null;
+  const shop=String(connection.account_label||"Connected Shopify store").slice(0,160);
+  if(connection.needs_reconnect)return {shop,available:false,products:[],error:"The store needs to be reconnected."};
+  // Search relevant products by title; other messages receive a short storefront sample.
+  const match=String(userText||"").match(/\b(?:do you (?:sell|have)|looking for|buy|price (?:of|for)|search (?:for)?|product called)\s+([^?.!,]{2,65})/i);
+  const query=String(match?.[1]||"").trim().slice(0,60);
+  const cacheKey=`${ownerId}:${query.toLowerCase()}`,cached=shopifyContextCache.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.value;
+  let value:any;
+  try{
+    const data=await oauth("shopify_products",ownerId,"shopify",{query});
+    value={shop:String(data?.shop||shop).slice(0,160),available:true,products:(Array.isArray(data?.products)?data.products:[]).slice(0,6),query};
+  }catch(e){
+    console.error("Business Shopify context unavailable",String((e as Error)?.message||e));
+    value={shop,available:false,products:[],error:"Live Shopify product details are temporarily unavailable."};
+  }
+  shopifyContextCache.set(cacheKey,{expires:Date.now()+(value.available?120000:30000),value});
+  if(shopifyContextCache.size>500)for(const [key,entry] of shopifyContextCache)if(entry.expires<Date.now())shopifyContextCache.delete(key);
+  return value;
+}
+
 function personalBotSystem(profile:any) {
   const name=String(profile?.bot_name||profile?.account_label||"AI assistant").slice(0,64);
   const purpose=String(profile?.bot_purpose||"general");
   const subjects=Array.isArray(profile?.subjects)?profile.subjects.map((x:any)=>String(x).slice(0,80)).filter(Boolean).slice(0,20):[];
   const lines=[
-    `Your name is ${name}. Speak naturally, warmly and conversationally, like a thoughtful human assistant.`,
+    `Your name is ${name}. Speak warmly and naturally. For personal bots, talk like a helpful friend talking to a friend; for business bots, speak as a friendly, professional representative.`,
     `Personality: ${String(profile?.personality||"Friendly, natural and helpful").slice(0,1000)}.`,
     `Use ${String(profile?.language||"the user's language").slice(0,60)==="auto"?"the same language as the user":String(profile.language).slice(0,60)}.`,
-    "Sound natural and genuinely conversational: vary sentence rhythm, use contractions when appropriate, respond to what was actually said, and avoid repeating greetings, menus, or scripted introductions.",
+    "Follow the conversation instead of restarting with an introduction. Keep casual messages short and natural, use contractions when appropriate, and acknowledge feelings without exaggerating closeness. Offer advice only when it helps, and avoid repetitive follow-up questions or canned phrases.",
     "Use the conversation history to continue the topic naturally. Ask at most one useful follow-up question when important details are missing.",
     "You are an AI and must never falsely claim to be human, conscious, or physically present.",
     profile?.bot_kind==="business"?"This is a business assistant for the creator's business. Use the supplied business profile, catalog and FAQ when available. If business information is missing, ask instead of inventing it.":"This is a personal assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
@@ -536,6 +562,13 @@ function remember(key:string,user:string,assistant:string) {
 async function personalAi(profile:any,memoryKey:string,userText:string,persistentHistory?:Array<{role:"user"|"assistant";content:string}>,ownerId=0) {
   const prompt=commandPrompt(userText);
   const businessProfile=profile?.bot_kind==="business"?await telegramBusinessProfile(ownerId):null;
+  if(profile?.bot_kind==="business"){
+    const shopify=await connectedShopifyContext(ownerId,prompt);
+    if(shopify){const target:any=businessProfile||{business_name:""};target.shopify=shopify;if(!target.business_name)target.business_name=shopify.shop;return await callPersonalAiWithContext(profile,memoryKey,prompt,target,persistentHistory);}
+  }
+  return await callPersonalAiWithContext(profile,memoryKey,prompt,businessProfile,persistentHistory);
+}
+async function callPersonalAiWithContext(profile:any,memoryKey:string,prompt:string,businessProfile:any,persistentHistory?:Array<{role:"user"|"assistant";content:string}>) {
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45_000);
   try {
     const history=persistentHistory||memoryMessages(memoryKey);
@@ -976,7 +1009,7 @@ Deno.serve(async (req: Request) => {
     if(storeCommand){
       const term=String(storeCommand[1]||"").trim().slice(0,80);
       try{
-        const data=await oauth("shopify_bot_products",paywallOwner||0,"shopify",{query:term});
+        const data=await oauth(conn.bot_kind==="business"?"shopify_products":"shopify_bot_products",paywallOwner||0,"shopify",{query:term});
         const products=Array.isArray(data?.products)?data.products:[];
         if(!products.length){const count=Number(data?.catalogCount||0);await reply(token,chatId,count>0?`🛍️ The store has ${count} ${count===1?"product":"products"}, but Shopify has not supplied a public Online Store link for ${count===1?"it":"them"} yet. The store owner can publish the products to the Online Store sales channel in Shopify admin, then try /store again.`:term?`No products found for “${term}”. Try /store to browse.`:"No active products are available in this store yet.",businessConnectionId);return json({ok:true,route:"store-empty"});}
         await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
