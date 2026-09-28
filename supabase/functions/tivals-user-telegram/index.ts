@@ -172,6 +172,19 @@ function parseToolRequest(text:string) {
   if(!m||!["gmail","email","github","shopify","website","site","web","youtube","image","voice","reminder","tutor","ai","chat","tiktok"].includes(String(m[1]).toLowerCase()))return null;
   return{tool:String(m[1]).toLowerCase(),request:String(m[2]||"").trim()};
 }
+function normalizeSpokenToolCommand(value:string) {
+  const text=String(value||"").trim();
+  const spoken=text.match(/^(?:at|slash|use)\s+(gmail|email|github|shopify|website|site|web|youtube|image|voice|reminder|tutor|ai|chat|tiktok|find\s+email|read\s+email|reply\s+email|send\s+email)\b[\s,:-]*(.*)$/i);
+  if(spoken){
+    const tool=spoken[1].toLowerCase().replace(/\s+/g,"");
+    const request=spoken[2].replace(/^to\s+/i,"").trim();
+    return (["findemail","reademail","replyemail","sendemail"].includes(tool)?"/":"@")+tool+(request?" "+request:"");
+  }
+  if(/^check\s+(?:my\s+)?github(?:\s+account)?[.!?]?$/i.test(text))return "@github check my GitHub account";
+  if(/^check\s+(?:my\s+)?(?:gmail|emails?)(?:\s+account)?[.!?]?$/i.test(text))return "@gmail check my latest emails";
+  return text;
+}
+
 function emailCommand(text:string) {
   const m=String(text||"").trim().match(/^\/(email|findemail|reademail|replyemail)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
   return m?{command:m[1].toLowerCase(),args:String(m[2]||"").trim()}:null;
@@ -893,7 +906,7 @@ Deno.serve(async (req: Request) => {
     if(voice){
       const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);if(duration>90||size>6_000_000)throw new Error("Please keep voice messages under 90 seconds.");
       await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
-      text=await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg"));
+      text=normalizeSpokenToolCommand(await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg")));
     }
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId,conn.bot_kind); return json({ok:true,route:"owner-app"});
