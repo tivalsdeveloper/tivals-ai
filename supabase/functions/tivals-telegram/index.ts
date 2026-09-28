@@ -284,7 +284,7 @@ async function sendBotTypeChooser(chatId:number|string,business?:string) {
   await telegram("sendMessage",payload);
 }
 
-async function voiceNarration(text:string){
+function voiceNarration(text:string){
   return String(text||"")
     .replace(/```[\s\S]*?```/g," Code example is in the text reply. ")
     .replace(/https?:\/\/\S+/g," Link is in the text reply. ")
