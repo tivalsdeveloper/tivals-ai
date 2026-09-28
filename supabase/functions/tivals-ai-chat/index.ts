@@ -387,17 +387,20 @@ async function nvidiaModels(key:string) {
 }
 async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
   if(inCooldown("nvidia"))throw new Error("cooldown");
-  const available=await nvidiaModels(key);
   const task=nvidiaTask(prompt);
   const preferred=NVIDIA_TASK_MODELS[task]||NVIDIA_TASK_MODELS.chat;
+  // The live catalog is refreshed for model listings; chat tries known models directly.
+  const available=nvidiaCatalog.expires>Date.now()?nvidiaCatalog.ids:uniqueModels([...preferred,...NVIDIA_CHAT_FALLBACK]);
+  const deadline=Date.now()+12000;
   // Keep a previously working model warm only within the same task preference.
   const candidates=uniqueModels([...preferred,...NVIDIA_CHAT_FALLBACK])
     .filter(id=>available.includes(id)&&nvidiaChatId(id)&&!excluded.includes(id)
       && (nvidiaModelCooldown.get(id)||0)<Date.now());
   let last="no_models";
-  for(const model of candidates.slice(0,4)){
+  for(const model of candidates.slice(0,3)){
+    if(Date.now()>deadline-1200)break;
     try {
-      const reply=await callProvider(`${NVIDIA_BASE}/chat/completions`,key,model,prompt,{},8500);
+      const reply=await callProvider(`${NVIDIA_BASE}/chat/completions`,key,model,prompt,{},Math.min(6000,Math.max(1200,deadline-Date.now())));
       nvidiaWorkingModel=model;
       return {reply,route:`nvidia:${model}`,model};
     } catch(e) {
