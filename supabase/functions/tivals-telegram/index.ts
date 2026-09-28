@@ -283,13 +283,21 @@ async function sendBotTypeChooser(chatId:number|string,business?:string) {
   await telegram("sendMessage",payload);
 }
 
-async function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
+async function voiceNarration(text:string){
+  return String(text||"")
+    .replace(/```[\s\S]*?```/g," Code example is in the text reply. ")
+    .replace(/https?:\/\/\S+/g," Link is in the text reply. ")
+    .replace(/[*#_`~]/g,"")
+    .replace(/\s+/g," ").trim().slice(0,3000);
+}
+
+function telegramVoice(chatId:number|string, audio:Uint8Array, reply:string, business?:string) {
   const token = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
   const form = new FormData();
   form.append("chat_id", String(chatId));
   form.append("voice", new Blob([audio], { type:"audio/mpeg" }), "tivals-ai-reply.mp3");
-  form.append("caption", String(reply || "").slice(0, 900));
+  form.append("caption", String(reply || "").length>3000?"Voice reply (first part). Full answer follows.":"Voice reply. Full answer follows.");
   if (business) form.append("business_connection_id", business);
   const r = await fetch(`${TELEGRAM_API}/bot${token}/sendVoice`, { method:"POST", body:form });
   const d = await r.json().catch(() => ({}));
@@ -1690,15 +1698,13 @@ async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,busin
   await telegram("sendChatAction",{chat_id:chatId,action:"record_voice",...(business?{business_connection_id:business}:{})}).catch(()=>{});
   const transcript=readyTranscript||await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
   const reply=await askTivalsAI(transcript,tg);
-  try {
-    const settings=await telegramSettings(tg);
-    if(settings.voice_mode==="off"){await sendFormatted(chatId,reply,business);return "voice-text";}
-    await telegramVoice(chatId,await synthesizeVoice(reply),reply,business);
-  } catch(e) {
-    console.error("Tivals voice reply error",String((e as Error)?.message||e));
-    await sendFormatted(chatId,reply,business);
+  const settings=await telegramSettings(tg);
+  if(settings.voice_mode!=="off"){
+    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(reply)),reply,business)}
+    catch(e){console.error("Tivals voice reply error",String((e as Error)?.message||e))}
   }
-  return "voice";
+  await sendFormatted(chatId,reply,business);
+  return settings.voice_mode==="off"?"voice-text":"voice";
 }
 
 async function telegramImageDataUrl(fileId:string) {
@@ -2221,9 +2227,10 @@ Deno.serve(async (req: Request) => {
     const answer=await askTivalsAI(text,effectiveTg);
     const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"voice_messages");
     if(voiceMode==="always"){
-      try{await telegramVoice(chatId,await synthesizeVoice(answer),answer,business)}
-      catch(e){console.error("Tivals text-to-voice reply failed",String((e as Error)?.message||e));await sendFormatted(chatId,answer,business)}
-    }else await sendFormatted(chatId,answer,business);
+      try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(answer)),answer,business)}
+      catch(e){console.error("Tivals text-to-voice reply failed",String((e as Error)?.message||e))}
+    }
+    await sendFormatted(chatId,answer,business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
