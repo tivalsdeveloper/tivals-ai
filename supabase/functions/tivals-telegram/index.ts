@@ -1666,7 +1666,7 @@ async function synthesizeVoice(text:string) {
 }
 
 async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,business?:string,chatType="private") {
-  if(chatType!=="private"&&!business) throw new Error("Voice chat is available in a private chat with Tivals AI.");
+  // Group voice notes are accepted only after the webhook verifies the message addresses this bot.
   const size=Number(voice?.file_size||0),duration=Number(voice?.duration||0);
   if(size>6_000_000||duration>90) throw new Error("Please send a voice note shorter than 90 seconds.");
   const quota=await consumeUsage(tg,"ai");
@@ -1922,7 +1922,7 @@ Deno.serve(async (req: Request) => {
   const uploadDoc = message?.document && !imageDoc ? message.document : null;
   const voice = message?.voice || null;
 
-  if(!bm&&text&&!await groupMessageAllowed(message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
+  if(!bm&&(text||voice)&&!await groupMessageAllowed(message,text||caption))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
   if(tg&&!acceptChat(`${chatId}:${tg}`))return json({ok:true,ignored:true,reason:"rate-limited"});
 
   try {
