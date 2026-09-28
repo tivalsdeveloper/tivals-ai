@@ -246,6 +246,19 @@ function gmailIntent(text:string):{matched:boolean;query:string;title:string} {
 function gmailSendIntent(text:string) {
   return /^\/sendemail(?:\s|$)/i.test(String(text||""))||/\b(?:send|compose|write)\s+(?:an?\s+)?e-?mail\b/i.test(String(text||""));
 }
+function gmailDirectReply(data:any,title:string) {
+  const clean=(v:unknown,max=250)=>toolText(v,max).replace(/[\x00-\x1f\x7f*_`\[\]]/g," ").trim();
+  const list=Array.isArray(data?.messages)?data.messages.slice(0,5):[];
+  const account=clean(data?.account||"Gmail",100);
+  if(!list.length)return `**${clean(title,120)}** · ${account}\n\nNo matching emails found.`;
+  const items=list.map((m:any,i:number)=>{
+    const from=clean(m?.from||"Unknown sender",140),subject=clean(m?.subject||"(No subject)",150);
+    const date=clean(m?.date||"",100),snippet=clean(m?.snippet||"",260);
+    const id=String(m?.id||"").match(/^[a-fA-F0-9]{8,32}$/)?.[0]||"";
+    return `${i+1}. **${subject}**\nFrom: ${from}${date?`\nDate: ${date}`:""}${snippet?`\n${snippet}`:""}${id?`\nRead: /reademail ${id}`:""}`;
+  });
+  return `**${clean(title,120)}** · ${account}\n\n${items.join("\n\n")}`;
+}
 function gmailModelData(data:any,title:string) {
   const list=Array.isArray(data?.messages)?data.messages.slice(0,5):[];
   const lines=[`Search: ${toolText(title,160)}`,`Account: ${toolText(data?.account||"Gmail",160)}`,`Matching result estimate: ${Number(data?.result_size||list.length)}`];
@@ -798,7 +811,7 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
   }
   if(["gmail","email"].includes(tool)){
     if(gmailSendIntent(request)){await showEmailConfirmation(token,chatId,tg,profile,request);return"gmail-email-draft";}
-    await consumeOwnerAiUsage(tg);const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await answerWithTool(token,chatId,profile,memoryKey,"Gmail",resolved.title,gmailModelData(data,resolved.title));return"gmail";
+    const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await reply(token,chatId,gmailDirectReply(data,resolved.title));return"gmail";
   }
   if(tool==="github"){
     if(/\bcreate\s+(?:an?\s+)?issue\b/i.test(request)){
