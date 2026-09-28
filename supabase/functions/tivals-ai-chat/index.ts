@@ -293,7 +293,7 @@ function safeErr(e: unknown) {
 }
 
 function setCooldown(provider: ProviderName, reason: string) {
-  if (reason === "rate_limited") cooldownUntil[provider] = Date.now() + 10 * 60_000;
+  if (reason === "rate_limited") cooldownUntil[provider] = Date.now() + 45_000;
   else if (reason === "unauthorized") cooldownUntil[provider] = Date.now() + 30 * 60_000;
   else if (reason === "timeout") cooldownUntil[provider] = Date.now() + 60_000;
   else if (reason === "no_credits") cooldownUntil[provider] = Date.now() + 10 * 60_000;
@@ -390,11 +390,11 @@ async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
   const task=nvidiaTask(prompt);
   const preferred=NVIDIA_TASK_MODELS[task]||NVIDIA_TASK_MODELS.chat;
   // The live catalog is refreshed for model listings; chat tries known models directly.
-  const available=nvidiaCatalog.expires>Date.now()?nvidiaCatalog.ids:uniqueModels([...preferred,...NVIDIA_CHAT_FALLBACK]);
+  // Model listings can lag hosted deployments; let model-specific responses decide availability.
   const deadline=Date.now()+12000;
   // Keep a previously working model warm only within the same task preference.
-  const candidates=uniqueModels([...preferred,...NVIDIA_CHAT_FALLBACK])
-    .filter(id=>available.includes(id)&&nvidiaChatId(id)&&!excluded.includes(id)
+  const candidates=uniqueModels([preferred.includes(nvidiaWorkingModel)||NVIDIA_CHAT_FALLBACK.includes(nvidiaWorkingModel)?nvidiaWorkingModel:"",...preferred,...NVIDIA_CHAT_FALLBACK])
+    .filter(id=>nvidiaChatId(id)&&!excluded.includes(id)
       && (nvidiaModelCooldown.get(id)||0)<Date.now());
   let last="no_models";
   for(const model of candidates.slice(0,3)){
@@ -407,12 +407,12 @@ async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
       last=safeErr(e);
       if(last==="unauthorized"||last==="no_credits"){setCooldown("nvidia",last);break;}
       if(last==="rate_limited"||last==="timeout"||last==="model_unavailable")
-        nvidiaModelCooldown.set(model,Date.now()+(last==="rate_limited"?120000:30000));
+        nvidiaModelCooldown.set(model,Date.now()+(last==="rate_limited"?20000:30000));
       // A malformed payload cannot be repaired by another model; try existing providers.
       if(!["rate_limited","timeout","model_unavailable"].includes(last))break;
     }
   }
-  if(last==="rate_limited"||last==="timeout")setCooldown("nvidia",last);
+  // A busy model should not take the entire NVIDIA account out of rotation.
   throw new Error(last);
 }
 
@@ -992,6 +992,14 @@ Deno.serve(async (req: Request) => {
   if(botInstructions)system.content+=`\n\nBOT IDENTITY AND STYLE:\n${botInstructions}`;
   const prompt = [system, ...messages.filter((m:any) => m.role !== "system")];
   if (widget) { const admin=adminClient(); if(widget.source==="telegram") admin?.from("telegram_website_widgets").update({request_count:Number(widget.request_count||0)+1,last_used_at:new Date().toISOString()}).eq("public_key",widget.public_key).then(()=>{}).catch(()=>{}); else admin?.rpc("record_widget_request",{p_public_key:widget.public_key}).then(()=>{}).catch(()=>{}); }
+  // Short greetings do not need an external inference call, which may be rate limited.
+  const lastUser=String([...messages].reverse().find((m:any)=>m.role==="user")?.content||"").split(String.fromCharCode(10,10)+"Preference:")[0].trim();
+  if(internalRequest&&!widget&&/^(?:hi|hy|hey|hello|hiya|good morning|good afternoon|good evening)[!?. ]*$/i.test(lastUser)){
+    const reply=body?.business_profile?.business_name
+      ? "Hello! How can I help you today?"
+      : "Hey! What's on your mind?";
+    return json({reply,model:"greeting",provider:"Tivals AI",route:"local:greeting"},200,origin);
+  }
   const selected = parseSelectedModel(body?.model);
   const failures: { provider: string; error: string }[] = [];
   const excluded: Partial<Record<ProviderName,string[]>> = {};
@@ -1068,6 +1076,7 @@ Deno.serve(async (req: Request) => {
     return json({ reply: "Tivals AI is not configured yet. Please add at least one AI provider key.", model: "system", provider: "Tivals AI", code: "NO_PROVIDER_KEYS" }, 200);
   }
 
+  console.warn("AI provider exhaustion",failures.map(f=>({provider:f.provider,error:["rate_limited","timeout","unauthorized","no_credits","model_unavailable","cooldown"].includes(f.error)?f.error:"provider_error"})));
   // Return a single friendly reply instead of a failing HTTP status. The website has an
   // older client-side retry loop; a 200 reply prevents it from repeatedly hitting every
   // model/provider again when all providers are already unavailable.
