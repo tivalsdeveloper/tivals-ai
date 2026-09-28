@@ -61,9 +61,17 @@ function bytesToB64(bytes:Uint8Array) {
   let out="";for(let i=0;i<bytes.length;i+=0x8000)out+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
   return btoa(out);
 }
-async function telegramVoice(token:string,chatId:number,audio:Uint8Array,caption:string,business="") {
+async function voiceNarration(text:string){
+  return String(text||"")
+    .replace(/```[\s\S]*?```/g," Code example is in the text reply. ")
+    .replace(/https?:\/\/\S+/g," Link is in the text reply. ")
+    .replace(/[*#_`~]/g,"")
+    .replace(/\s+/g," ").trim().slice(0,3000);
+}
+
+function telegramVoice(token:string,chatId:number,audio:Uint8Array,caption:string,business="") {
   const form=new FormData();form.append("chat_id",String(chatId));form.append("voice",new Blob([audio],{type:"audio/mpeg"}),"reply.mp3");
-  form.append("caption",String(caption||"").slice(0,900));if(business)form.append("business_connection_id",business);
+  form.append("caption",String(caption||"").length>3000?"Voice reply (first part). Full answer follows.":"Voice reply. Full answer follows.");if(business)form.append("business_connection_id",business);
   const r=await fetch(`https://api.telegram.org/bot${token}/sendVoice`,{method:"POST",body:form});const d=await r.json().catch(()=>({}));
   if(!r.ok||d?.ok===false)throw new Error(d?.description||"Telegram voice reply failed.");return d;
 }
@@ -1060,8 +1068,9 @@ Deno.serve(async (req: Request) => {
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"voice_messages")==="always"||(Boolean(voice)&&String(conn.voice_mode||"voice_messages")!=="off");
     if(shouldSpeak){
-      try{await telegramVoice(token,chatId,await synthesizeVoice(answer),answer,businessConnectionId)}catch{await reply(token,chatId,answer,businessConnectionId)}
-    } else await reply(token,chatId,answer,businessConnectionId);
+      try{await telegramVoice(token,chatId,await synthesizeVoice(voiceNarration(answer)),answer,businessConnectionId)}catch(e){console.error("Voice reply failed",String((e as Error)?.message||e))}
+    }
+    await reply(token,chatId,answer,businessConnectionId);
     return json({ ok: true,route:voice?"voice":"ai" });
   } catch (e) {
     const message=String((e as Error)?.name==="AbortError"?"The AI took too long to respond. Please try again.":(e as Error)?.message||e).slice(0,900);
