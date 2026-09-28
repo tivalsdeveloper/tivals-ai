@@ -496,13 +496,18 @@ async function sendFormatted(chatId: number|string, text: string, business?: str
   if(state)state.text=String(text||"");
   return result;
 }
+function queueVoiceReply(chatId:number|string,spoken:string,business?:string){
+  EdgeRuntime.waitUntil((async()=>{
+    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(spoken)),"Voice reply",business)}
+    catch(e){console.error("Background voice reply failed",String((e as Error)?.message||e))}
+  })());
+}
 async function withToolVoice<T>(enabled:boolean,chatId:number|string,business:string|undefined,run:()=>Promise<T>):Promise<T>{
   if(!enabled)return run();
   const output={text:""};
   const result=await toolVoiceOutput.run(output,run);
   if(output.text){
-    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(output.text)),"Tool result. Full details above.",business)}
-    catch(e){console.error("Tool voice reply failed",String((e as Error)?.message||e))}
+    queueVoiceReply(chatId,output.text,business);
   }
   return result;
 }
@@ -1721,12 +1726,8 @@ async function handleVoiceMessage(chatId:number|string,tg:number,voice:any,busin
   const transcript=readyTranscript||await transcribeVoice(await telegramFileBytes(String(voice?.file_id||""),6_000_000),String(voice?.mime_type||"audio/ogg"));
   const reply=await askTivalsAI(transcript,tg);
   const settings=await telegramSettings(tg);
-  let voiceDelivered=false;
-  if(settings.voice_mode!=="off"){
-    try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(reply)),reply,business);voiceDelivered=true}
-    catch(e){console.error("Tivals voice reply error",String((e as Error)?.message||e))}
-  }
-  if(!voiceDelivered||reply.length>700||reply.includes("```"))await sendFormatted(chatId,reply,business);
+  await sendFormatted(chatId,reply,business);
+  if(settings.voice_mode!=="off")queueVoiceReply(chatId,reply,business);
   return settings.voice_mode==="off"?"voice-text":"voice";
 }
 
@@ -2249,12 +2250,8 @@ Deno.serve(async (req: Request) => {
     }
     const answer=await askTivalsAI(text,effectiveTg);
     const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"always");
-    let voiceDelivered=false;
-    if(voiceMode==="always"){
-      try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(answer)),answer,business);voiceDelivered=true}
-      catch(e){console.error("Tivals text-to-voice reply failed",String((e as Error)?.message||e))}
-    }
-    if(!voiceDelivered||answer.length>700||answer.includes("```"))await sendFormatted(chatId,answer,business);
+    await sendFormatted(chatId,answer,business);
+    if(voiceMode==="always")queueVoiceReply(chatId,answer,business);
     return json({ok:true,route:"ai"});
   } catch (e) {
     const m = String((e as Error)?.message || e);
