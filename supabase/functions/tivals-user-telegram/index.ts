@@ -62,7 +62,7 @@ function bytesToB64(bytes:Uint8Array) {
   let out="";for(let i=0;i<bytes.length;i+=0x8000)out+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
   return btoa(out);
 }
-async function voiceNarration(text:string){
+function voiceNarration(text:string){
   return String(text||"")
     .replace(/```[\s\S]*?```/g," Code example is in the text reply. ")
     .replace(/https?:\/\/\S+/g," Link is in the text reply. ")
