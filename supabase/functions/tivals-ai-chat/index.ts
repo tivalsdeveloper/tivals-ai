@@ -287,7 +287,7 @@ function safeErr(e: unknown) {
   if (/401|unauthor|invalid api|invalid key|key_expired/i.test(s)) return "unauthorized";
   if (/402|insufficient.*credit|payment required/i.test(s)) return "no_credits";
   if (/429|rate|quota|allowance|insufficient_quota|allowance_exhausted|limit/i.test(s)) return "rate_limited";
-  if (/model.*not.*found|unknown model|retired model|model_unavailable|model_not_available/i.test(s)) return "model_unavailable";
+  if (/\b404\b|model.*not.*found|unknown model|retired model|model_unavailable|model_not_available/i.test(s)) return "model_unavailable";
   if (/no_models|no_free_models/i.test(s)) return s;
   return s.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 180) || "failed";
 }
@@ -406,10 +406,13 @@ async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
     } catch(e) {
       last=safeErr(e);
       if(last==="unauthorized"||last==="no_credits"){setCooldown("nvidia",last);break;}
-      if(last==="rate_limited"||last==="timeout"||last==="model_unavailable")
+      // Some NVIDIA catalog entries have different chat compatibility. Try another model
+      // for model-specific 4xx and transient 5xx responses without repeating this model.
+      const modelFailure=/^(?:400|404|422|500|502|503|504)\b/.test(String((e as Error)?.message||e));
+      if(last==="rate_limited"||last==="timeout"||last==="model_unavailable"||modelFailure)
         nvidiaModelCooldown.set(model,Date.now()+(last==="rate_limited"?20000:30000));
-      // A malformed payload cannot be repaired by another model; try existing providers.
-      if(!["rate_limited","timeout","model_unavailable"].includes(last))break;
+      console.warn("NVIDIA model attempt failed",{model,reason:["rate_limited","timeout","model_unavailable","unauthorized","no_credits"].includes(last)?last:modelFailure?"model_http_error":"provider_error"});
+      if(!["rate_limited","timeout","model_unavailable"].includes(last)&&!modelFailure)break;
     }
   }
   // A busy model should not take the entire NVIDIA account out of rotation.
