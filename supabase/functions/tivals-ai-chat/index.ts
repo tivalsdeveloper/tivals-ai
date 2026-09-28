@@ -14,7 +14,7 @@ const BAZAARLINK_BASE = "https://api.bazaarlink.ai/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
 const XKIRO_BASE = "https://api.xkiro.com/v1";
 const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
-const VERSION = 31;
+const VERSION = 32;
 
 type WidgetConfig = {
   public_key: string;
@@ -63,7 +63,29 @@ let bazaarWorkingModel = "";
 let xkiroWorkingModel = "";
 let nvidiaWorkingModel = "";
 let nvidiaCatalog: { ids:string[]; expires:number } = { ids:[], expires:0 };
-const NVIDIA_CHAT_FALLBACK = ["meta/llama-3.3-70b-instruct", "microsoft/phi-4-mini-instruct"];
+// These are task-specific hosted chat candidates; the live catalog determines availability.
+const NVIDIA_CHAT_FALLBACK = ["nvidia/nemotron-3.5-lightning-30b-a3b", "z-ai/glm-5-3-flash", "meta/muse-glimmer-30b", "meta/llama-3.3-70b-instruct"];
+const NVIDIA_SPECIALIST_MODELS = { embedding: "nvidia/nemotron-3-embed-1b", safety: ["nvidia/nemotron-3.5-content-safety", "meta/llama-guard-4-12b"], generation: "nvidia/cosmos3-nano" };
+const NVIDIA_TASK_MODELS: Record<string,string[]> = {
+  chat: ["nvidia/nemotron-3.5-lightning-30b-a3b", "z-ai/glm-5-3-flash", "meta/muse-glimmer-30b"],
+  reasoning: ["z-ai/glm-5.3", "nvidia/nemotron-3-ultra-550b-a55b", "meta/muse-glimmer-30b"],
+  coding: ["moonshotai/kimi-k3", "poolside/laguna-xs-2.1", "nvidia/nemotron-3-ultra-550b-a55b"],
+  vision: ["meta/muse-glimmer-30b", "z-ai/glm-5-3-flash", "meta/llama-3.2-90b-vision-instruct", "meta/llama-3.2-11b-vision-instruct"],
+  video: ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "nvidia/cosmos3-nano-reasoner", "meta/muse-glimmer-30b"],
+  translation: ["nvidia/riva-translate-4b-instruct-v2", "z-ai/glm-5-3-flash", "nvidia/nemotron-3.5-lightning-30b-a3b"]
+};
+const nvidiaModelCooldown = new Map<string,number>();
+function nvidiaTask(prompt:any[]): string {
+  const last = [...prompt].reverse().find(x=>x.role==="user");
+  const content = last?.content;
+  if (Array.isArray(content) && content.some((p:any)=>p.type==="image_url")) return "vision";
+  if (Array.isArray(content) && content.some((p:any)=>p.type==="video_url")) return "video";
+  const text = typeof content==="string" ? content : JSON.stringify(content||"");
+  if (/\b(translate|translation|in (?:french|spanish|german|portuguese|arabic|chinese|japanese))\b/i.test(text)) return "translation";
+  if (/\b(code|coding|program|python|javascript|typescript|debug|repository|github|function|regex|sql|terminal)\b/i.test(text)) return "coding";
+  if (/\b(prove|reason|analy[sz]e|compare|plan|mathematics|calculate|complex|step by step)\b/i.test(text)) return "reasoning";
+  return "chat";
+}
 
 const APP_ORIGINS = new Set([
   "https://ai.tivalsdeveloper.site",
@@ -340,7 +362,9 @@ function uniqueModels(models: string[]) {
 }
 
 function nvidiaChatId(id:string) {
-  return /^[\w.-]+\/[\w.:-]+$/.test(id) && !/(?:embed|rerank|retriev|image|video|diffusion|flux|audio|speech|whisper|tts|asr|guard|safety|moderation|nemo-embed)/i.test(id);
+  return id.includes("/") && /^[a-z0-9_.-]+$/i.test(id.split("/")[0]) &&
+    /^[a-z0-9_.:-]+$/i.test(id.split("/")[1]) &&
+    !/(?:embed|rerank|retriev|diffusion|flux|audio|speech|whisper|tts|asr|guard|safety|moderation)/i.test(id);
 }
 async function nvidiaModels(key:string) {
   if(nvidiaCatalog.expires>Date.now())return nvidiaCatalog.ids;
@@ -349,15 +373,34 @@ async function nvidiaModels(key:string) {
     const chat=ids.filter(nvidiaChatId);
     if(chat.length){nvidiaCatalog={ids:chat,expires:Date.now()+300000};return chat;}
   } catch {}
-  return NVIDIA_CHAT_FALLBACK;
+  return uniqueModels([...NVIDIA_CHAT_FALLBACK,...Object.values(NVIDIA_TASK_MODELS).flat()]);
 }
 async function callNvidia(key:string,prompt:any[],excluded:string[]=[]){
   if(inCooldown("nvidia"))throw new Error("cooldown");
   const available=await nvidiaModels(key);
-  const candidates=uniqueModels([nvidiaWorkingModel,...NVIDIA_CHAT_FALLBACK,...available]).filter(id=>available.includes(id)&&!excluded.includes(id));
-  const result=await tryModels("nvidia",candidates,m=>callProvider(`${NVIDIA_BASE}/chat/completions`,key,m,prompt,{},12000),5);
-  nvidiaWorkingModel=result.model;
-  return result;
+  const task=nvidiaTask(prompt);
+  const preferred=NVIDIA_TASK_MODELS[task]||NVIDIA_TASK_MODELS.chat;
+  // Keep a previously working model warm only within the same task preference.
+  const candidates=uniqueModels([...preferred,...NVIDIA_CHAT_FALLBACK])
+    .filter(id=>available.includes(id)&&nvidiaChatId(id)&&!excluded.includes(id)
+      && (nvidiaModelCooldown.get(id)||0)<Date.now());
+  let last="no_models";
+  for(const model of candidates.slice(0,4)){
+    try {
+      const reply=await callProvider(`${NVIDIA_BASE}/chat/completions`,key,model,prompt,{},8500);
+      nvidiaWorkingModel=model;
+      return {reply,route:`nvidia:${model}`,model};
+    } catch(e) {
+      last=safeErr(e);
+      if(last==="unauthorized"||last==="no_credits"){setCooldown("nvidia",last);break;}
+      if(last==="rate_limited"||last==="timeout"||last==="model_unavailable")
+        nvidiaModelCooldown.set(model,Date.now()+(last==="rate_limited"?120000:30000));
+      // A malformed payload cannot be repaired by another model; try existing providers.
+      if(!["rate_limited","timeout","model_unavailable"].includes(last))break;
+    }
+  }
+  if(last==="rate_limited"||last==="timeout")setCooldown("nvidia",last);
+  throw new Error(last);
 }
 
 function isZeroPrice(v: unknown) {
