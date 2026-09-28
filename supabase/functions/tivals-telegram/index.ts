@@ -567,7 +567,7 @@ async function setMiniAppMenu(chatId: number|string) {
 }
 
 async function telegramSettings(tg:number) {
-  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true, voice_mode:"voice_messages" };
+  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true, voice_mode:"always" };
   const { data } = await sb.from("telegram_user_settings")
     .select("response_style,notifications,tool_suggestions,voice_mode")
     .eq("telegram_user_id",tg).maybeSingle();
@@ -575,7 +575,7 @@ async function telegramSettings(tg:number) {
 }
 
 async function voiceToolEnabled(tg:number,voice:any){
-  const mode=String((await telegramSettings(tg)).voice_mode||"voice_messages");
+  const mode=String((await telegramSettings(tg)).voice_mode||"always");
   return mode==="always"||(Boolean(voice)&&mode!=="off");
 }
 
@@ -2173,7 +2173,7 @@ Deno.serve(async (req: Request) => {
         const {error}=await sb.from("telegram_user_settings").upsert({telegram_user_id:tg,voice_mode:voiceMode},{onConflict:"telegram_user_id"});
         if(error)throw error;
       }
-      const mode=String((await telegramSettings(tg)).voice_mode||"voice_messages");
+      const mode=String((await telegramSettings(tg)).voice_mode||"always");
       await sendFormatted(chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.");
       return json({ok:true,route:"voice-setting"});
     }
@@ -2248,7 +2248,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"ai-limit-normal"});
     }
     const answer=await askTivalsAI(text,effectiveTg);
-    const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"voice_messages");
+    const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"always");
     let voiceDelivered=false;
     if(voiceMode==="always"){
       try{await telegramVoice(chatId,await synthesizeVoice(voiceNarration(answer)),answer,business);voiceDelivered=true}
