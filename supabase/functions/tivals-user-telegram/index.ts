@@ -82,17 +82,44 @@ async function aimlTranscribe(bytes:Uint8Array,mime:string){
   for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${key}`}});const d=await r.json().catch(()=>({}));const transcript=aimlTranscript(d);if(r.ok&&transcript)return transcript.slice(0,4000);const status=String(d?.status||"").toLowerCase();if(["error","failed","cancelled"].includes(status))break;}
   throw new Error("backup_transcription_timeout");
 }
+async function nvidiaAudio(bytes:Uint8Array,mime:string):Promise<{bytes:Uint8Array,mime:string}>{
+  const kind=audioFormat(mime);
+  if(kind==="wav"||kind==="mp3")return {bytes,mime:kind==="wav"?"audio/wav":"audio/mpeg"};
+  if(kind!=="ogg"||bytes.length<4||String.fromCharCode(...bytes.subarray(0,4))!=="OggS")throw new Error("unsupported_voice_format");
+  const {OggOpusDecoder}=await import("npm:ogg-opus-decoder@1.7.3");
+  const decoder=new OggOpusDecoder({sampleRate:16000});
+  try{
+    await decoder.ready;
+    const result=await decoder.decodeFile(bytes);
+    const channels=result.channelData as Float32Array[], frames=result.samplesDecoded;
+    if(!channels.length||!frames||frames>16000*180||result.errors?.length)throw new Error("invalid_voice_audio");
+    const wav=new Uint8Array(44+frames*2), view=new DataView(wav.buffer);
+    for(let i=0;i<"RIFF".length;i++)wav[i]="RIFF".charCodeAt(i);
+    view.setUint32(4,wav.length-8,true);
+    for(let i=0;i<"WAVE".length;i++)wav[8+i]="WAVE".charCodeAt(i);
+    for(let i=0;i<"fmt ".length;i++)wav[12+i]="fmt ".charCodeAt(i);
+    view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);
+    view.setUint32(24,16000,true);view.setUint32(28,32000,true);
+    view.setUint16(32,2,true);view.setUint16(34,16,true);
+    for(let i=0;i<"data".length;i++)wav[36+i]="data".charCodeAt(i);
+    view.setUint32(40,frames*2,true);
+    for(let i=0;i<frames;i++){
+      let sample=0;for(const channel of channels)sample+=channel[i]/channels.length;
+      view.setInt16(44+i*2,Math.round(Math.max(-1,Math.min(1,sample))*32767),true);
+    }
+    return {bytes:wav,mime:"audio/wav"};
+  }finally{decoder.free()}
+}
 async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
-  const key=Deno.env.get("NVIDIA_API_KEY")||""; if(!key)return "";
-  const b64=bytesToB64(bytes), format=String(mime||"audio/ogg").split("/")[1]?.split(";")[0]||"ogg";
-  const attempts=[
-    {role:"user",content:[{type:"text",text:"Transcribe this voice note exactly. Return only the spoken words."},{type:"input_audio",input_audio:{data:b64,format}}]},
-    {role:"user",content:`<audio src="data:${String(mime||"audio/ogg")};base64,${b64}" /> Transcribe this voice note exactly. Return only the spoken words.`}
-  ];
-  for(const message of attempts)try{
-    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",messages:[message],max_tokens:1200,temperature:0})});
-    const d=await r.json().catch(()=>({})); const c=d?.choices?.[0]?.message?.content; const text=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||x||"")).join(" ").trim():"";
-    if(r.ok&&text)return text.slice(0,4000); console.error("NVIDIA transcription response",r.status,d?.detail||d?.error||"no transcript");
+  const key=Deno.env.get("NVIDIA_API_KEY")||"";if(!key)return "";
+  try{
+    const audio=await nvidiaAudio(bytes,mime);
+    const url=`data:${audio.mime};base64,${bytesToB64(audio.bytes)}`;
+    const r=await fetch("https://integrate.api.nvidia.com/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",messages:[{role:"user",content:[{type:"text",text:"Transcribe this audio exactly. Return only the spoken words."},{type:"audio_url",audio_url:{url}}]}],max_tokens:1200,temperature:0})});
+    const d=await r.json().catch(()=>({}));const c=d?.choices?.[0]?.message?.content;
+    const transcript=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||"")).join(" ").trim():"";
+    if(r.ok&&transcript)return transcript.slice(0,4000);
+    console.error("NVIDIA transcription response",r.status,d?.detail||d?.error||"no transcript");
   }catch(e){console.error("NVIDIA transcription request failed",e)}
   return "";
 }
