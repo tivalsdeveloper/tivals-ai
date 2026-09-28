@@ -401,23 +401,11 @@ function splitHtml(text: string, limit = 3500) {
 }
 async function generateMedia(token:string,chatId:number|string,type:"image"|"video",prompt:string,business=""){
   const key=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")||"";
-  if(type==="video"){
-    const nvidia=Deno.env.get("NVIDIA_API_KEY")||"";
-    if(nvidia)try{
-      const r=await fetch("https://ai.api.nvidia.com/v1/cosmos/nvidia/cosmos3-nano",{method:"POST",headers:{Authorization:`Bearer ${nvidia}`,"Accept":"application/json","Content-Type":"application/json"},body:JSON.stringify({model_mode:"text2video",prompt:prompt.slice(0,2000),resolution:"480_16_9",num_frames:25,num_inference_steps:35,fps:24,seed:0})});
-      const d=await r.json().catch(()=>({})); const encoded=String(d?.b64_video||"");
-      if(r.ok&&encoded){
-        const bytes=Uint8Array.from(atob(encoded.replace(/^data:video\/mp4;base64,/,"")),(c)=>c.charCodeAt(0));
-        const sb=createClient(SUPABASE_URL,SERVICE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
-        const path=`videos/${Date.now()}-${crypto.randomUUID()}.mp4`; const up=await sb.storage.from("ai-media").upload(path,bytes,{contentType:"video/mp4",cacheControl:"3600",upsert:false});
-        if(!up.error){const url=sb.storage.from("ai-media").getPublicUrl(path).data.publicUrl;await telegram(token,"sendVideo",{chat_id:chatId,video:url,caption:"🎬 Generated video\n"+prompt.slice(0,600),...(business?{business_connection_id:business}:{})});return;}
-      } else console.error("Cosmos3 video failed",r.status,d?.detail||d?.error||"no b64_video");
-    }catch(e){console.error("Cosmos3 video request failed",e)}
-  }
   const r=await fetch(PIXAZO_STUDIO_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${key}`,apikey:key},body:JSON.stringify({type,prompt})});
   const d=await r.json().catch(()=>({})); if(!r.ok)throw new Error(d?.error||"generation_failed");
   const url=String(d?.output||d?.url||(Array.isArray(d?.media)?d.media[0]:"")||""); if(!/^https?:\/\//i.test(url))throw new Error("provider_returned_no_media");
-  await telegram(token,type==="image"?"sendPhoto":"sendVideo",{chat_id:chatId,[type]:url,caption:(type==="image"?"🎨 Generated image\n":"🎬 Generated video\n")+prompt.slice(0,600),...(business?{business_connection_id:business}:{})});
+  const caption=(type==="image"?"🎨 Generated image\\n":"🎬 Generated video\\n")+prompt.slice(0,600);
+  if(type==="video"){try{await telegram(token,"sendVideo",{chat_id:chatId,video:url,caption,...(business?{business_connection_id:business}:{})})}catch{await telegram(token,"sendDocument",{chat_id:chatId,document:url,caption,...(business?{business_connection_id:business}:{})})}}else await telegram(token,"sendPhoto",{chat_id:chatId,photo:url,caption,...(business?{business_connection_id:business}:{})});
 }
 async function reply(token: string, chatId: number, text: string, businessConnectionId = "") {
   const html = mdToHtml(text);
