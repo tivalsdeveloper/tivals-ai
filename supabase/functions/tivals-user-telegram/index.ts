@@ -78,7 +78,7 @@ async function aimlTranscribe(bytes:Uint8Array,mime:string){
   const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");
   const form=new FormData();form.append("model","#g1_whisper-base");form.append("audio",new Blob([bytes],{type:mime||"audio/ogg"}),`voice.${audioFormat(mime)}`);
   const created=await fetch(`${AIMLAPI_BASE}/stt/create`,{method:"POST",headers:{Authorization:`Bearer ${key}`},body:form});const c=await created.json().catch(()=>({}));
-  if(!created.ok||!c?.generation_id)throw new Error("backup_transcription_failed");
+  if(!created.ok||!c?.generation_id){console.error("AI/ML transcription create failed",created.status);throw new Error("backup_transcription_failed");}
   for(let i=0;i<24;i++){await new Promise(resolve=>setTimeout(resolve,2000));const r=await fetch(`${AIMLAPI_BASE}/stt/${encodeURIComponent(String(c.generation_id))}`,{headers:{Authorization:`Bearer ${key}`}});const d=await r.json().catch(()=>({}));const transcript=aimlTranscript(d);if(r.ok&&transcript)return transcript.slice(0,4000);const status=String(d?.status||"").toLowerCase();if(["error","failed","cancelled"].includes(status))break;}
   throw new Error("backup_transcription_timeout");
 }
@@ -110,8 +110,9 @@ async function nvidiaAudio(bytes:Uint8Array,mime:string):Promise<{bytes:Uint8Arr
     return {bytes:wav,mime:"audio/wav"};
   }finally{decoder.free()}
 }
+let nvidiaSpeechBusyUntil=0;
 async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
-  const key=Deno.env.get("NVIDIA_API_KEY")||"";if(!key)return "";
+  const key=Deno.env.get("NVIDIA_API_KEY")||"";if(!key||Date.now()<nvidiaSpeechBusyUntil)return "";
   try{
     const audio=await nvidiaAudio(bytes,mime);
     const url=`data:${audio.mime};base64,${bytesToB64(audio.bytes)}`;
@@ -119,6 +120,7 @@ async function nvidiaTranscribe(bytes:Uint8Array,mime:string){
     const d=await r.json().catch(()=>({}));const c=d?.choices?.[0]?.message?.content;
     const transcript=typeof c==="string"?c.trim():Array.isArray(c)?c.map((x:any)=>String(x?.text||"")).join(" ").trim():"";
     if(r.ok&&transcript)return transcript.slice(0,4000);
+    if(r.status===429||r.status===503)nvidiaSpeechBusyUntil=Date.now()+120_000;
     console.error("NVIDIA transcription response",r.status,d?.detail||d?.error||"no transcript");
   }catch(e){console.error("NVIDIA transcription request failed",e)}
   return "";
@@ -127,7 +129,7 @@ async function transcribeVoice(bytes:Uint8Array,mime:string){
   const nvidiaText=await nvidiaTranscribe(bytes,mime); if(nvidiaText)return nvidiaText;
   const key=Deno.env.get("OPENROUTER_API_KEY")||"";
   if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/transcriptions`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"openai/whisper-large-v3",input_audio:{data:bytesToB64(bytes),format:audioFormat(mime)},response_format:"json",temperature:0})});const d=await r.json().catch(()=>({}));const text=String(d?.text||"").trim();if(r.ok&&text)return text.slice(0,4000)}catch{}
-  try{return await aimlTranscribe(bytes,mime)}catch{throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.")}
+  try{return await aimlTranscribe(bytes,mime)}catch(e){console.error("AI/ML transcription failed",String((e as Error)?.message||e));throw new Error("Voice recognition is temporarily unavailable. Please type your message and try voice again later.")}
 }
 async function aimlSpeech(text:string){const key=Deno.env.get("AIMLAPI_API_KEY")||"";if(!key)throw new Error("backup_not_configured");const r=await fetch(`${AIMLAPI_BASE}/tts`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:"openai/tts-1",text:String(text||"").slice(0,3500),voice:"alloy",response_format:"mp3",speed:1})});const d=await r.json().catch(()=>({}));const url=String(d?.audio?.url||d?.url||"");if(!r.ok||!url)throw new Error("backup_speech_failed");const audio=await fetch(url);if(!audio.ok)throw new Error("backup_audio_download_failed");return new Uint8Array(await audio.arrayBuffer())}
 async function synthesizeVoice(text:string){const key=Deno.env.get("OPENROUTER_API_KEY")||"";if(key)try{const r=await fetch(`${OPENROUTER_BASE}/audio/speech`,{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json","HTTP-Referer":"https://ai.tivalsdeveloper.site/","X-OpenRouter-Title":"Tivals AI"},body:JSON.stringify({model:"mistralai/voxtral-mini-tts-2603",input:String(text||"").slice(0,3500),voice:"en_paul_neutral",response_format:"mp3",speed:1})});if(r.ok){const bytes=new Uint8Array(await r.arrayBuffer());if(bytes.length)return bytes}}catch{}return aimlSpeech(text)}
@@ -920,7 +922,7 @@ Deno.serve(async (req: Request) => {
     const disconnect=text.match(/^\/disconnect_(gmail|github|tiktok|website)$/i);
     if(disconnect&&ownerPrivate){const provider=disconnect[1].toLowerCase();await oauth("disconnect",paywallOwner,provider);if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner);await reply(token,chatId,`✅ ${disconnect[1]} disconnected from your personal bot.`);return json({ok:true,route:"owner-disconnect",provider});}
     if(/^\/(?:tools|help)$/i.test(text)){
-      await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n/reminder email on · /reminder email off · /reminder status\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
+      await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice on · /voice auto · /voice off\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n/reminder email on · /reminder email off · /reminder status\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
     if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await sendYouTubeSearch(token,chatId,query,businessConnectionId);return json({ok:true,route:"youtube"})}
@@ -982,7 +984,20 @@ Deno.serve(async (req: Request) => {
       try{await reply(token,chatId,"Generating your "+kind+" with the connected AI model…",businessConnectionId);await generateMedia(token,chatId,kind,prompt,businessConnectionId);return json({ok:true,route:kind+"-generation"});}
       catch(e){await reply(token,chatId,kind+" generation is unavailable right now. "+String((e as Error)?.message||e),businessConnectionId);return json({ok:true,route:kind+"-generation-error"});}
     }
-    if(/^\/voice$/i.test(text)){await reply(token,chatId,TOOL_SUGGESTION_TEXT.voice,businessConnectionId);return json({ok:true,route:"tool-help-voice"});}
+    const voiceSetting=text.match(/^\/voice(?:@[A-Za-z0-9_]+)?(?:\s+(on|off|auto|status))?$/i);
+    if(voiceSetting){
+      if(!ownerPrivate){await reply(token,chatId,"Only the bot owner can change voice replies in a direct chat.",businessConnectionId);return json({ok:true,route:"voice-setting-owner-only"});}
+      const option=String(voiceSetting[1]||"status").toLowerCase();
+      if(option!=="status"){
+        const voiceMode=option==="on"?"always":option==="off"?"off":"voice_messages";
+        const {error}=await sb.from("telegram_owned_bots").update({voice_mode:voiceMode,updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner).eq("bot_id",Number((await telegram(token,"getMe",{}))?.result?.id||0));
+        if(error)throw error;
+        conn.voice_mode=voiceMode;
+      }
+      const mode=String(conn.voice_mode||"voice_messages");
+      await reply(token,chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.",businessConnectionId);
+      return json({ok:true,route:"voice-setting"});
+    }
     if(/^\/grouphelp(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await reply(token,chatId,"In groups, mention me or reply to one of my messages. Educational commands: `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. In channels, use `/ask question` or an educational command. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
       return json({ok:true,route:"group-help"});
