@@ -890,6 +890,11 @@ Deno.serve(async (req: Request) => {
     if (paywallOwner && update?.business_message && senderId === paywallOwner) {
       return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
     }
+    if(voice){
+      const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);if(duration>90||size>6_000_000)throw new Error("Please keep voice messages under 90 seconds.");
+      await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
+      text=await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg"));
+    }
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId,conn.bot_kind); return json({ok:true,route:"owner-app"});
     }
@@ -1003,11 +1008,7 @@ Deno.serve(async (req: Request) => {
     } else if((explicitTool||mailIntent.matched||gmailSendIntent(text))&&!ownerPrivate){
       await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});
     }
-    if(voice){
-      const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);if(duration>90||size>6_000_000)throw new Error("Please keep voice messages under 90 seconds.");
-      await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
-      text=await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg"));
-    }
+
     if(photos.length||imageDocument){
       if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
       await telegram(token,"sendChatAction",{chat_id:chatId,action:"typing",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
