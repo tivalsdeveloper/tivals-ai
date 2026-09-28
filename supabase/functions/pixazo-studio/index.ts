@@ -171,43 +171,11 @@ Deno.serve(async (req: Request) => {
             console.log("NVIDIA Cosmos3 video generation complete", filename);
             return json({ output: url, video: url, provider: "nvidia", model: "cosmos3-nano" });
           }
-          nvidiaError = response.status === 202 ? "NVIDIA accepted the request but did not return a completed video." : String(data?.detail?.message || data?.detail || data?.error?.message || data?.error || `NVIDIA returned HTTP ${response.status}`).slice(0, 300);
+          nvidiaError = response.status === 404 ? "HTTP 404" : response.status === 202 ? "NVIDIA accepted the request but did not return a completed video." : String(data?.detail?.message || data?.detail || data?.error?.message || data?.error || `NVIDIA returned HTTP ${response.status}`).slice(0, 300);
           console.error("NVIDIA Cosmos3 video generation failed", response.status, nvidiaError);
         } catch (error) {
           nvidiaError = String((error as Error)?.message || error).slice(0, 300);
           console.error("NVIDIA Cosmos3 video generation error", nvidiaError);
-        }
-      }
-      const pixazoVideoKey = Deno.env.get("PIXAZO_API_KEY") || "";
-      let pixazoError = "";
-      if (pixazoVideoKey) {
-        try {
-          const pixazoHeaders = { "Content-Type": "application/json", "Ocp-Apim-Subscription-Key": pixazoVideoKey };
-          const started = await fetch("https://gateway.pixazo.ai/ltx/text-to-video", {
-            method: "POST", headers: pixazoHeaders, body: JSON.stringify({ prompt })
-          });
-          let result: any = await started.json().catch(() => ({}));
-          if (!started.ok) throw new Error(String(result?.error?.message || result?.error || result?.message || `Pixazo returned HTTP ${started.status}`).slice(0,250));
-          const jobId = String(result?.request_id || result?.job_id || "");
-          if (jobId && !/^[a-zA-Z0-9_-]{1,180}$/.test(jobId)) throw new Error("Pixazo returned an invalid job ID.");
-          for (let attempt = 0; jobId && attempt < 18 && !/^(completed|succeeded|success|failed|error|cancelled)$/i.test(String(result?.status || "")); attempt++) {
-            await new Promise(resolve => setTimeout(resolve, 4000));
-            const statusUrl = `https://gateway.pixazo.ai/v2/requests/status/${encodeURIComponent(jobId)}`;
-            const check = await fetch(statusUrl, { headers: { "Ocp-Apim-Subscription-Key": pixazoVideoKey } });
-            result = await check.json().catch(() => ({}));
-            if (!check.ok) throw new Error(String(result?.error || `Pixazo status returned HTTP ${check.status}`).slice(0,250));
-          }
-          if (/^(failed|error|cancelled)$/i.test(String(result?.status || ""))) throw new Error(String(result?.error || "Pixazo could not generate this video."));
-          const media = result?.output?.media_url;
-          const videoUrl = String((Array.isArray(media) ? media[0] : media) || result?.output?.url || result?.output?.video_url || result?.video_url || result?.url || (typeof result?.output === "string" ? result.output : "") || "");
-          if (/^https:\/\//i.test(videoUrl)) {
-            console.log("Pixazo LTX video generation complete", jobId);
-            return json({ output: videoUrl, video: videoUrl, provider: "pixazo", model: "ltx" });
-          }
-          throw new Error(jobId ? "Pixazo video did not finish in time." : "Pixazo returned no video URL.");
-        } catch (error) {
-          pixazoError = String((error as Error)?.message || error).slice(0, 250);
-          console.error("Pixazo LTX video generation failed", pixazoError);
         }
       }
       const hfToken =
@@ -274,7 +242,7 @@ Deno.serve(async (req: Request) => {
           return json(
             {
               error:
-                pixazoError ? `Free LTX video generation failed: ${pixazoError}` : nvidiaError ? "NVIDIA video endpoint is unavailable and Hugging Face credits are exhausted." : "Free video-generation credits are unavailable or exhausted.",
+                nvidiaError && /HTTP 404/.test(nvidiaError) ? "NVIDIA video endpoint returned 404 for this API key, and Hugging Face video credits are exhausted. Video generation needs an enabled provider." : nvidiaError ? `NVIDIA video provider failed: ${nvidiaError}; Hugging Face video credits are exhausted.` : "Free video-generation credits are unavailable or exhausted.",
             },
             402,
           );
