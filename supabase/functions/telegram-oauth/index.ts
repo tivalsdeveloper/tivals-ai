@@ -708,7 +708,7 @@ async function shopifyProducts(tg:number,term:string) {
     if(updateError)throw updateError;
   }
   const search=term.trim().slice(0,80).replace(/[\\"']/g," ");
-  const query="query($q:String){products(first:50,query:$q){nodes{id title handle onlineStoreUrl description(truncateAt:160) priceRangeV2{minVariantPrice{amount currencyCode}}}}}";
+  const query="query($q:String){products(first:50,query:$q){nodes{id title handle onlineStoreUrl description(truncateAt:160) featuredImage{url altText} priceRangeV2{minVariantPrice{amount currencyCode}}}}}";
   const r=await fetch(`https://${shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":token},body:JSON.stringify({query,variables:{q:search?`title:*${search}*`:"status:active"}})});
   const d=await r.json().catch(()=>({}));
   if(r.status===401||r.status===403)throw new Error("Shopify access expired. Reconnect your store.");
