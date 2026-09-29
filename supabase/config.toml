@@ -4,6 +4,10 @@
 # older than 15 minutes before any dashboard data is read.
 verify_jwt = false
 
+[functions.telegram-whatsapp]
+# Meta validates requests with the webhook challenge and app HMAC signature.
+verify_jwt = false
+
 [functions.tivals-telegram]
 # Telegram webhooks authenticate with x-telegram-bot-api-secret-token.
 verify_jwt = false
