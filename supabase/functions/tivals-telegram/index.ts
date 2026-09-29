@@ -228,6 +228,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
     account_label:bot?.username?`@${bot.username}`:botName,bot_name:botName,
     token_enc:await managedBotEncrypt(token),webhook_secret_enc:await managedBotEncrypt(secret),
     is_active:true,bot_kind:kind,
+    voice_mode:"off",
     welcome_message:kind==="business"?`Welcome to ${botName}. How can I help you with our products or services?`:`Hi! I am ${botName}. How can I help you today?`,
     updated_at:new Date().toISOString()
   },{onConflict:"telegram_user_id"});
@@ -572,7 +573,7 @@ async function setMiniAppMenu(chatId: number|string) {
 }
 
 async function telegramSettings(tg:number) {
-  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true, voice_mode:"always" };
+  if (!tg) return { response_style:"balanced", notifications:true, tool_suggestions:true, voice_mode:"off" };
   const { data } = await sb.from("telegram_user_settings")
     .select("response_style,notifications,tool_suggestions,voice_mode")
     .eq("telegram_user_id",tg).maybeSingle();
@@ -580,7 +581,7 @@ async function telegramSettings(tg:number) {
 }
 
 async function voiceToolEnabled(tg:number,voice:any){
-  const mode=String((await telegramSettings(tg)).voice_mode||"always");
+  const mode=String((await telegramSettings(tg)).voice_mode||"off");
   return mode==="always"||(Boolean(voice)&&mode!=="off");
 }
 
@@ -2025,7 +2026,12 @@ Deno.serve(async (req: Request) => {
         await sendFormatted(chatId,`🛍️ **Tivalsdeveloper store**\n\n${term?`Results for ${term}. `:""}Tap a product to view details or buy it. Search with /store product name.`,business);
         for(const item of products){
           const price=item.priceRangeV2?.minVariantPrice;
-          await telegram("sendMessage",{chat_id:chatId,text:`<b>${esc(String(item.title||"Product").slice(0,120))}</b>\n${esc(String(item.description||"").slice(0,240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url:String(item.onlineStoreUrl)}]]},...(business?{business_connection_id:business}:{})});
+          const caption=`<b>${esc(String(item.title||"Product").slice(0,120))}</b>\n${esc(String(item.description||"").slice(0,240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`;
+          const buttons={inline_keyboard:[[{text:"🛒 View details & buy",url:String(item.onlineStoreUrl)}]]};
+          const image=String(item.featuredImage?.url||"");
+          let photoSent=false;
+          if(/^https:\/\//i.test(image))try{await telegram("sendPhoto",{chat_id:chatId,photo:image,caption,parse_mode:"HTML",reply_markup:buttons,...(business?{business_connection_id:business}:{})});photoSent=true}catch(e){console.error("Shopify image unavailable",String(e))}
+          if(!photoSent)await telegram("sendMessage",{chat_id:chatId,text:caption,parse_mode:"HTML",reply_markup:buttons,...(business?{business_connection_id:business}:{})});
         }
         return json({ok:true,route:"store",count:products.length});
       }catch(e){console.error("Store lookup failed",String((e as Error)?.message||e));await sendFormatted(chatId,"The store is temporarily unavailable. Please try again later.",business);return json({ok:true,route:"store-error"});}
@@ -2174,7 +2180,7 @@ Deno.serve(async (req: Request) => {
         const {error}=await sb.from("telegram_user_settings").upsert({telegram_user_id:tg,voice_mode:voiceMode},{onConflict:"telegram_user_id"});
         if(error)throw error;
       }
-      const mode=String((await telegramSettings(tg)).voice_mode||"always");
+      const mode=String((await telegramSettings(tg)).voice_mode||"off");
       await sendFormatted(chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.");
       return json({ok:true,route:"voice-setting"});
     }
@@ -2249,7 +2255,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"ai-limit-normal"});
     }
     const answer=await askTivalsAI(text,effectiveTg);
-    const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"always");
+    const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"off");
     await sendFormatted(chatId,answer,business);
     if(voiceMode==="always")queueVoiceReply(chatId,answer,business);
     return json({ok:true,route:"ai"});

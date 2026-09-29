@@ -464,6 +464,15 @@ async function withToolVoice<T>(enabled:boolean,token:string,chatId:number,busin
   }
   return result;
 }
+async function sendShopifyProduct(token:string,chatId:number,product:any,businessConnectionId="") {
+  const url=String(product?.onlineStoreUrl||"");if(!/^https:\/\//i.test(url))return;
+  const price=product?.priceRangeV2?.minVariantPrice;
+  const caption=`<b>${esc(toolText(product.title||"Product",120))}</b>\n${esc(toolText(product.description||"",240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`;
+  const payload={chat_id:chatId,reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url}]]},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})};
+  const image=String(product?.featuredImage?.url||"");
+  if(/^https:\/\//i.test(image))try{await telegram(token,"sendPhoto",{...payload,photo:image,caption,parse_mode:"HTML"});return}catch(e){console.error("Shopify image unavailable; sending text",String(e))}
+  await telegram(token,"sendMessage",{...payload,text:caption,parse_mode:"HTML"});
+}
 async function reply(token: string, chatId: number, text: string, businessConnectionId = "") {
   const html = mdToHtml(text);
   for (const part of splitHtml(html)) {
@@ -547,7 +556,7 @@ function personalBotSystem(profile:any) {
     ]),
     "Use the conversation history to continue the topic naturally. Ask at most one useful follow-up question when important details are missing.",
     "You are an AI and must never falsely claim to be human, conscious, or physically present.",
-    profile?.bot_kind==="business"?"This is a business assistant for the creator's business. Use the supplied business profile, catalog and FAQ when available. If business information is missing, ask instead of inventing it.":"This is a personal assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
+    profile?.bot_kind==="business"?"Represent the creator's business using its name, assistant name, details, catalog, Shopify products and FAQ. Introduce yourself by name and business once at the start of a new conversation. In later turns answer the customer without repeating that introduction. Be warm, concise and helpful. Quote only confirmed prices and availability. Offer relevant product links, but do not push unrelated products. If business information is missing, ask instead of inventing it.":"This is a personal assistant. Never claim to represent Tivalsdeveloper or any company unless the creator explicitly writes that identity into these personal instructions.",
     "Never invent business details, prices, bookings, contact information, account data, or completed actions.",
     "Never pretend to have done a real-world action you did not do. Be honest when uncertain.",
     "Telegram presentation: lead with the answer, use short paragraphs, and add informative headings only when they help. Avoid Markdown tables, unnecessary emoji, repeated greetings and long introductions. Present search results as numbered items; email results as sender, subject, date and summary. For programming, use fenced language-tagged code blocks and keep each block focused."
@@ -964,7 +973,7 @@ Deno.serve(async (req: Request) => {
     const senderId = Number(message?.from?.id || 0);
     let text = String(message?.text || message?.caption || "").trim();
     const voice=message?.voice||null;
-    const speakTool=String(conn.voice_mode||"always")==="always"||(Boolean(voice)&&String(conn.voice_mode||"always")!=="off");
+    const speakTool=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     const photos=Array.isArray(message?.photo)?message.photo:[];
     const imageDocument=/^image\//i.test(String(message?.document?.mime_type||""))?message.document:null;
     const businessConnectionId = String(message?.business_connection_id || "");
@@ -1034,7 +1043,14 @@ Deno.serve(async (req: Request) => {
         } catch(error){console.error("Bot command registration failed",String((error as Error)?.message||error));}
       }
       if(paywallOwner&&senderId===paywallOwner&&/^\/start\s+app$/i.test(text)){await ownerApp(token,chatId,businessConnectionId,conn.bot_kind);return json({ok:true,route:"personal-app"});}
-      await reply(token, chatId, `${conn.welcome_message||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner && senderId===paywallOwner ? "\n\nOwner commands: /app, /connect, /accounts" : ""}`, businessConnectionId);
+      let greeting=String(conn.welcome_message||"").trim();
+      if(conn.bot_kind==="business"&&paywallOwner){
+        const profile=await telegramBusinessProfile(paywallOwner);
+        const businessName=String(profile?.business_name||"").trim();
+        const assistantName=String(profile?.assistant_name||conn.bot_name||"").trim();
+        if(/^(hi! how can i help you today\?|welcome to |hi! i am )/i.test(greeting)||!greeting)greeting=businessName?`Hi! I'm ${assistantName||"the assistant"} from ${businessName}. How can I help you today?`:`Hi! I'm ${assistantName||"your business assistant"}. How can I help you today?`;
+      }
+      await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
       return json({ ok: true });
     }
     const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
@@ -1046,8 +1062,7 @@ Deno.serve(async (req: Request) => {
         if(!products.length){const count=Number(data?.catalogCount||0);await reply(token,chatId,count>0?`🛍️ The store has ${count} ${count===1?"product":"products"}, but Shopify has not supplied a public Online Store link for ${count===1?"it":"them"} yet. The store owner can publish the products to the Online Store sales channel in Shopify admin, then try /store again.`:term?`No products found for “${term}”. Try /store to browse.`:"No active products are available in this store yet.",businessConnectionId);return json({ok:true,route:"store-empty"});}
         await telegram(token,"sendMessage",{chat_id:chatId,text:`🛍️ <b>Store</b>\n${term?`Results for ${esc(term)}\n`:""}Tap a product to view details or buy it. Search with /store product name.`,parse_mode:"HTML",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
         for(const product of products){
-          const url=String(product.onlineStoreUrl||""),price=product.priceRangeV2?.minVariantPrice;
-          await telegram(token,"sendMessage",{chat_id:chatId,text:`<b>${esc(toolText(product.title,120))}</b>\n${esc(toolText(product.description||"",240))}${price?`\n<b>From ${esc(String(price.amount))} ${esc(String(price.currencyCode))}</b>`:""}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"🛒 View details & buy",url}]]},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
+          await sendShopifyProduct(token,chatId,product,businessConnectionId);
         }
         return json({ok:true,route:"store",count:products.length});
       }catch(error){
@@ -1083,7 +1098,7 @@ Deno.serve(async (req: Request) => {
         if(error)throw error;
         conn.voice_mode=voiceMode;
       }
-      const mode=String(conn.voice_mode||"always");
+      const mode=String(conn.voice_mode||"off");
       await reply(token,chatId,mode==="always"?"Voice replies are on for text and voice messages. Use /voice auto or /voice off.":mode==="off"?"Voice replies are off. Use /voice on or /voice auto.":"Voice replies are on for voice messages only. Use /voice on for spoken replies to text.",businessConnectionId);
       return json({ok:true,route:"voice-setting"});
     }
@@ -1147,7 +1162,7 @@ Deno.serve(async (req: Request) => {
     // Business bots receive their creator's business profile; personal bots remain isolated.
     const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
-    const shouldSpeak=String(conn.voice_mode||"always")==="always"||(Boolean(voice)&&String(conn.voice_mode||"always")!=="off");
+    const shouldSpeak=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     await reply(token,chatId,answer,businessConnectionId);
     if(shouldSpeak)queueVoiceReply(token,chatId,answer,businessConnectionId);
     return json({ ok: true,route:voice?"voice":"ai" });

@@ -998,8 +998,10 @@ Deno.serve(async (req: Request) => {
   // Short greetings do not need an external inference call, which may be rate limited.
   const lastUser=String([...messages].reverse().find((m:any)=>m.role==="user")?.content||"").split(String.fromCharCode(10,10)+"Preference:")[0].trim();
   if(internalRequest&&!widget&&/^(?:hi|hy|hey|hello|hiya|good morning|good afternoon|good evening)[!?. ]*$/i.test(lastUser)){
-    const reply=body?.business_profile?.business_name
-      ? "Hello! How can I help you today?"
+    const name=String(body?.business_profile?.business_name||"").trim().slice(0,100);
+    const assistant=String(body?.business_profile?.assistant_name||"").trim().slice(0,80);
+    const reply=name
+      ? `Hi! I'm ${assistant||"the assistant"} from ${name}. How can I help you today?`
       : "Hey! What's on your mind?";
     return json({reply,model:"greeting",provider:"Tivals AI",route:"local:greeting"},200,origin);
   }
