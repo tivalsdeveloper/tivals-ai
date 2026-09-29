@@ -9,7 +9,7 @@ const PIXAZO_STUDIO_URL = `${SUPABASE_URL}/functions/v1/pixazo-studio`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260927-14";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260929-2";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -1048,7 +1048,7 @@ Deno.serve(async (req: Request) => {
         const profile=await telegramBusinessProfile(paywallOwner);
         const businessName=String(profile?.business_name||"").trim();
         const assistantName=String(profile?.assistant_name||conn.bot_name||"").trim();
-        if(/^(hi! how can i help you today\?|welcome to |hi! i am )/i.test(greeting)||!greeting){
+        if(/^(hi! how can i help you today\?|welcome to |hi! i am |hi! i.m tivals ai from tivalsdeveloper\.?)/i.test(greeting)||!greeting){
           const industryNames:Record<string,string>={retail:"shop",food:"restaurant",beauty:"beauty and wellness business",education:"education service",technology:"technology business",professional:"professional service",health:"health service",travel:"travel business",property:"property business",automotive:"automotive business"};
           const description=String(profile?.business_details||"").replace(/\s+/g," ").trim();
           const firstSentence=description.split(/[.!?]/)[0].slice(0,160).trim();
