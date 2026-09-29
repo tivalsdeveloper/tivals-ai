@@ -499,7 +499,7 @@ async function reply(token: string, chatId: number, text: string, businessConnec
 async function telegramBusinessProfile(tg:number) {
   if(!tg) return null;
   const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
     sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
     sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
@@ -1048,7 +1048,13 @@ Deno.serve(async (req: Request) => {
         const profile=await telegramBusinessProfile(paywallOwner);
         const businessName=String(profile?.business_name||"").trim();
         const assistantName=String(profile?.assistant_name||conn.bot_name||"").trim();
-        if(/^(hi! how can i help you today\?|welcome to |hi! i am )/i.test(greeting)||!greeting)greeting=businessName?`Hi! I'm ${assistantName||"the assistant"} from ${businessName}. How can I help you today?`:`Hi! I'm ${assistantName||"your business assistant"}. How can I help you today?`;
+        if(/^(hi! how can i help you today\?|welcome to |hi! i am )/i.test(greeting)||!greeting){
+          const industryNames:Record<string,string>={retail:"shop",food:"restaurant",beauty:"beauty and wellness business",education:"education service",technology:"technology business",professional:"professional service",health:"health service",travel:"travel business",property:"property business",automotive:"automotive business"};
+          const description=String(profile?.business_details||"").replace(/\s+/g," ").trim();
+          const firstSentence=description.split(/[.!?]/)[0].slice(0,160).trim();
+          const offering=firstSentence?` ${firstSentence}.`:industryNames[String(profile?.industry||"")]?` We are a ${industryNames[String(profile.industry)]}.`:"";
+          greeting=businessName?`Hi! I'm ${assistantName||conn.bot_name||"your assistant"} from ${businessName}.${offering} How can I help you today?`:`Hi! I'm ${assistantName||conn.bot_name||"your business assistant"}. How can I help you today?`;
+        }
       }
       await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
       return json({ ok: true });
