@@ -336,7 +336,7 @@ const plans = {
 
 async function getDashboard(tg:number) {
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection}] = await Promise.all([
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection},{data:whatsappConnection}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
@@ -349,7 +349,8 @@ async function getDashboard(tg:number) {
     ownedBot(tg),
     sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle(),
-    sb.from("telegram_oauth_connections").select("provider,account_label").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle()
+    sb.from("telegram_oauth_connections").select("provider,account_label").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle(),
+    sb.from("telegram_whatsapp_connections").select("phone_display,active").eq("telegram_user_id",tg).maybeSingle()
   ]);
   const active = Boolean(sub && sub.status==="active" && new Date(sub.subscription_expiration_date).getTime() > Date.now());
   const plan = admin ? "owner" : active && (sub.plan==="basic" || sub.plan==="pro") ? sub.plan : "free";
@@ -379,9 +380,9 @@ async function getDashboard(tg:number) {
       group_mode:bot?.group_mode||"mentions",channel_mode:bot?.channel_mode||"commands",
       owner_only_invites:bot?.owner_only_invites!==false
     },
-    connectors:["gmail","github","tiktok","shopify","public_store","website"].map(provider=>{
+    connectors:["gmail","github","tiktok","shopify","public_store","website","whatsapp"].map(provider=>{
       const hit=provider==="shopify"?shopifyConnection:list.find((x:any)=>x?.provider===provider);
-      return { provider, connected:Boolean(hit), account_label:hit?.account_label || "", ...(provider==="shopify"?{can_connect:true,existing_owner_app:Number(shopifyOwner?.telegram_user_id||0)===tg}:{}),...(provider==="public_store"?{public_store:true}:{}) };
+      return { provider, connected:provider==="whatsapp"?Boolean(whatsappConnection?.active):Boolean(hit), account_label:provider==="whatsapp"?whatsappConnection?.phone_display||"":hit?.account_label || "", ...(provider==="shopify"?{can_connect:true,existing_owner_app:Number(shopifyOwner?.telegram_user_id||0)===tg}:{}),...(provider==="public_store"?{public_store:true}:{}) };
     })
   };
 }
@@ -547,6 +548,24 @@ Deno.serve(async req => {
     if(action==="connect_shopify"){
       const d=await oauth("create_shopify_link",tg,"shopify");
       return json({ok:true,url:d.url||""});
+    }
+    if(action==="connect_whatsapp"){
+      const phone=String(body?.phone_number_id||"").trim(),waba=String(body?.waba_id||"").trim();
+      const token=String(body?.access_token||"").trim(),secret=String(body?.app_secret||"").trim();
+      if(!/^\d{5,25}$/.test(phone)||!/^\d{5,25}$/.test(waba)||!token||!secret)return json({error:"Enter the phone number ID, WABA ID, permanent token and app secret."},400);
+      const graph=await fetch(`https://graph.facebook.com/v23.0/${encodeURIComponent(waba)}/phone_numbers?fields=id,display_phone_number&limit=100`,{headers:{authorization:`Bearer ${token}`}});
+      const result=await graph.json().catch(()=>({}));
+      const number=(result?.data||[]).find((x:any)=>String(x.id)===phone);
+      if(!graph.ok||!number)return json({error:"Meta could not confirm that this token can access the phone number in this WhatsApp Business Account."},400);
+      const verifyToken=randomSecret(),digest=hex(await crypto.subtle.digest("SHA-256",enc.encode(verifyToken)));
+      const {error}=await sb.from("telegram_whatsapp_connections").upsert({telegram_user_id:tg,phone_number_id:phone,waba_id:waba,phone_display:String(number.display_phone_number||phone),token_enc:await encrypt(token),app_secret_enc:await encrypt(secret),verify_token_hash:digest,active:true,updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+      if(error)return json({error:error.code==="23505"?"This WhatsApp number is already connected to another account.":"Could not save WhatsApp connection."},400);
+      return json({ok:true,verify_token:verifyToken,callback_url:`${SUPABASE_URL}/functions/v1/telegram-whatsapp`});
+    }
+    if(action==="disconnect_whatsapp"){
+      const {error}=await sb.from("telegram_whatsapp_connections").delete().eq("telegram_user_id",tg);
+      if(error)throw error;
+      return json({ok:true});
     }
     if(action==="configure_shopify_app"){
       const shop=String(body?.shop||"").slice(0,100),clientId=String(body?.client_id||"").slice(0,200),clientSecret=String(body?.client_secret||"").slice(0,300);
