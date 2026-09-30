@@ -1,3 +1,4 @@
+import {verifiedTelegramInitData} from "./security.mjs";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -108,7 +109,7 @@ async function consumeAiUsage(tg:number) {
 
 async function voiceBusinessProfile(tg:number) {
   const [{data:profile},{data:catalog},{data:specialists},{data:faqs}]=await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
     sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
     sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
@@ -160,7 +161,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-2"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-3"}}
   }).catch(()=>null);
 }
 
@@ -271,7 +272,7 @@ async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-2"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-3"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general",bot_kind:botKind});
   } catch(e) {
@@ -284,20 +285,8 @@ async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
 
   return {connected:true,account_label:me.username?`@${me.username}`:String(me.first_name||"Telegram bot")};
 }
-async function verifyInitData(initData:string,token:string) {
-  if(!token||!initData) return null;
-  const p=new URLSearchParams(initData);
-  const hash=p.get("hash")||"";
-  if(!hash) return null;
-  p.delete("hash");
-  const dataCheck=[...p.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>k+"="+v).join("\n");
-  const secret=await hmac(new TextEncoder().encode("WebAppData"),token);
-  if(hex(await hmac(secret,dataCheck))!==hash) return null;
-  const authDate=Number(p.get("auth_date")||0);
-  const age=Math.floor(Date.now()/1000)-authDate;
-  if(!authDate||age<0||age>900) return null;
-  try{const user=JSON.parse(p.get("user")||"{}");return user?.id?user:null}catch{return null}
-}
+async function verifyInitData(initData:string,token:string){return verifiedTelegramInitData(initData,token)}
+
 async function validateInitData(initData:string) {
   const mainUser=await verifyInitData(initData,BOT_TOKEN);
   if(mainUser) return mainUser;
@@ -340,7 +329,7 @@ async function getDashboard(tg:number) {
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("id,item_type,name,price,currency,details,available,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_specialists").select("id,first_name,last_name,about,services,active,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
@@ -674,13 +663,24 @@ Deno.serve(async req => {
         email:String(body?.email||"").trim().slice(0,160),phone:String(body?.phone||"").trim().slice(0,60),
         address:String(body?.address||"").trim().slice(0,500),website_url:websiteUrl,
         payment_options:String(body?.payment_options||"").trim().slice(0,1000),business_hours:hours,
-        booking_reminders:Boolean(body?.booking_reminders),booking_confirmations:Boolean(body?.booking_confirmations),
+        booking_reminders:Boolean(body?.booking_reminders),booking_confirmations:Boolean(body?.booking_confirmations),confirmation_mode:body?.confirmation_mode==="auto"?"auto":"manual",response_minutes:Math.max(5,Math.min(1440,Number(body?.response_minutes)||120)),
         booking_instructions:String(body?.booking_instructions||"").trim().slice(0,2000),updated_at:new Date().toISOString()
       };
       const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"})
-        .select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").single();
+        .select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").single();
       if(error) throw error;
       return json({ok:true,business_profile:data});
+    }
+
+    if(action==="list_business_slots"){
+      const {data,error}=await sb.from("telegram_business_slots").select("id,starts_at,capacity,reserved").eq("business_id",tg).gte("starts_at",new Date().toISOString()).order("starts_at").limit(30);
+      if(error)throw error;return json({ok:true,slots:data||[]});
+    }
+    if(action==="save_business_slot"){
+      const at=new Date(String(body?.starts_at||"")),capacity=Number(body?.capacity||1);
+      if(!Number.isFinite(at.getTime())||at.getTime()<=Date.now()||at.getTime()>Date.now()+366*86400000||!Number.isSafeInteger(capacity)||capacity<1||capacity>100)return json({error:"Enter a future slot and capacity from 1 to 100."},400);
+      const {data,error}=await sb.from("telegram_business_slots").upsert({business_id:tg,starts_at:at.toISOString(),capacity},{onConflict:"business_id,starts_at"}).select("id,starts_at,capacity,reserved").single();
+      if(error)throw error;return json({ok:true,slot:data});
     }
 
     if (action==="save_catalog_item") {
