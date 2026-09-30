@@ -1000,7 +1000,7 @@ Deno.serve(async (req: Request) => {
   if (widget) { const admin=adminClient(); if(widget.source==="telegram") admin?.from("telegram_website_widgets").update({request_count:Number(widget.request_count||0)+1,last_used_at:new Date().toISOString()}).eq("public_key",widget.public_key).then(()=>{}).catch(()=>{}); else admin?.rpc("record_widget_request",{p_public_key:widget.public_key}).then(()=>{}).catch(()=>{}); }
   // Short greetings do not need an external inference call, which may be rate limited.
   const lastUser=String([...messages].reverse().find((m:any)=>m.role==="user")?.content||"").split(String.fromCharCode(10,10)+"Preference:")[0].trim();
-  if(internalRequest&&!widget&&/^(?:hi|hy|hey|hello|hiya|good morning|good afternoon|good evening)[!?. ]*$/i.test(lastUser)){
+  if(internalRequest&&!widget&&messages.filter((m:any)=>m.role==="user").length===1&&/^(?:hi|hy|hey|hello|hiya|good morning|good afternoon|good evening)[!?. ]*$/i.test(lastUser)){
     const name=String(body?.business_profile?.business_name||"").trim().slice(0,100);
     const assistant=String(body?.business_profile?.assistant_name||"").trim().slice(0,80);
     const reply=name
