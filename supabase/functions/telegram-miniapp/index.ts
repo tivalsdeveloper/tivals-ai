@@ -160,7 +160,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260929-2"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-1"}}
   }).catch(()=>null);
 }
 
@@ -271,7 +271,7 @@ async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
       drop_pending_updates:false
     });
     await botApi(token,"setChatMenuButton",{
-      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260929-2"}}
+      menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-1"}}
     }).catch(()=>null);
     await syncBotPresentation(token,{bot_name:String(me.first_name||"My AI"),bot_purpose:"general",bot_kind:botKind});
   } catch(e) {
@@ -573,6 +573,7 @@ Deno.serve(async req => {
       const d=await oauth("create_shopify_link",tg,"shopify");
       return json({ok:true,url:d.url||""});
     }
+    if(action==="enable_product_alerts")return json(await oauth("enable_product_alerts",tg,"shopify"));
     if(action==="shopify_products")return json(await oauth("shopify_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
     if(action==="shopify_public_products")return json(await oauth("shopify_public_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
     if(action==="shopify_bot_products")return json(await oauth("shopify_bot_products",tg,"shopify",{query:String(body?.query||"").slice(0,80)}));
