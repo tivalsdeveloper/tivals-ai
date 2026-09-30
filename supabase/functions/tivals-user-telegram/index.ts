@@ -1,3 +1,4 @@
+import {classify,redact,shouldNotify,nextStatus,autoConfirmAllowed,unverifiedClaims,secureEqual} from "./business-flow.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -9,7 +10,7 @@ const PIXAZO_STUDIO_URL = `${SUPABASE_URL}/functions/v1/pixazo-studio`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-2";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-3";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -499,7 +500,7 @@ async function reply(token: string, chatId: number, text: string, businessConnec
 async function telegramBusinessProfile(tg:number) {
   if(!tg) return null;
   const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
     sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
     sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
@@ -528,6 +529,109 @@ async function sendBusinessMenu(token:string,chatId:number,profile:any,businessC
   const options=businessMenu(profile),rows=[] as Array<Array<{text:string;callback_data:string}>>;
   for(let i=0;i<options.length;i+=2)rows.push(options.slice(i,i+2).map((label:string,j:number)=>({text:label,callback_data:`biz_menu:${i+j}`})));
   await telegram(token,"sendMessage",{chat_id:chatId,text:message,reply_markup:{inline_keyboard:rows},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
+}
+
+// Customer text is treated as request data. Only server-side transitions change status.
+async function businessNotificationsEnabled(ownerId:number){
+  const {data}=await sb.from('telegram_user_settings').select('notifications').eq('telegram_user_id',ownerId).maybeSingle();
+  return data?.notifications!==false;
+}
+function bookingDate(text:string){
+  const match=String(text).match(/\b(20\d\d-\d\d-\d\d)[ T](\d\d:\d\d)(?:\s*(Z|[+-]\d\d:\d\d))?/);
+  if(!match)return null;
+  const date=new Date(`${match[1]}T${match[2]}${match[3]||'+02:00'}`);
+  return Number.isFinite(date.getTime())&&date.getTime()>Date.now()&&date.getTime()<Date.now()+366*86400000?date.toISOString():null;
+}
+function requestButtons(ref:string,type='booking'){
+  if(!['booking','order','payment','quote'].includes(type))return {inline_keyboard:[[{text:'💬 Message customer',callback_data:`message:${ref}`},{text:'✅ Completed',callback_data:`complete:${ref}`}]]};
+  return {inline_keyboard:[
+  [{text:'✅ Confirm',callback_data:`confirm:${ref}`},{text:'❌ Decline',callback_data:`decline:${ref}`}],
+  [{text:'🕒 Suggest new time',callback_data:`suggest:${ref}`},{text:'💬 Message customer',callback_data:`message:${ref}`}],
+  [{text:'✅ Completed',callback_data:`complete:${ref}`},{text:'🚫 No show',callback_data:`no_show:${ref}`}]
+]};}
+function customerButtons(request:any){
+  const ref=request.reference;
+  if(request.status==='confirmed')return {inline_keyboard:[
+    ...(request.starts_at?[[{text:'📅 Add to calendar',url:`https://calendar.google.com/calendar/render?action=TEMPLATE&text=Booking%20${ref}&dates=${new Date(request.starts_at).toISOString().replace(/[-:]|\.\d{3}/g,'')}/${new Date(Date.parse(request.starts_at)+3600000).toISOString().replace(/[-:]|\.\d{3}/g,'')}`}]]:[]),
+    [{text:'✏️ Change',callback_data:`cust:change:${ref}`},{text:'❌ Cancel',callback_data:`cust:cancel:${ref}`}]
+  ]};
+  if(request.status==='rescheduled')return {inline_keyboard:[[{text:'✅ Accept',callback_data:`cust:accept:${ref}`},{text:'🕒 Other time',callback_data:`cust:change:${ref}`}],[{text:'❌ Cancel',callback_data:`cust:cancel:${ref}`}]]};
+  if(request.status==='declined')return {inline_keyboard:[[{text:'📅 New time',callback_data:`cust:new:${ref}`},{text:'📞 Contact us',callback_data:`cust:contact:${ref}`}]]};
+  return {inline_keyboard:[[{text:'⏳ Keep waiting',callback_data:`cust:wait:${ref}`},{text:'📞 Contact us directly',callback_data:`cust:contact:${ref}`}]]};
+}
+async function sendBusinessCustomer(token:string,request:any,text:string,buttons?:any){
+  await telegram(token,'sendMessage',{chat_id:request.chat_id,text,link_preview_options:{is_disabled:true},...(buttons?{reply_markup:buttons}:{}),...(request.business_connection_id?{business_connection_id:request.business_connection_id}:{})});
+}
+async function notifyBusinessOwner(token:string,request:any,enabled:boolean){
+  if(!shouldNotify(request.request_type,enabled))return false;
+  const lines=[`📨 ${request.request_type.toUpperCase()} · ${request.priority.toUpperCase()}`,`Reference: ${request.reference}`,
+    `Customer: ${redact(request.customer_name||'Unknown')}${request.customer_username?` @${redact(request.customer_username)}`:''}${request.customer_phone?` · ${redact(request.customer_phone)}`:''}`,
+    `Summary: ${redact(request.summary)}`,request.starts_at?`Time: ${new Date(request.starts_at).toISOString()}`:'',
+    `Action needed: ${request.request_type==='booking'?'Review and confirm the booking.':'Review and respond to the customer.'}`].filter(Boolean);
+  await telegram(token,'sendMessage',{chat_id:request.business_id,text:lines.join('\n'),reply_markup:requestButtons(request.reference,request.request_type)});
+  return true;
+}
+async function createBusinessRequest(token:string,ownerId:number,message:any,updateId:number,kind:any,profile:any,businessConnectionId:string){
+  const input=redact(String(message.text||message.caption||'').trim());
+  const start=kind.type==='booking'?bookingDate(input):null;
+  if(kind.type==='booking'&&!start){await sb.from('telegram_business_drafts').upsert({business_id:ownerId,customer_id:Number(message.from.id),chat_id:Number(message.chat.id),summary:input,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:'business_id,customer_id,chat_id'});await reply(token,Number(message.chat.id),'What date and time would you like? Please send it as YYYY-MM-DD HH:MM (South Africa time).',businessConnectionId);return 'needs-time';}
+  const ref=crypto.randomUUID().replaceAll('-','').slice(0,8).toUpperCase();
+  const row={business_id:ownerId,reference:ref,source_update_id:Number.isSafeInteger(updateId)?updateId:null,
+    customer_id:Number(message.from.id),chat_id:Number(message.chat.id),business_connection_id:businessConnectionId,
+    customer_name:String([message.from.first_name,message.from.last_name].filter(Boolean).join(' ')).slice(0,120),
+    customer_username:String(message.from.username||'').slice(0,80),customer_phone:String(message.contact?.phone_number||'').slice(0,40),
+    request_type:kind.type,priority:kind.priority,summary:input.slice(0,1500),starts_at:start,
+    response_minutes:Number(profile?.response_minutes||120)};
+  const {data:request,error}=await sb.from('telegram_business_requests').insert(row).select('*').single();
+  if(error){if(error.code==='23505')return 'duplicate';throw error;}
+  let active=request;
+  if(kind.type==='booking'&&profile?.confirmation_mode==='auto'&&start){
+    const {data:slot}=await sb.from('telegram_business_slots').select('id,starts_at,capacity,reserved').eq('business_id',ownerId).eq('starts_at',start).maybeSingle();
+    if(autoConfirmAllowed(slot,start)){
+      const {data:reserved}=await sb.rpc('telegram_confirm_business_slot',{p_business_id:ownerId,p_reference:ref,p_slot_id:slot.id});
+      if(reserved)active={...request,status:'confirmed',slot_id:slot.id};
+    }
+  }
+  const enabled=await businessNotificationsEnabled(ownerId);
+  try{await notifyBusinessOwner(token,active,enabled);await sb.from('telegram_business_requests').update({owner_notified_at:new Date().toISOString()}).eq('business_id',ownerId).eq('reference',ref);}catch{ /* The scheduled job retries owner delivery. */ }
+  await sendBusinessCustomer(token,active,active.status==='confirmed'
+    ?`✅ Booking confirmed. Reference ${ref}. ${start?`Time: ${new Date(start).toLocaleString('en-ZA',{timeZone:'Africa/Johannesburg'})}.`:''}`
+    :`✅ Request received! Reference ${ref}. We'll confirm shortly.`,active.status==='confirmed'?customerButtons(active):undefined);
+  return ref;
+}
+async function handleBusinessAction(token:string,ownerId:number,q:any,action:string,ref:string){
+  const actor=action.startsWith('cust:')?'customer':'owner',op=actor==='customer'?action.slice(5):action;
+  const userId=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+  if(actor==='owner'&&(userId!==ownerId||chatId!==ownerId))throw new Error('Only the business owner can do that.');
+  const {data:request,error}=await sb.from('telegram_business_requests').select('*').eq('business_id',ownerId).eq('reference',ref).maybeSingle();
+  if(error||!request||actor==='customer'&&(request.customer_id!==userId||request.chat_id!==chatId))throw new Error('Request unavailable.');
+  if(op==='suggest'||op==='message'){
+    await telegram(token,'answerCallbackQuery',{callback_query_id:q.id}).catch(()=>{});
+    await reply(token,chatId,op==='suggest'?`Reply with /suggest ${ref} YYYY-MM-DD HH:MM (South Africa time).`:`Reply with /message ${ref} your message.`);
+    return 'owner-prompt';
+  }
+  if(op==='wait'||op==='contact'||op==='attend'||op==='new'){
+    await telegram(token,'answerCallbackQuery',{callback_query_id:q.id}).catch(()=>{});
+    if(op==='new'){await sb.from('telegram_business_drafts').upsert({business_id:ownerId,customer_id:userId,chat_id:chatId,summary:`New booking after declined request ${ref}`,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:'business_id,customer_id,chat_id'});await reply(token,chatId,'What new date and time would you like? Send YYYY-MM-DD HH:MM (South Africa time).',String(q?.message?.business_connection_id||''));}
+    else if(op==='attend'){await reply(token,chatId,`Thanks for confirming you'll be there for ${ref}.`,String(q?.message?.business_connection_id||''));}
+    else if(op==='contact'){const profile=await telegramBusinessProfile(ownerId);await reply(token,chatId,`Contact the business at ${profile?.staff_contact||profile?.phone||profile?.email||'the published business contact'}.`,String(q?.message?.business_connection_id||''));}
+    else await reply(token,chatId,`Request ${ref} is still pending. We'll update you when the business responds.`,String(q?.message?.business_connection_id||''));
+    return op;
+  }
+  const next=nextStatus(request.status,op,actor,request.request_type);
+  if(op==='confirm'&&request.request_type==='booking'&&!request.starts_at)throw new Error('A booking time is required before confirmation.');
+  const {data:updated,error:transitionError}=await sb.rpc('telegram_transition_business_request',{p_business_id:ownerId,p_reference:ref,p_actor:actor,p_customer_id:userId,p_action:op});
+  if(transitionError||!updated||updated.status!==next)throw new Error('This request was already changed.');
+  await telegram(token,'answerCallbackQuery',{callback_query_id:q.id,text:`Request ${next}.`}).catch(()=>{});
+  await telegram(token,'editMessageReplyMarkup',{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]},...(q.message.business_connection_id?{business_connection_id:q.message.business_connection_id}:{})}).catch(()=>{});
+  const statusText={confirmed:`✅ Confirmed. Reference ${ref}.`,declined:`❌ Request ${ref} was declined. Please ask us about another option.`,rescheduled:`🕒 Request ${ref} needs another time. Please reply with your preferred time.`,cancelled:`Request ${ref} was cancelled.`,completed:`Request ${ref} is complete.`,no_show:`Request ${ref} was marked as no show.`}[next]||`Request ${ref}: ${next}.`;
+  if(actor==='customer'&&op==='change')await sb.from('telegram_business_drafts').upsert({business_id:ownerId,customer_id:userId,chat_id:chatId,summary:`Change booking ${ref}`,reference:ref,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:'business_id,customer_id,chat_id'});
+  if(actor==='owner')await sendBusinessCustomer(token,updated,statusText,customerButtons(updated));
+  else {
+    await reply(token,chatId,statusText,String(request.business_connection_id||''));
+    await notifyBusinessOwner(token,{...updated,summary:`Customer changed ${ref}: ${redact(request.summary)}`},true).catch(()=>{});
+  }
+  return next;
 }
 
 const shopifyContextCache=new Map<string,{expires:number;value:any}>();
@@ -615,7 +719,7 @@ function personalBotSystem(profile:any) {
   }
   if(purpose==="coding")lines.push("Prioritize programming, debugging, software engineering and computer science education.");
   if(purpose==="math")lines.push("Prioritize mathematics, step-by-step problem solving and checking final answers.");
-  if(String(profile?.custom_instructions||"").trim())lines.push(`Creator instructions: ${String(profile.custom_instructions).slice(0,8000)}`);
+  if(profile?.bot_kind!=="business"&&String(profile?.custom_instructions||"").trim())lines.push(`Creator instructions: ${String(profile.custom_instructions).slice(0,8000)}`);
   return lines.join("\n\n").slice(0,12000);
 }
 
@@ -960,7 +1064,7 @@ Deno.serve(async (req: Request) => {
   try {
     const [token, secret] = await Promise.all([decrypt(String(conn.access_token_enc || "")), decrypt(String(conn.refresh_token_enc || ""))]);
     responseToken=token;
-    if (!secret || req.headers.get("x-telegram-bot-api-secret-token") !== secret) return json({ error: "Unauthorized" }, 401);
+    if (!secret || !secureEqual(req.headers.get("x-telegram-bot-api-secret-token")||"",secret)) return json({ error: "Unauthorized" }, 401);
 
     const update = await req.json();
     const connectorKey=paywallOwner?`tg:${paywallOwner}`:`web:${owner}`;
@@ -984,6 +1088,20 @@ Deno.serve(async (req: Request) => {
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
       responseChat=Number(q?.message?.chat?.id||0);responseBusiness=String(q?.message?.business_connection_id||"");
+      const businessAction=data.match(/^(confirm|decline|suggest|message|complete|no_show|cust:(?:accept|cancel|change|wait|contact|attend|new)):([A-F0-9]{8})$/);
+      if(businessAction&&paywallOwner&&conn.bot_kind==='business'){
+        if(businessAction[1].startsWith('cust:')){const {data:allowed}=await sb.rpc('telegram_business_allow_message',{p_business_id:paywallOwner,p_customer_id:Number(q.from?.id||0)});if(!allowed)return json({ok:true,route:'rate-limited'});}
+        try{const route=await handleBusinessAction(token,paywallOwner,q,businessAction[1],businessAction[2]);return json({ok:true,route});}
+        catch(error){await telegram(token,'answerCallbackQuery',{callback_query_id:q.id,text:String((error as Error).message).slice(0,150),show_alert:true}).catch(()=>{});return json({ok:true,route:'business-action-rejected'});}
+      }
+      const rating=data.match(/^rate:([A-F0-9]{8}):([1-5])$/);
+      if(rating&&paywallOwner&&conn.bot_kind==='business'){
+        const customer=Number(q.from?.id||0),chat=Number(q.message?.chat?.id||0),stars=Number(rating[2]);
+        const {data:rated}=await sb.from('telegram_business_requests').update({rating:stars,updated_at:new Date().toISOString()}).eq('business_id',paywallOwner).eq('reference',rating[1]).eq('customer_id',customer).eq('chat_id',chat).eq('status','completed').is('rating',null).select('*').maybeSingle();
+        await telegram(token,'answerCallbackQuery',{callback_query_id:q.id,text:rated?'Thank you for your feedback.':'Rating unavailable.'}).catch(()=>{});
+        if(rated){await telegram(token,'editMessageReplyMarkup',{chat_id:chat,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]},...(q.message.business_connection_id?{business_connection_id:q.message.business_connection_id}:{})}).catch(()=>{});await notifyBusinessOwner(token,{...rated,request_type:'rating',priority:stars<=2?'high':'normal',summary:`${stars}/5 rating for ${rated.reference}. ${redact(rated.summary)}`},stars<=2||await businessNotificationsEnabled(paywallOwner)).catch(()=>{});}
+        return json({ok:true,route:'business-rating'});
+      }
       const businessChoice=data.match(/^biz_menu:([0-7])$/);
       if(businessChoice&&paywallOwner&&conn.bot_kind==="business"&&responseChat){
         const profile=await telegramBusinessProfile(paywallOwner),option=businessMenu(profile)[Number(businessChoice[1])];
@@ -991,8 +1109,16 @@ Deno.serve(async (req: Request) => {
         await telegram(token,"editMessageReplyMarkup",{chat_id:responseChat,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]},...(responseBusiness?{business_connection_id:responseBusiness}:{})}).catch(()=>{});
         if(option){
           const participant=Number(q.from?.id||0),conversation=participant?await activeConversation(paywallOwner,responseChat,participant):null;
+          const kind=classify(option);
+          if(kind&&['booking','handoff'].includes(kind.type)){
+            await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
+            return json({ok:true,route:'business-menu-request'});
+          }
           const history=conversation?await conversationHistory(conversation.id):undefined;
-          const answer=await personalAi(conn,`${connectorKey}:${responseChat}:${participant}`,option,history,paywallOwner);
+          let answer=await personalAi(conn,`${connectorKey}:${responseChat}:${participant}`,option,history,paywallOwner);
+          const shop=await connectedShopifyContext(paywallOwner,option);
+          const prices=[...(profile?.catalog||[]).map((x:any)=>x.price),...(shop?.products||[]).map((x:any)=>x.priceRangeV2?.minVariantPrice?.amount)];
+          if(unverifiedClaims(answer,prices))answer='I need the business to verify that detail. Please ask our team for confirmation.';
           if(conversation)await persistConversation(conversation,paywallOwner,responseChat,participant,option,answer);
           await reply(token,responseChat,answer,responseBusiness);
         }
@@ -1051,6 +1177,7 @@ Deno.serve(async (req: Request) => {
       if(mode!=="all"&&!groupCommand&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
     }
     if(!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
+    if(paywallOwner&&conn.bot_kind==='business'&&senderId!==paywallOwner){const {data:allowed,error:rateError}=await sb.rpc('telegram_business_allow_message',{p_business_id:paywallOwner,p_customer_id:senderId});if(rateError||!allowed)return json({ok:true,ignored:true,reason:'business-rate-limited'});}
     if (paywallOwner && update?.business_message && !(await businessBelongsToOwner(token, businessConnectionId, paywallOwner))) {
       return json({ ok: true, route: "business-owner-rejected" });
     }
@@ -1072,6 +1199,20 @@ Deno.serve(async (req: Request) => {
     }
     if (paywallOwner && senderId === paywallOwner && text === "/accounts") {
       await ownerAccounts(token,chatId,paywallOwner,businessConnectionId); return json({ok:true,route:"owner-accounts"});
+    }
+    const ownerResponse=text.match(/^\/(suggest|message)\s+([A-F0-9]{8})\s+([\s\S]{1,600})$/i);
+    if(ownerResponse&&conn.bot_kind==='business'){
+      if(!ownerPrivate)throw new Error('Only the business owner can respond to customers.');
+      const action=ownerResponse[1].toLowerCase(),ref=ownerResponse[2].toUpperCase(),value=redact(ownerResponse[3].trim());
+      const {data:request}=await sb.from('telegram_business_requests').select('*').eq('business_id',paywallOwner).eq('reference',ref).maybeSingle();
+      if(!request)throw new Error('Request unavailable.');
+      if(action==='suggest'){
+        const when=bookingDate(value);if(!when)throw new Error('Use a future YYYY-MM-DD HH:MM time.');
+        const {data:changed,error}=await sb.rpc('telegram_transition_business_request',{p_business_id:paywallOwner,p_reference:ref,p_actor:'owner',p_customer_id:senderId,p_action:'suggest',p_suggested_at:when});
+        if(error||!changed)throw new Error('The request can no longer be changed.');
+        await sendBusinessCustomer(token,changed,`🕒 The business suggested ${new Date(when).toLocaleString('en-ZA',{timeZone:'Africa/Johannesburg'})} for ${ref}. Please accept or ask for another time.`,customerButtons(changed));
+      }else await sendBusinessCustomer(token,request,`Message about ${ref}: ${value}`);
+      await reply(token,chatId,`Response sent for ${ref}.`);return json({ok:true,route:`business-${action}`});
     }
     const disconnect=text.match(/^\/disconnect_(gmail|github|tiktok|website)$/i);
     if(disconnect&&ownerPrivate){const provider=disconnect[1].toLowerCase();await oauth("disconnect",paywallOwner,provider);if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner);await reply(token,chatId,`✅ ${disconnect[1]} disconnected from your personal bot.`);return json({ok:true,route:"owner-disconnect",provider});}
@@ -1248,16 +1389,57 @@ Deno.serve(async (req: Request) => {
       const name=String(businessProfile?.assistant_name||conn.bot_name||"your assistant"),business=String(businessProfile?.business_name||"the business");
       await sendBusinessMenu(token,chatId,businessProfile,businessConnectionId,`I'm ${name}, the virtual assistant for ${business}. What else can I help with?`);
     };
-    if(businessProfile&&/\b(human|person|staff|agent|reception|technician|engineer|complaint|refund|payment issue|speak to someone)\b/i.test(text)){
-      const contact=String(businessProfile.staff_contact||businessProfile.phone||businessProfile.email||"").trim();
-      const hours=String(businessProfile.business_hours?.text||"").trim();
-      const message=contact?`I can help you reach our team at ${contact}. ${hours?`They'll reply during working hours (${hours}).`:`They'll follow up during working hours.`}`:"I'll pass your request to our team. They'll follow up during working hours.";
-      let notified=false;
-      try{await telegram(token,"sendMessage",{chat_id:paywallOwner,text:`Customer handoff request from chat ${chatId}: ${text.slice(0,600)}`});notified=true;}catch{}
-      const honest=contact?message:notified?message:"I don't have a staff contact available here yet. Please try the business's published contact details.";
-      if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,honest);
-      await reply(token,chatId,honest,businessConnectionId);await followWithMenu();
-      return json({ok:true,route:"business-handoff",notified});
+    if(businessProfile&&/^\/(?:delete_my_data|privacy_delete)(?:@[A-Za-z0-9_]+)?$/i.test(text)){
+      if(!privateConversation)throw new Error('Open a private chat to request deletion.');
+      const scope={business_id:paywallOwner,customer_id:senderId};
+      const deletes=await Promise.all([
+        sb.from('telegram_business_requests').delete().match(scope),
+        sb.from('telegram_business_drafts').delete().match(scope),
+        sb.from('telegram_business_rate_limits').delete().match(scope),
+        sb.from('telegram_product_alert_subscribers').delete().eq('telegram_user_id',paywallOwner).eq('channel','telegram').eq('recipient',String(chatId)),
+        sb.from('telegram_personal_messages').delete().eq('bot_owner_id',paywallOwner).eq('participant_id',senderId),
+        sb.from('telegram_personal_chats').delete().eq('bot_owner_id',paywallOwner).eq('participant_id',senderId)
+      ]);
+      if(deletes.some(x=>x.error))throw new Error('Deletion could not be completed. Please contact the business.');
+      await reply(token,chatId,'Your customer requests and bot conversation history for this business were deleted.',businessConnectionId);
+      return json({ok:true,route:'business-privacy-deletion'});
+    }
+    let requestKind=businessProfile?classify(text):null;
+    if(requestKind?.type==='order'&&!/\b(place(?:d)?|submit(?:ted)?|confirm(?:ed)?|ordered)\b/i.test(text))requestKind=null;
+    if(businessProfile&&!requestKind&&bookingDate(text)){
+      const {data:draft}=await sb.from('telegram_business_drafts').select('summary,reference').eq('business_id',paywallOwner).eq('customer_id',senderId).eq('chat_id',chatId).gt('expires_at',new Date().toISOString()).maybeSingle();
+      if(draft){
+        if(draft.reference){
+          const {data:changed,error}=await sb.from('telegram_business_requests').update({starts_at:bookingDate(text),updated_at:new Date().toISOString()}).eq('business_id',paywallOwner).eq('customer_id',senderId).eq('chat_id',chatId).eq('reference',draft.reference).eq('status','rescheduled').select('*').maybeSingle();
+          if(error||!changed)throw new Error('That booking is no longer available.');
+          await sb.from('telegram_business_drafts').delete().eq('business_id',paywallOwner).eq('customer_id',senderId).eq('chat_id',chatId);
+          await notifyBusinessOwner(token,{...changed,summary:`Proposed new time: ${new Date(changed.starts_at).toLocaleString('en-ZA',{timeZone:'Africa/Johannesburg'})}. ${redact(changed.summary)}`},true).catch(()=>{});
+          await reply(token,chatId,`Change request for ${changed.reference} received. The business will confirm your new time.`,businessConnectionId);
+          return json({ok:true,route:'business-booking-new-time'});
+        }
+        requestKind={type:'booking',priority:'normal'};text=`${draft.summary} ${text}`;
+        await sb.from('telegram_business_drafts').delete().eq('business_id',paywallOwner).eq('customer_id',senderId).eq('chat_id',chatId);
+      }
+    }
+    if(requestKind&&businessProfile&&senderId!==paywallOwner){
+      if(requestKind.change){
+        const ref=String(text.match(/\b[A-F0-9]{8}\b/i)?.[0]||'').toUpperCase();
+        const query=sb.from('telegram_business_requests').select('*').eq('business_id',paywallOwner).eq('customer_id',senderId).eq('chat_id',chatId).eq('request_type','booking').in('status',['pending','confirmed','rescheduled']).order('created_at',{ascending:false}).limit(1);
+        const {data:previous}=ref?await query.eq('reference',ref).maybeSingle():await query.maybeSingle();
+        if(previous){
+          const op=/\bcancel\b/i.test(text)?'cancel':'change';
+          const {data:changed,error}=await sb.rpc('telegram_transition_business_request',{p_business_id:paywallOwner,p_reference:previous.reference,p_actor:'customer',p_customer_id:senderId,p_action:op});
+          if(error||!changed)throw new Error('That booking can no longer be changed.');
+          await reply(token,chatId,op==='cancel'?`Booking ${previous.reference} was cancelled.`:`Change request for ${previous.reference} received. Please send the new date and time.`,businessConnectionId);
+          await notifyBusinessOwner(token,{...changed,summary:`Customer ${op}: ${redact(text)}`},true).catch(()=>{});
+          return json({ok:true,route:`business-booking-${op}`});
+        }
+        await reply(token,chatId,'I could not find an active booking in this chat. Please send its reference ID or contact the business.',businessConnectionId);
+        return json({ok:true,route:'business-booking-not-found'});
+      }
+      const ref=await createBusinessRequest(token,paywallOwner,{...message,text},Number(update?.update_id),requestKind,businessProfile,businessConnectionId);
+      if(ref!=='needs-time'&&ref!=='duplicate'&&conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,`Request ${ref} received; status pending unless the database slot confirmed it.`);
+      return json({ok:true,route:'business-request',reference:ref});
     }
     const commerce=conn.bot_kind==="business"&&paywallOwner&&!voice
       ?await businessCommerceReply(paywallOwner,text):null;
@@ -1270,7 +1452,20 @@ Deno.serve(async (req: Request) => {
     }
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
     // Business bots receive their creator's business profile; personal bots remain isolated.
-    const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
+    let answer:string;
+    try{answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);}
+    catch(error){
+      if(!businessProfile)throw error;
+      const fallback='Sorry, something went wrong. Connecting you with our team.';
+      const {data:req}=await sb.from('telegram_business_requests').insert({business_id:paywallOwner,customer_id:senderId,chat_id:chatId,business_connection_id:businessConnectionId,source_update_id:Number(update?.update_id)||null,request_type:'handoff',priority:'high',reference:crypto.randomUUID().slice(0,8).toUpperCase(),customer_name:String(message.from?.first_name||'').slice(0,120),customer_username:String(message.from?.username||'').slice(0,80),summary:`AI could not answer: ${redact(text)}`}).select('*').maybeSingle();
+      if(req)await notifyBusinessOwner(token,req,true).catch(()=>{});
+      await reply(token,chatId,fallback,businessConnectionId);return json({ok:true,route:'business-ai-fallback'});
+    }
+    if(businessProfile){
+      const shop=await connectedShopifyContext(paywallOwner,text);
+      const prices=[...(businessProfile.catalog||[]).map((x:any)=>x.price),...(shop?.products||[]).map((x:any)=>x.priceRangeV2?.minVariantPrice?.amount)];
+      if(unverifiedClaims(answer,prices))answer='I need the business to verify that detail. Please ask our team for confirmation.';
+    }
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     await reply(token,chatId,answer,businessConnectionId);
@@ -1279,7 +1474,11 @@ Deno.serve(async (req: Request) => {
     return json({ ok: true,route:voice?"voice":"ai" });
   } catch (e) {
     const message=String((e as Error)?.name==="AbortError"?"The AI took too long to respond. Please try again.":(e as Error)?.message||e).slice(0,900);
-    if(responseToken&&responseChat)await reply(responseToken,responseChat,`⚠️ ${message}`,responseBusiness).catch(()=>{});
+    if(responseToken&&responseChat){
+      const safe=conn?.bot_kind==='business'?'Sorry, something went wrong. Connecting you with our team.':`⚠️ ${message}`;
+      await reply(responseToken,responseChat,safe,responseBusiness).catch(()=>{});
+      if(conn?.bot_kind==='business'&&paywallOwner)await telegram(responseToken,'sendMessage',{chat_id:paywallOwner,text:'⚠️ A customer request could not be processed. Please check the bot and follow up.'}).catch(()=>{});
+    }
     return json({ ok: false, error: message }, 200);
   }
 });
