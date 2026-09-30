@@ -534,6 +534,26 @@ async function connectedShopifyContext(ownerId:number,userText:string) {
   return value;
 }
 
+function commerceIntent(text:string){return /\b(buy|purchase|order|available|catalog|shopify|books?|courses?|products?|price|sell)\b/i.test(text)}
+async function businessCommerceReply(ownerId:number,text:string):Promise<{message:string;products:any[]}|null>{
+  if(!commerceIntent(text))return null;
+  const store=await connectedShopifyContext(ownerId,"");
+  if(!store||!store.available)return {message:"I can't check the store right now. Please try again shortly or tell me which product you're looking for.",products:[]};
+  const products=Array.isArray(store.products)?store.products:[];
+  if(!products.length)return {message:"I can't find any published products with purchase links right now. Tell me what you're looking for and I'll help you contact the business.",products:[]};
+  const normalized=(v:string)=>v.toLowerCase().replace(/[^a-z0-9 ]/g," ");
+  const terms=normalized(text);
+  const named=products.filter((p:any)=>normalized(String(p.title||"")).split(/\s+/)
+    .filter(w=>w.length>3&&!/^(learn|course|lessons|handwritten|beginner|advanced|digital|guide|with)$/.test(w))
+    .some(w=>terms.includes(w)));
+  if(named.length===1&&/\b(buy|purchase|order|price)\b/i.test(text))return {message:"Yes, this product is available. Tap below to view the details and buy it:",products:named};
+  const digital=products.filter((p:any)=>/course|lesson|pdf|learn|guide|handwritten/i.test(String(p.title||"")));
+  const selected=(named.length?named:/\bbooks?\b/i.test(text)&&digital.length?digital:products).slice(0,3);
+  const note=/\bbooks?\b/i.test(text)&&!products.some((p:any)=>/\bbook\b/i.test(String(p.title||"")))
+    ?"We have digital learning materials. I can't confirm a printed book in the published listings. ":"";
+  return {message:`${note}Here are some published options. Tap one to view details and buy. Which one interests you?`,products:selected};
+}
+
 function personalBotSystem(profile:any) {
   const name=String(profile?.bot_name||profile?.account_label||"AI assistant").slice(0,64);
   const purpose=String(profile?.bot_purpose||"general");
@@ -1164,6 +1184,14 @@ Deno.serve(async (req: Request) => {
     });
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
+    const commerce=conn.bot_kind==="business"&&paywallOwner&&!voice
+      ?await businessCommerceReply(paywallOwner,text):null;
+    if(commerce){
+      if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,commerce.message);
+      await reply(token,chatId,commerce.message,businessConnectionId);
+      for(const product of commerce.products)await sendShopifyProduct(token,chatId,product,businessConnectionId);
+      return json({ok:true,route:"business-products",count:commerce.products.length});
+    }
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
     // Business bots receive their creator's business profile; personal bots remain isolated.
     const answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);
