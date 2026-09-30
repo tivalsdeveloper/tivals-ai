@@ -675,6 +675,30 @@ async function configureShopifyApp(tg:number,rawShop:string,rawId:string,rawSecr
   if(disconnectError)throw disconnectError;
   return shop;
 }
+async function enableProductAlerts(tg:number){
+  const app=await shopifyApp(tg);
+  if(!app?.shop)throw new Error("Configure your Shopify app first.");
+  const {data:conn,error}=await sb.from("telegram_oauth_connections").select("access_token_enc,expires_at,metadata").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle();
+  if(error||!conn||shopDomain(String(conn.metadata?.shop||""))!==app.shop)throw new Error("Connect Shopify first.");
+  if(conn.expires_at&&new Date(conn.expires_at).getTime()<Date.now()+120_000)throw new Error("Reconnect Shopify before enabling alerts.");
+  const {data:existing}=await sb.from("telegram_shopify_webhook_subscriptions").select("shop_domain,create_webhook_id,update_webhook_id").eq("telegram_user_id",tg).maybeSingle();
+  if(existing?.shop_domain===app.shop&&existing.create_webhook_id&&existing.update_webhook_id)return {enabled:true,shop:app.shop};
+  const token=await decrypt(String(conn.access_token_enc));
+  const uri=`${SUPABASE_URL}/functions/v1/telegram-shopify-product-webhook`;
+  const mutation="mutation webhookSubscriptionCreate($topic:WebhookSubscriptionTopic!,$webhookSubscription:WebhookSubscriptionInput!){webhookSubscriptionCreate(topic:$topic,webhookSubscription:$webhookSubscription){webhookSubscription{id topic uri} userErrors{field message}}}";
+  const ids:Record<string,string>={};
+  for(const topic of ["PRODUCTS_CREATE","PRODUCTS_UPDATE"]){
+    const r=await fetch(`https://${app.shop}/admin/api/2026-07/graphql.json`,{method:"POST",headers:{"content-type":"application/json","X-Shopify-Access-Token":token},body:JSON.stringify({query:mutation,variables:{topic,webhookSubscription:{uri}}})});
+    const d=await r.json().catch(()=>({}));
+    const item=d?.data?.webhookSubscriptionCreate;
+    if(!r.ok||d.errors?.length||item?.userErrors?.length||!item?.webhookSubscription?.id)throw new Error(String(item?.userErrors?.[0]?.message||d?.errors?.[0]?.message||"Shopify could not enable product alerts."));
+    ids[topic]=String(item.webhookSubscription.id);
+  }
+  const {error:saveError}=await sb.from("telegram_shopify_webhook_subscriptions").upsert({telegram_user_id:tg,shop_domain:app.shop,create_webhook_id:ids.PRODUCTS_CREATE,update_webhook_id:ids.PRODUCTS_UPDATE,updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+  if(saveError)throw saveError;
+  return {enabled:true,shop:app.shop};
+}
+
 async function shopifyLink(req:Request,tg:number,rawShop:string) {
   if(!internal(req))return json({error:"Unauthorized"},401);
   if(!Number.isSafeInteger(tg)||tg<=0)return json({error:"Invalid Telegram user."},400);
@@ -1272,6 +1296,10 @@ Deno.serve(async (req: Request) => {
     const connections = [...(data || [])];
     if (website) connections.push({ provider:"website", account_label:website.account_label || "Tivals AI website", updated_at:website.updated_at, metadata:{ user_id:website.user_id } });
     return json({ connections });
+  }
+  if(action==="enable_product_alerts"){
+    try{return json(await enableProductAlerts(tg));}
+    catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
   if(action==="shopify_products"){
     if(!Number.isSafeInteger(tg)||tg<=0)return json({error:"Invalid Telegram user."},400);

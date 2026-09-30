@@ -17,22 +17,38 @@ function productLine(p:any){
   const formatted=Number.isFinite(amount)?` — ${price?.currencyCode||"ZAR"} ${amount.toFixed(2)}`:"";
   return `${String(p.title||"").slice(0,120)}${formatted}\n${String(p.onlineStoreUrl||"").slice(0,500)}`;
 }
-function shoppingReply(text:string,products:any[],shopifyAvailable:boolean){
-  const t=text.toLowerCase();
-  if(!/\b(buy|purchase|order|available|catalog|store|books?|courses?|products?|price|sell)\b/.test(t))return "";
-  if(!shopifyAvailable)return "I can't check the store right now. Please try again shortly or tell me which product you're looking for.";
-  if(!products.length)return "There are no published products I can link to right now. Tell me what you're looking for and I'll help you contact the business.";
+function shoppingReply(text:string,products:any[],shopifyAvailable:boolean,previous:any[]){
+  const t=text.toLowerCase().trim();
+  const last=String(previous?.[0]?.reply_text||"");
+  const followUp=/^(yes|yeah|yep|sure|okay|ok|i do|please|send (it|the link))\W*$/i.test(t);
+  if(followUp){
+    const links=[...last.matchAll(/https:\/\/[^\s]+/g)].map(m=>m[0]);
+    if(links.length===1){const p=products.find(x=>String(x.onlineStoreUrl||"")===links[0]);return {text:"Yes. Tap the product below to view it and complete your purchase.",products:p?[p]:[],link:p?"":links[0]}}
+    if(links.length>1)return {text:"Which product would you like? Send its name and I'll show you the purchase link.",products:[]};
+    return {text:"Sure. Tell me which product you mean and I'll help you with the next step.",products:[]};
+  }
+  if(!/\b(buy|purchase|order|available|catalog|store|books?|courses?|products?|price|sell|show|view)\b/.test(t))return null;
+  if(!shopifyAvailable)return {text:"I can't check the store right now. Please try again shortly or tell me which product you're looking for.",products:[]};
+  if(!products.length)return {text:"I can't find any published products with purchase links right now.",products:[]};
   const normalized=(v:string)=>v.toLowerCase().replace(/[^a-z0-9 ]/g," ");
-  const named=products.filter(p=>{
-    const title=normalized(String(p.title||""));
-    const distinctive=title.split(/\s+/).filter(w=>w.length>3&&!/^(learn|course|lessons|handwritten|beginner|advanced|digital|guide|with)$/.test(w));
-    return distinctive.some(w=>normalized(t).includes(w));
-  });
-  if(named.length===1&&/\b(buy|purchase|order|price)\b/.test(t))return `Yes, you can view and buy this product here:\n${productLine(named[0])}`;
+  const named=products.filter(p=>normalized(String(p.title||"")).split(/\s+/)
+    .filter(w=>w.length>3&&!/^(learn|course|lessons|handwritten|beginner|advanced|digital|guide|with)$/.test(w))
+    .some(w=>normalized(t).includes(w)));
+  if(named.length===1)return {text:"Here is the product. Tap its link to view details and buy it.",products:named};
   const digital=products.filter(p=>/course|lesson|pdf|learn|guide|handwritten/i.test(String(p.title||"")));
-  const candidates=(named.length?named:(/\bbook(s)?\b/.test(t)&&digital.length?digital:products)).slice(0,3);
-  const note=/\bbook(s)?\b/.test(t)&&!products.some(p=>/\bbook\b/i.test(String(p.title||"")))?"We have digital learning materials available. I can't confirm a printed book from the published listings.\n\n":"";
-  return `${note}Here are ${candidates.length} published options:\n\n${candidates.map((p,i)=>`${i+1}. ${productLine(p)}`).join("\n\n")}\n\nWhich one would you like?`;
+  const candidates=(named.length?named:/\bbooks?\b/.test(t)&&digital.length?digital:products).slice(0,3);
+  const note=/\bbooks?\b/.test(t)&&!products.some(p=>/\bbook\b/i.test(String(p.title||"")))?"These are digital learning materials; I can't confirm a printed book in the published listings. ":"";
+  return {text:`${note}Here are some published options. Which one interests you?`,products:candidates};
+}
+async function sendWhatsApp(phoneId:string,token:string,to:string,message:any,contextId=""){
+  const r=await fetch(`https://graph.facebook.com/v23.0/${phoneId}/messages`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({messaging_product:"whatsapp",to,...message,...(contextId?{context:{message_id:contextId}}:{})})});
+  if(!r.ok)throw new Error(`Meta send failed: ${r.status}`);
+}
+async function sendProductImage(phoneId:string,token:string,to:string,p:any){
+  const image=String(p?.featuredImage?.url||""),link=String(p?.onlineStoreUrl||"");
+  const caption=productLine(p).slice(0,1000);
+  if(/^https:\/\//i.test(image))try{await sendWhatsApp(phoneId,token,to,{type:"image",image:{link:image,caption}});return}catch(e){console.error("WhatsApp product image unavailable",String(e))}
+  await sendWhatsApp(phoneId,token,to,{type:"text",text:{body:caption}});
 }
 async function shopifyContext(owner:number){
   const response=await fetch(`${url}/functions/v1/telegram-oauth`,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${serviceKey}`},body:JSON.stringify({action:"shopify_products",telegram_user_id:owner,provider:"shopify",query:""})});
@@ -76,11 +92,27 @@ Deno.serve(async req=>{
         db.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",connection.telegram_user_id).limit(30),
         db.from("telegram_whatsapp_messages").select("incoming_text,reply_text").eq("phone_number_id",ids[0]).eq("customer_number",customer).neq("message_id",String(msg.id)).not("reply_text","is",null).order("received_at",{ascending:false}).limit(5)
       ]);
+      if(/^(?:stop|unsubscribe|stop product alerts|stop products)$/i.test(incoming)){
+        await db.from("telegram_product_alert_subscribers").update({active:false}).eq("telegram_user_id",connection.telegram_user_id).eq("channel","whatsapp").eq("recipient",customer);
+        const token=await decrypt(connection.token_enc);
+        await sendWhatsApp(ids[0],token,customer,{type:"text",text:{body:"Product alerts are off. Message 'notify me of new products' to turn them on again."}},String(msg.id));
+        await db.from("telegram_whatsapp_messages").update({reply_text:"Product alerts are off."}).eq("message_id",String(msg.id));
+        continue;
+      }
+      if(/^(?:notify me(?: of| about)? new products|product alerts on|subscribe to product alerts)$/i.test(incoming)){
+        await db.from("telegram_product_alert_subscribers").upsert({telegram_user_id:connection.telegram_user_id,channel:"whatsapp",recipient:customer,active:true,opted_in_at:new Date().toISOString(),last_inbound_at:new Date().toISOString()},{onConflict:"telegram_user_id,channel,recipient"});
+        const token=await decrypt(connection.token_enc);
+        await sendWhatsApp(ids[0],token,customer,{type:"text",text:{body:"You're subscribed to new product alerts. Reply STOP PRODUCTS to opt out. WhatsApp alerts are sent only when messaging rules allow them."}},String(msg.id));
+        await db.from("telegram_whatsapp_messages").update({reply_text:"Product alerts enabled."}).eq("message_id",String(msg.id));
+        continue;
+      }
+      await db.from("telegram_product_alert_subscribers").update({last_inbound_at:new Date().toISOString()}).eq("telegram_user_id",connection.telegram_user_id).eq("channel","whatsapp").eq("recipient",customer).eq("active",true);
       let products:any[]=[],shopifyAvailable=false;
-      try{if(/\b(buy|purchase|order|available|catalog|store|books?|courses?|products?|price|sell)\b/i.test(incoming)){products=await shopifyContext(Number(connection.telegram_user_id));shopifyAvailable=true}}
+      try{if(/\b(buy|purchase|order|available|catalog|store|books?|courses?|products?|price|sell|show|view)\b/i.test(incoming)||/^(yes|yeah|yep|sure|okay|ok|i do|please|send (it|the link))\W*$/i.test(incoming)){products=await shopifyContext(Number(connection.telegram_user_id));shopifyAvailable=true}}
       catch(e){console.error("WhatsApp Shopify lookup unavailable",String((e as Error)?.message||e))}
       const history=(previous||[]).reverse().flatMap((row:any)=>[{role:"user",content:String(row.incoming_text||"").slice(0,3000)},{role:"assistant",content:String(row.reply_text||"").slice(0,3000)}]);
-      let answer=shoppingReply(incoming,products,shopifyAvailable);
+      const commerce=shoppingReply(incoming,products,shopifyAvailable,previous||[]);
+      let answer=commerce?.text||"";
       if(!answer){
         const ai=await fetch(`${url}/functions/v1/tivals-ai-chat`,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${serviceKey}`},body:JSON.stringify({model:"tivals-ai",business_profile:{...business,catalog,faqs,shopify:{available:shopifyAvailable,products}},messages:[{role:"system",content:"You are replying to a WhatsApp customer. Continue the conversation naturally. Do not introduce yourself again after the first reply. Answer the question directly. Never suggest an unrelated service or claim you checked a store unless live product details are provided. Do not invent product availability, prices, or purchase links. Keep replies short and helpful."},...history,{role:"user",content:incoming}]})});
         if(!ai.ok)throw new Error("AI unavailable");
@@ -90,9 +122,11 @@ Deno.serve(async req=>{
       const reply=answer.slice(0,4000);
       if(!reply)throw new Error("Empty reply");
       const token=await decrypt(connection.token_enc);
-      const sent=await fetch(`https://graph.facebook.com/v23.0/${ids[0]}/messages`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({messaging_product:"whatsapp",to:String(msg.from),type:"text",text:{body:reply},context:{message_id:String(msg.id)}})});
-      if(!sent.ok)throw new Error(`Meta send failed: ${sent.status}`);
-      await db.from("telegram_whatsapp_messages").update({reply_text:reply}).eq("message_id",String(msg.id));
+      await sendWhatsApp(ids[0],token,customer,{type:"text",text:{body:reply}},String(msg.id));
+      for(const product of commerce?.products||[])await sendProductImage(ids[0],token,customer,product);
+      if(commerce?.link)await sendWhatsApp(ids[0],token,customer,{type:"text",text:{body:commerce.link}});
+      const remembered=commerce?.products?.length?`${reply}\n${commerce.products.map(productLine).join("\n")}`:commerce?.link?`${reply}\n${commerce.link}`:reply;
+      await db.from("telegram_whatsapp_messages").update({reply_text:remembered.slice(0,4000)}).eq("message_id",String(msg.id));
     }catch(e){console.error("WhatsApp reply failed",String(e));await db.from("telegram_whatsapp_messages").delete().eq("message_id",String(msg.id));return new Response("Retry later",{status:503})}
   }
   return new Response("OK");

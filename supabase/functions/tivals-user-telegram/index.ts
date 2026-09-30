@@ -9,7 +9,7 @@ const PIXAZO_STUDIO_URL = `${SUPABASE_URL}/functions/v1/pixazo-studio`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260929-2";
+const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-1";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -1078,6 +1078,16 @@ Deno.serve(async (req: Request) => {
       }
       await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
       return json({ ok: true });
+    }
+    const productAlerts=text.match(/^\/productalerts(?:@[A-Za-z0-9_]+)?(?:\s+(on|off))?$/i);
+    if(productAlerts){
+      if(!privateConversation){await reply(token,chatId,"Open a private chat with the bot to manage product alerts.",businessConnectionId);return json({ok:true,route:"product-alerts-private"})}
+      const enabled=productAlerts[1]?.toLowerCase()==="on";
+      if(!productAlerts[1]){await reply(token,chatId,"Use /productalerts on to receive new product alerts, or /productalerts off to stop them.",businessConnectionId);return json({ok:true,route:"product-alerts-help"})}
+      const owner=paywallOwner||senderId;
+      await sb.from("telegram_product_alert_subscribers").upsert({telegram_user_id:owner,channel:"telegram",recipient:String(chatId),active:enabled,opted_in_at:new Date().toISOString(),last_inbound_at:new Date().toISOString()},{onConflict:"telegram_user_id,channel,recipient"});
+      await reply(token,chatId,enabled?"New product alerts are on. Use /productalerts off anytime.":"New product alerts are off.",businessConnectionId);
+      return json({ok:true,route:"product-alerts",enabled});
     }
     const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(storeCommand){
