@@ -1,5 +1,6 @@
 import {classify,redact,shouldNotify,nextStatus,autoConfirmAllowed,unverifiedClaims,secureEqual} from "./business-flow.mjs";
 import {automaticButtons,cleanAnswer,menuRows,matchingMenuOption} from "./button-rules.mjs";
+import {bookingDate} from "./booking-time.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -542,12 +543,6 @@ async function businessNotificationsEnabled(ownerId:number){
   const {data}=await sb.from('telegram_user_settings').select('notifications').eq('telegram_user_id',ownerId).maybeSingle();
   return data?.notifications!==false;
 }
-function bookingDate(text:string){
-  const match=String(text).match(/\b(20\d\d-\d\d-\d\d)[ T](\d\d:\d\d)(?:\s*(Z|[+-]\d\d:\d\d))?/);
-  if(!match)return null;
-  const date=new Date(`${match[1]}T${match[2]}${match[3]||'+02:00'}`);
-  return Number.isFinite(date.getTime())&&date.getTime()>Date.now()&&date.getTime()<Date.now()+366*86400000?date.toISOString():null;
-}
 function requestButtons(ref:string,type='booking'){
   if(!['booking','order','payment','quote'].includes(type))return {inline_keyboard:[[{text:'💬 Message customer',callback_data:`message:${ref}`},{text:'✅ Completed',callback_data:`complete:${ref}`}]]};
   return {inline_keyboard:[
@@ -576,6 +571,53 @@ async function notifyBusinessOwner(token:string,request:any,enabled:boolean){
     `Action needed: ${request.request_type==='booking'?'Review and confirm the booking.':'Review and respond to the customer.'}`].filter(Boolean);
   await telegram(token,'sendMessage',{chat_id:request.business_id,text:lines.join('\n'),reply_markup:requestButtons(request.reference,request.request_type)});
   return true;
+}
+async function showBookingPreview(token:string,ownerId:number,message:any,profile:any,businessConnectionId="",summary=""){
+  const chatId=Number(message.chat.id),customerId=Number(message.from.id);
+  const start=bookingDate(summary);
+  if(!start){
+    await sb.from("telegram_business_drafts").upsert({business_id:ownerId,customer_id:customerId,chat_id:chatId,summary:`BOOKING:${summary}`,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:"business_id,customer_id,chat_id"});
+    await reply(token,chatId,"What date and time would you prefer? You can write tomorrow at 2pm or Friday morning.",businessConnectionId);
+    return "needs-time";
+  }
+  await sb.from("telegram_business_drafts").upsert({business_id:ownerId,customer_id:customerId,chat_id:chatId,summary:`PREVIEW:${summary}`,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:"business_id,customer_id,chat_id"});
+  const date=new Intl.DateTimeFormat("en-ZA",{timeZone:"Africa/Johannesburg",dateStyle:"long",timeStyle:"short"}).format(new Date(start));
+  const choices=["✅ Continue","✏️ Change","❌ Cancel"];
+  const markup=businessConnectionId?{inline_keyboard:menuRows(choices).map((row:any[])=>row.map((b:any)=>({text:b.text,callback_data:`booking_draft:${choices.indexOf(b.text)}`})))}:{keyboard:menuRows(choices),resize_keyboard:true,is_persistent:true};
+  await telegram(token,"sendMessage",{chat_id:chatId,text:`📅 Booking request\nDate and time: ${date}\nDetails: ${redact(summary).slice(0,400)}\nPlease check before submitting. This is a request until the business confirms it.`,reply_markup:markup,...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
+  return "preview";
+}
+async function advanceBookingDraft(token:string,ownerId:number,message:any,updateId:number,profile:any,businessConnectionId="",choice=""){
+  const chatId=Number(message.chat.id),customerId=Number(message.from.id);
+  const scope={business_id:ownerId,customer_id:customerId,chat_id:chatId};
+  const {data:draft}=await sb.from("telegram_business_drafts").select("summary,reference").match(scope).gt("expires_at",new Date().toISOString()).maybeSingle();
+  if(!draft||draft.reference||!String(draft.summary||"").match(/^(BOOKING|PREVIEW|CHANGE):/))return null;
+  const summary=String(draft.summary).replace(/^(BOOKING|PREVIEW|CHANGE):/,""),state=String(draft.summary).split(":")[0];
+  const input=choice||String(message.text||"").trim();
+  if(input==="❌ Cancel"||/^cancel$/i.test(input)){
+    await sb.from("telegram_business_drafts").delete().match(scope);
+    await reply(token,chatId,"Your booking request was cancelled.",businessConnectionId);
+    await sendBusinessMenu(token,chatId,profile,businessConnectionId);
+    return "cancelled";
+  }
+  if(input==="✏️ Change"){
+    await sb.from("telegram_business_drafts").update({summary:`CHANGE:${summary}`}).match(scope);
+    await reply(token,chatId,"What date and time would you prefer instead?",businessConnectionId);
+    return "change";
+  }
+  if(input==="✅ Continue"&&state==="PREVIEW"){
+    // Remove the draft atomically so a second tap cannot submit the same booking.
+    const {data:claimed}=await sb.from("telegram_business_drafts").delete().match(scope).eq("summary",draft.summary).select("summary").maybeSingle();
+    if(!claimed)return "duplicate";
+    const ref=await createBusinessRequest(token,ownerId,{...message,text:summary},updateId,{type:"booking",priority:"normal"},profile,businessConnectionId);
+    await sendBusinessMenu(token,chatId,profile,businessConnectionId);
+    return ref;
+  }
+  if(bookingDate(input)&&state!=="PREVIEW")return await showBookingPreview(token,ownerId,message,profile,businessConnectionId,`Requested time: ${input}. Original request: ${summary}`);
+  if(state==="PREVIEW"&&bookingDate(input))return await showBookingPreview(token,ownerId,message,profile,businessConnectionId,`${summary} ${input}`);
+  if(state==="PREVIEW"&&input==="🏠 Main menu")return null;
+  await reply(token,chatId,state==="PREVIEW"?"Use ✅ Continue, ✏️ Change or ❌ Cancel.":"Please send a date and time, such as tomorrow at 2pm.",businessConnectionId);
+  return "waiting";
 }
 async function createBusinessRequest(token:string,ownerId:number,message:any,updateId:number,kind:any,profile:any,businessConnectionId:string){
   const input=redact(String(message.text||message.caption||'').trim());
@@ -1117,6 +1159,17 @@ Deno.serve(async (req: Request) => {
         if(rated){await telegram(token,'editMessageReplyMarkup',{chat_id:chat,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]},...(q.message.business_connection_id?{business_connection_id:q.message.business_connection_id}:{})}).catch(()=>{});await notifyBusinessOwner(token,{...rated,request_type:'rating',priority:stars<=2?'high':'normal',summary:`${stars}/5 rating for ${rated.reference}. ${redact(rated.summary)}`},stars<=2||await businessNotificationsEnabled(paywallOwner)).catch(()=>{});}
         return json({ok:true,route:'business-rating'});
       }
+      const bookingDraftChoice=data.match(/^booking_draft:([0-2])$/);
+      if(bookingDraftChoice&&paywallOwner&&conn.bot_kind==="business"&&responseChat){
+        const choice=["✅ Continue","✏️ Change","❌ Cancel"][Number(bookingDraftChoice[1])];
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        await telegram(token,"editMessageText",{chat_id:responseChat,message_id:q.message.message_id,text:`${String(q.message?.text||"Booking request")}\n✅ You selected: ${choice}`,reply_markup:{inline_keyboard:[]},...(responseBusiness?{business_connection_id:responseBusiness}:{})}).catch(()=>{});
+        await reply(token,responseChat,choice,responseBusiness);
+        const profile=await telegramBusinessProfile(paywallOwner);
+        const result=await advanceBookingDraft(token,paywallOwner,{chat:{id:responseChat},from:q.from,text:choice},Number(update?.update_id),profile,responseBusiness,choice);
+        if(!result)await sendBusinessMenu(token,responseChat,profile,responseBusiness,"That option has expired. Choose another option.");
+        return json({ok:true,route:"booking-draft-button",result});
+      }
       const businessChoice=data.match(/^biz_menu:([0-7])$/);
       if(businessChoice&&paywallOwner&&conn.bot_kind==="business"&&responseChat){
         const profile=await telegramBusinessProfile(paywallOwner),option=businessMenu(profile)[Number(businessChoice[1])];
@@ -1127,7 +1180,8 @@ Deno.serve(async (req: Request) => {
           const participant=Number(q.from?.id||0),conversation=participant?await activeConversation(paywallOwner,responseChat,participant):null;
           const kind=classify(option);
           if(kind&&['booking','handoff'].includes(kind.type)){
-            await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
+            if(kind.type==="booking")await showBookingPreview(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},profile,responseBusiness,option);
+            else await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
             return json({ok:true,route:'business-menu-request'});
           }
           const history=conversation?await conversationHistory(conversation.id):undefined;
@@ -1422,6 +1476,10 @@ Deno.serve(async (req: Request) => {
       await reply(token,chatId,'Your customer requests and bot conversation history for this business were deleted.',businessConnectionId);
       return json({ok:true,route:'business-privacy-deletion'});
     }
+    if(businessProfile&&senderId!==paywallOwner){
+      const progress=await advanceBookingDraft(token,paywallOwner,message,Number(update?.update_id),businessProfile,businessConnectionId);
+      if(progress)return json({ok:true,route:"booking-draft",result:progress});
+    }
     let requestKind=businessProfile?classify(selectedMenuOption||text):null;
     if(requestKind?.type==='order'&&!/\b(place(?:d)?|submit(?:ted)?|confirm(?:ed)?|ordered)\b/i.test(text))requestKind=null;
     if(businessProfile&&!requestKind&&bookingDate(text)){
@@ -1455,7 +1513,9 @@ Deno.serve(async (req: Request) => {
         await reply(token,chatId,'I could not find an active booking in this chat. Please send its reference ID or contact the business.',businessConnectionId);
         return json({ok:true,route:'business-booking-not-found'});
       }
-      const ref=await createBusinessRequest(token,paywallOwner,{...message,text},Number(update?.update_id),requestKind,businessProfile,businessConnectionId);
+      const ref=requestKind.type==="booking"
+        ?await showBookingPreview(token,paywallOwner,{...message,text},businessProfile,businessConnectionId,text)
+        :await createBusinessRequest(token,paywallOwner,{...message,text},Number(update?.update_id),requestKind,businessProfile,businessConnectionId);
       if(ref!=='needs-time'&&ref!=='duplicate'&&conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,`Request ${ref} received; status pending unless the database slot confirmed it.`);
       return json({ok:true,route:'business-request',reference:ref});
     }
