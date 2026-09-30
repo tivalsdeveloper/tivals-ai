@@ -499,13 +499,35 @@ async function reply(token: string, chatId: number, text: string, businessConnec
 async function telegramBusinessProfile(tg:number) {
   if(!tg) return null;
   const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
     sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
     sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
   ]);
   if(error) throw error;
   return profile ? {...profile,catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]} : null;
+}
+
+const BUSINESS_MENUS:Record<string,string[]>={
+  food:["🍽 Menu","🛵 Order","📅 Book a table","🕒 Hours & location","👤 Talk to staff"],
+  retail:["🛍 Products","📦 Track order","↩️ Returns","💳 Prices","👤 Talk to staff"],
+  beauty:["💇 Services & prices","📅 Book appointment","✏️ Reschedule","🕒 Hours","👤 Talk to staff"],
+  property:["🏠 Listings","📅 Book viewing","💰 Budget & search","👤 Talk to an agent"],
+  health:["📅 Book appointment","🩺 Services","🕒 Hours & location","👤 Talk to reception"],
+  education:["🎓 Courses","💰 Fees","📝 Register","📅 Deadlines","👤 Talk to admissions"],
+  repairs:["🔧 Get a quote","📅 Book a visit","🚨 Urgent job","📍 Service area","👤 Talk to a technician"],
+  technology:["🛠 Tech support","💻 Buy hardware/software","🌐 Web/App development","🔐 Cybersecurity","☁️ Cloud & hosting","📅 Book a consultation","💰 Get a quote","👤 Talk to an engineer"]
+};
+function businessMenu(profile:any){
+  const industry=String(profile?.industry||"other");
+  if(BUSINESS_MENUS[industry])return BUSINESS_MENUS[industry];
+  const names=(Array.isArray(profile?.catalog)?profile.catalog:[]).map((x:any)=>String(x.name||"").trim()).filter(Boolean).slice(0,5);
+  return [...names.map((n:string)=>`🛍 ${n.slice(0,26)}`),"🕒 Hours & location","👤 Talk to a human"].slice(0,8);
+}
+async function sendBusinessMenu(token:string,chatId:number,profile:any,businessConnectionId="",message="What would you like to do?"){
+  const options=businessMenu(profile),rows=[] as Array<Array<{text:string;callback_data:string}>>;
+  for(let i=0;i<options.length;i+=2)rows.push(options.slice(i,i+2).map((label:string,j:number)=>({text:label,callback_data:`biz_menu:${i+j}`})));
+  await telegram(token,"sendMessage",{chat_id:chatId,text:message,reply_markup:{inline_keyboard:rows},...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
 }
 
 const shopifyContextCache=new Map<string,{expires:number;value:any}>();
@@ -962,6 +984,20 @@ Deno.serve(async (req: Request) => {
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
       responseChat=Number(q?.message?.chat?.id||0);responseBusiness=String(q?.message?.business_connection_id||"");
+      const businessChoice=data.match(/^biz_menu:([0-7])$/);
+      if(businessChoice&&paywallOwner&&conn.bot_kind==="business"&&responseChat){
+        const profile=await telegramBusinessProfile(paywallOwner),option=businessMenu(profile)[Number(businessChoice[1])];
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        await telegram(token,"editMessageReplyMarkup",{chat_id:responseChat,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]},...(responseBusiness?{business_connection_id:responseBusiness}:{})}).catch(()=>{});
+        if(option){
+          const participant=Number(q.from?.id||0),conversation=participant?await activeConversation(paywallOwner,responseChat,participant):null;
+          const history=conversation?await conversationHistory(conversation.id):undefined;
+          const answer=await personalAi(conn,`${connectorKey}:${responseChat}:${participant}`,option,history,paywallOwner);
+          if(conversation)await persistConversation(conversation,paywallOwner,responseChat,participant,option,answer);
+          await reply(token,responseChat,answer,responseBusiness);
+        }
+        return json({ok:true,route:"business-menu"});
+      }
       if(paywallOwner&&data==="chat_new"){
         const participantId=Number(q?.from?.id||0),callbackChat=Number(q?.message?.chat?.id||0);if(!participantId||!callbackChat||q?.message?.business_connection_id)return json({ok:true,route:"chat-new-rejected"});
         await startConversation(paywallOwner,callbackChat,participantId);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"New chat started."}).catch(()=>{});await reply(token,callbackChat,"✨ New chat started. What would you like to talk about?");return json({ok:true,route:"chat-new"});
@@ -1000,7 +1036,7 @@ Deno.serve(async (req: Request) => {
     responseChat=chatId;responseBusiness=businessConnectionId;
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
-    const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private"&&!businessConnectionId);
+    const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private");
     if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
       const mode=String(conn.channel_mode||"commands");
@@ -1076,8 +1112,19 @@ Deno.serve(async (req: Request) => {
           greeting=businessName?`Hi! I'm ${assistantName||conn.bot_name||"your assistant"} from ${businessName}.${offering} How can I help you today?`:`Hi! I'm ${assistantName||conn.bot_name||"your business assistant"}. How can I help you today?`;
         }
       }
-      await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
+      if(conn.bot_kind==="business"&&paywallOwner){
+        const profile=await telegramBusinessProfile(paywallOwner),name=String(profile?.assistant_name||conn.bot_name||"your assistant"),business=String(profile?.business_name||"this business");
+        const history=privateConversation?await conversationHistory((await activeConversation(paywallOwner,chatId,senderId)).id):[];
+        const short=history.length>0;
+        await reply(token,chatId,short?`Welcome back! How can I help you with ${business}?`:`👋 Hi${String(message?.from?.first_name||"").trim()?`, ${String(message.from.first_name).slice(0,40)}`:""}! I'm ${name}, the virtual assistant for ${business}. I can help with ${businessMenu(profile).slice(0,3).map(x=>x.replace(/^[^\p{L}\p{N}]+/u,"")).join(", ")} 24/7.`,businessConnectionId);
+        await sendBusinessMenu(token,chatId,profile,businessConnectionId);
+      } else await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
       return json({ ok: true });
+    }
+    if(conn.bot_kind==="business"&&paywallOwner&&/^(?:\/(?:menu|new)(?:@[A-Za-z0-9_]+)?|start over|something else|main menu)$/i.test(text)){
+      if(privateConversation)await startConversation(paywallOwner,chatId,senderId);
+      await sendBusinessMenu(token,chatId,await telegramBusinessProfile(paywallOwner),businessConnectionId,"How can I help with a new request?");
+      return json({ok:true,route:"business-new-menu"});
     }
     const productAlerts=text.match(/^\/productalerts(?:@[A-Za-z0-9_]+)?(?:\s+(on|off))?$/i);
     if(productAlerts){

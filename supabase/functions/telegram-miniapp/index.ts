@@ -108,7 +108,7 @@ async function consumeAiUsage(tg:number) {
 
 async function voiceBusinessProfile(tg:number) {
   const [{data:profile},{data:catalog},{data:specialists},{data:faqs}]=await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
     sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
     sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
@@ -340,7 +340,7 @@ async function getDashboard(tg:number) {
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_business_catalog").select("id,item_type,name,price,currency,details,available,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_specialists").select("id,first_name,last_name,about,services,active,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
@@ -659,7 +659,7 @@ Deno.serve(async req => {
       const businessName=String(body?.business_name||"").trim().slice(0,120);
       const assistantName=String(body?.assistant_name||"").trim().slice(0,80);
       const businessDetails=String(body?.business_details||"").trim().slice(0,8000);
-      const industries=["other","retail","food","beauty","education","technology","professional","health","travel","property","automotive"];
+      const industries=["other","retail","food","beauty","education","technology","professional","health","travel","property","automotive","repairs"];
       const behaviors=["friendly","professional","warm","sales","support"];
       const industry=industries.includes(String(body?.industry))?String(body.industry):"other";
       const behavior=behaviors.includes(String(body?.behavior))?String(body.behavior):"friendly";
@@ -670,7 +670,7 @@ Deno.serve(async req => {
       const hours=body?.business_hours && typeof body.business_hours==="object" && !Array.isArray(body.business_hours) ? body.business_hours : {};
       if(JSON.stringify(hours).length>5000) return json({error:"Business hours are too long."},400);
       const row={
-        telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,industry,behavior,
+        telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,industry,behavior,languages:String(body?.languages||"").trim().slice(0,300),staff_contact:String(body?.staff_contact||"").trim().slice(0,300),
         email:String(body?.email||"").trim().slice(0,160),phone:String(body?.phone||"").trim().slice(0,60),
         address:String(body?.address||"").trim().slice(0,500),website_url:websiteUrl,
         payment_options:String(body?.payment_options||"").trim().slice(0,1000),business_hours:hours,
@@ -678,7 +678,7 @@ Deno.serve(async req => {
         booking_instructions:String(body?.booking_instructions||"").trim().slice(0,2000),updated_at:new Date().toISOString()
       };
       const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"})
-        .select("business_name,assistant_name,business_details,industry,behavior,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").single();
+        .select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,booking_instructions,updated_at").single();
       if(error) throw error;
       return json({ok:true,business_profile:data});
     }
