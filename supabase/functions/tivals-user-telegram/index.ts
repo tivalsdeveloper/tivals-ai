@@ -1241,12 +1241,31 @@ Deno.serve(async (req: Request) => {
     });
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
+    const firstBusinessMessage=conn.bot_kind==="business"&&paywallOwner&&(!persistentHistory||persistentHistory.length===0);
+    const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner):null;
+    const followWithMenu=async()=>{
+      if(!firstBusinessMessage)return;
+      const name=String(businessProfile?.assistant_name||conn.bot_name||"your assistant"),business=String(businessProfile?.business_name||"the business");
+      await sendBusinessMenu(token,chatId,businessProfile,businessConnectionId,`I'm ${name}, the virtual assistant for ${business}. What else can I help with?`);
+    };
+    if(businessProfile&&/\b(human|person|staff|agent|reception|technician|engineer|complaint|refund|payment issue|speak to someone)\b/i.test(text)){
+      const contact=String(businessProfile.staff_contact||businessProfile.phone||businessProfile.email||"").trim();
+      const hours=String(businessProfile.business_hours?.text||"").trim();
+      const message=contact?`I can help you reach our team at ${contact}. ${hours?`They'll reply during working hours (${hours}).`:`They'll follow up during working hours.`}`:"I'll pass your request to our team. They'll follow up during working hours.";
+      let notified=false;
+      try{await telegram(token,"sendMessage",{chat_id:paywallOwner,text:`Customer handoff request from chat ${chatId}: ${text.slice(0,600)}`});notified=true;}catch{}
+      const honest=contact?message:notified?message:"I don't have a staff contact available here yet. Please try the business's published contact details.";
+      if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,honest);
+      await reply(token,chatId,honest,businessConnectionId);await followWithMenu();
+      return json({ok:true,route:"business-handoff",notified});
+    }
     const commerce=conn.bot_kind==="business"&&paywallOwner&&!voice
       ?await businessCommerceReply(paywallOwner,text):null;
     if(commerce){
       if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,commerce.message);
       await reply(token,chatId,commerce.message,businessConnectionId);
       for(const product of commerce.products)await sendShopifyProduct(token,chatId,product,businessConnectionId);
+      await followWithMenu();
       return json({ok:true,route:"business-products",count:commerce.products.length});
     }
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
@@ -1255,6 +1274,7 @@ Deno.serve(async (req: Request) => {
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     await reply(token,chatId,answer,businessConnectionId);
+    await followWithMenu();
     if(shouldSpeak)queueVoiceReply(token,chatId,answer,businessConnectionId);
     return json({ ok: true,route:voice?"voice":"ai" });
   } catch (e) {
