@@ -1180,7 +1180,8 @@ Deno.serve(async (req: Request) => {
           const participant=Number(q.from?.id||0),conversation=participant?await activeConversation(paywallOwner,responseChat,participant):null;
           const kind=classify(option);
           if(kind&&['booking','handoff'].includes(kind.type)){
-            await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
+            if(kind.type==="booking")await showBookingPreview(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},profile,responseBusiness,option);
+            else await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
             return json({ok:true,route:'business-menu-request'});
           }
           const history=conversation?await conversationHistory(conversation.id):undefined;
