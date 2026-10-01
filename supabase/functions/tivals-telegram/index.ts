@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {parseEmailRevision,canSendDraft} from "./email-draft-rules.mjs";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const TIVALS_AI_URL = "https://kxuszpixwfecawdeqkrx.supabase.co/functions/v1/tivals-ai-chat";
@@ -1096,7 +1097,7 @@ async function handleEmailCommand(chatId:number|string,tg:number,command:{comman
   const id=crypto.randomUUID();
   const {error}=await sb.from("telegram_pending_emails").insert({id,telegram_user_id:tg,chat_id:Number(chatId),recipient,subject:draft.subject,body:draft.body,status:"pending",expires_at:new Date(Date.now()+10*60_000).toISOString(),gmail_thread_id:mail.thread_id||null,in_reply_to:mail.internet_message_id||null,email_references:mail.references||null,source_message_id:mail.id});
   if(error)throw error;
-  await telegram("sendMessage",{chat_id:chatId,text:`📧 <b>Confirm reply</b>\n\n<b>Original:</b> ${esc(toolText(mail.subject,120))}\n<b>To:</b> ${esc(recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(toolText(draft.body,2400))}\n\n<i>Nothing is sent until you tap Send. Expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Send reply",callback_data:`gmail_send:${id}`},{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]]}});
+  await telegram("sendMessage",{chat_id:chatId,text:`📧 <b>Confirm reply</b>\n\n<b>Original:</b> ${esc(toolText(mail.subject,120))}\n<b>To:</b> ${esc(recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(toolText(draft.body,2400))}\n\n<i>Nothing is sent until you tap Send. Expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Send reply",callback_data:`gmail_send:${id}`},{text:"✏️ Edit",callback_data:`gmail_edit:${id}`}],[{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]]}});
 }
 
 function parseEmailDraft(value: string) {
@@ -1152,13 +1153,24 @@ async function showEmailConfirmation(chatId: number|string, tg: number, request:
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: [[
       { text: "✅ Send email", callback_data: `gmail_send:${id}` },
-      { text: "❌ Cancel", callback_data: `gmail_cancel:${id}` },
-    ]] },
+      { text: "✏️ Edit", callback_data: `gmail_edit:${id}` },
+    ],[{ text: "❌ Cancel", callback_data: `gmail_cancel:${id}` }]] },
   });
   return true;
 }
 
-async function handleEmailConfirmation(q: any, action: "send" | "cancel", id: string) {
+async function resumeEmailEdit(ownerId:number,chatId:number,text:string){
+  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,source_message_id").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
+  if(!editing)return false;
+  if(text==="/cancel"){await sb.from("telegram_pending_emails").delete().eq("id",editing.id).eq("telegram_user_id",ownerId).eq("status","editing");await sendFormatted(chatId,"❌ Email draft cancelled. Nothing was sent.");return true;}
+  if(text.startsWith("/"))return false;
+  let revised;try{revised=parseEmailRevision(text,editing.subject);}catch(e){await sendFormatted(chatId,String((e as Error).message));return true;}
+  const {data:updated,error:updateError}=await sb.from("telegram_pending_emails").update({...revised,status:"pending"}).eq("id",editing.id).eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,source_message_id").maybeSingle();if(updateError)throw updateError;
+  if(!updated){await sendFormatted(chatId,"This email draft expired. Nothing was sent.");return true;}
+  await telegram("sendMessage",{chat_id:chatId,text:`📧 <b>Review edited email</b>\n\n<b>To:</b> ${esc(updated.recipient)}\n<b>Subject:</b> ${esc(updated.subject)}\n\n${esc(toolText(updated.body,2400))}\n\n<i>Nothing is sent until you tap Send.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:updated.source_message_id?"✅ Send reply":"✅ Send email",callback_data:`gmail_send:${updated.id}`},{text:"✏️ Edit",callback_data:`gmail_edit:${updated.id}`}],[{text:"❌ Cancel",callback_data:`gmail_cancel:${updated.id}`}]]}});
+  return true;
+}
+async function handleEmailConfirmation(q: any, action: "send" | "cancel" | "edit", id: string) {
   const tg = Number(q?.from?.id || 0);
   const chatId = q?.message?.chat?.id;
   if (!tg || !chatId || q?.message?.business_connection_id) {
@@ -1169,10 +1181,23 @@ async function handleEmailConfirmation(q: any, action: "send" | "cancel", id: st
     .select("id,telegram_user_id,chat_id,recipient,subject,body,status,expires_at,gmail_thread_id,in_reply_to,email_references")
     .eq("id", id).eq("telegram_user_id", tg).eq("chat_id", Number(chatId)).maybeSingle();
   if (error) throw error;
-  if (!pending || pending.status !== "pending" || new Date(pending.expires_at).getTime() <= Date.now()) {
+  if (!pending || new Date(pending.expires_at).getTime() <= Date.now()) {
     if (pending?.id) await sb.from("telegram_pending_emails").delete().eq("id", pending.id).eq("telegram_user_id", tg);
     await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "This email draft expired or was already used.", show_alert: true }).catch(()=>{});
     return "gmail-confirm-expired";
+  }
+  if(!canSendDraft(pending.status)){
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:pending.status==="editing"?"Finish editing first. Nothing was sent.":"This email is already processing.",show_alert:true}).catch(()=>{});
+    return"gmail-not-pending";
+  }
+  if(action==="edit"){
+    const {data:active}=await sb.from("telegram_pending_emails").select("id").eq("telegram_user_id",tg).eq("chat_id",Number(chatId)).eq("status","editing").gt("expires_at",new Date().toISOString()).limit(1).maybeSingle();
+    if(active){await telegram("answerCallbackQuery",{callback_query_id:q.id,text:"Finish the current email edit first.",show_alert:true}).catch(()=>{});return"gmail-edit-busy";}
+    const {data:editing,error:editError}=await sb.from("telegram_pending_emails").update({status:"editing"}).eq("id",id).eq("telegram_user_id",tg).eq("chat_id",Number(chatId)).eq("status","pending").select("id").maybeSingle();if(editError)throw editError;
+    await telegram("answerCallbackQuery",{callback_query_id:q.id,text:editing?"Edit your draft in chat.":"Draft unavailable."}).catch(()=>{});
+    if(!editing)return"gmail-edit-unavailable";
+    await telegram("editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+    await sendFormatted(chatId,"✏️ Send the revised email body in your next message. To change the subject too, start with `Subject: Your new subject` on its own line, followed by the body. Send /cancel to discard. Nothing will be sent until you approve the updated preview.");return"gmail-editing";
   }
   if (action === "cancel") {
     await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
@@ -1874,10 +1899,10 @@ Deno.serve(async (req: Request) => {
         return json({ok:false,route:"managed-bot-unavailable",error:String((e as Error)?.message||e)},200);
       }
     }
-    const emailAction = data.match(/^gmail_(send|cancel):([0-9a-f-]{36})$/i);
+    const emailAction = data.match(/^gmail_(send|cancel|edit):([0-9a-f-]{36})$/i);
     if (emailAction) {
       try {
-        const route = await handleEmailConfirmation(q, emailAction[1].toLowerCase() as "send" | "cancel", emailAction[2].toLowerCase());
+        const route = await handleEmailConfirmation(q, emailAction[1].toLowerCase() as "send" | "cancel" | "edit", emailAction[2].toLowerCase());
         return json({ ok:true, route });
       } catch (e) {
         const message = String((e as Error)?.message || e);
@@ -1974,6 +1999,7 @@ Deno.serve(async (req: Request) => {
   if(tg&&!acceptChat(`${chatId}:${tg}`))return json({ok:true,ignored:true,reason:"rate-limited"});
 
   try {
+    if(!bm&&tg&&String(message?.chat?.type||"")==="private"&&text&&await resumeEmailEdit(tg,Number(chatId),text))return json({ok:true,route:"gmail-edit-preview"});
     if(voice) {
       if(!tg) throw new Error("Telegram user ID is unavailable.");
       const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);
