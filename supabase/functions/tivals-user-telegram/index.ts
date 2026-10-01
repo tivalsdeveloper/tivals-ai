@@ -1,5 +1,5 @@
 import {classify,redact,shouldNotify,nextStatus,autoConfirmAllowed,unverifiedClaims,secureEqual} from "./business-flow.mjs";
-import {automaticButtons,cleanAnswer,menuRows,matchingMenuOption} from "./button-rules.mjs";
+import {automaticButtons,cleanAnswer,menuRows,inlineChoiceRows,matchingMenuOption,selectionKey} from "./button-rules.mjs";
 import {bookingDate} from "./booking-time.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -487,7 +487,7 @@ async function reply(token: string, chatId: number, text: string, businessConnec
         text: part,
         parse_mode: "HTML",
         link_preview_options: { is_disabled: true },
-        ...(index===parts.length-1&&buttons.length&&!businessConnectionId?{reply_markup:{keyboard:menuRows(buttons),resize_keyboard:true,is_persistent:true}}:{}),
+        ...(index===parts.length-1&&buttons.length?{reply_markup:{inline_keyboard:inlineChoiceRows(buttons)}}:{}),
         ...(businessConnectionId ? { business_connection_id: businessConnectionId } : {})
       });
     } catch {
@@ -532,9 +532,10 @@ function businessMenu(profile:any){
 }
 async function sendBusinessMenu(token:string,chatId:number,profile:any,businessConnectionId="",message="What would you like to do?"){
   const options=businessMenu(profile);
-  // Telegram Business connections do not support reply keyboards. Echo their inline taps below.
   const rows=menuRows(options);
-  const markup=businessConnectionId?{inline_keyboard:rows.map((row:any[])=>row.map((button:any)=>({text:button.text,callback_data:`biz_menu:${options.indexOf(button.text)}`})))}:{keyboard:rows,resize_keyboard:true,is_persistent:true};
+  // Clear the keyboard from earlier versions; this menu is attached to a chat message.
+  if(!businessConnectionId)await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose from the menu in this chat:",reply_markup:{remove_keyboard:true}});
+  const markup={inline_keyboard:rows.map((row:any[])=>row.map((button:any)=>({text:button.text,callback_data:`biz_menu:${options.indexOf(button.text)}`})))};
   await telegram(token,"sendMessage",{chat_id:chatId,text:message,reply_markup:markup,...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
 }
 
@@ -583,7 +584,7 @@ async function showBookingPreview(token:string,ownerId:number,message:any,profil
   await sb.from("telegram_business_drafts").upsert({business_id:ownerId,customer_id:customerId,chat_id:chatId,summary:`PREVIEW:${summary}`,expires_at:new Date(Date.now()+86400000).toISOString()},{onConflict:"business_id,customer_id,chat_id"});
   const date=new Intl.DateTimeFormat("en-ZA",{timeZone:"Africa/Johannesburg",dateStyle:"long",timeStyle:"short"}).format(new Date(start));
   const choices=["✅ Continue","✏️ Change","❌ Cancel"];
-  const markup=businessConnectionId?{inline_keyboard:menuRows(choices).map((row:any[])=>row.map((b:any)=>({text:b.text,callback_data:`booking_draft:${choices.indexOf(b.text)}`})))}:{keyboard:menuRows(choices),resize_keyboard:true,is_persistent:true};
+  const markup={inline_keyboard:menuRows(choices).map((row:any[])=>row.map((b:any)=>({text:b.text,callback_data:`booking_draft:${choices.indexOf(b.text)}`})))};
   await telegram(token,"sendMessage",{chat_id:chatId,text:`📅 Booking request\nDate and time: ${date}\nDetails: ${redact(summary).slice(0,400)}\nPlease check before submitting. This is a request until the business confirms it.`,reply_markup:markup,...(businessConnectionId?{business_connection_id:businessConnectionId}:{})});
   return "preview";
 }
@@ -1145,6 +1146,35 @@ Deno.serve(async (req: Request) => {
         if(pressError){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});return json({ok:true,route:"duplicate-or-unavailable-button-press"});}
       }
       responseChat=Number(q?.message?.chat?.id||0);responseBusiness=String(q?.message?.business_connection_id||"");
+      const quick=data.match(/^quick:(yes|no|continue|menu)$/);
+      if(quick&&paywallOwner&&responseChat){
+        const participant=Number(q.from?.id||0),messageId=Number(q.message?.message_id||0);
+        const selectedKey=selectionKey(responseChat,messageId);
+        if(!participant||!selectedKey){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});return json({ok:true,route:"quick-invalid"});}
+        const {error:usedError}=await sb.from("telegram_button_presses").insert({business_id:paywallOwner,callback_id:selectedKey,customer_id:participant,action:data});
+        if(usedError){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Already selected."}).catch(()=>{});return json({ok:true,route:"quick-already-selected"});}
+        const label={yes:"✅ Yes",no:"❌ No",continue:"▶️ Continue",menu:"🏠 Main menu"}[quick[1] as "yes"|"no"|"continue"|"menu"];
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        await telegram(token,"editMessageReplyMarkup",{chat_id:responseChat,message_id:messageId,reply_markup:{inline_keyboard:[]},...(responseBusiness?{business_connection_id:responseBusiness}:{})}).catch(()=>{});
+        await telegram(token,"sendMessage",{chat_id:responseChat,text:label,...(responseBusiness?{business_connection_id:responseBusiness}:{})});
+        if(quick[1]==="menu"){
+          if(conn.bot_kind==="business")await sendBusinessMenu(token,responseChat,await telegramBusinessProfile(paywallOwner),responseBusiness);
+          else await sendToolSuggestions(token,responseChat,responseBusiness);
+          return json({ok:true,route:"quick-menu"});
+        }
+        const conversation=await activeConversation(paywallOwner,responseChat,participant),history=await conversationHistory(conversation.id);
+        const prompt=quick[1]==="yes"?"Yes":quick[1]==="no"?"No":"Continue";
+        await consumeOwnerAiUsage(paywallOwner);
+        let answer=await personalAi(conn,`${connectorKey}:${responseChat}:${participant}`,prompt,history,paywallOwner);
+        if(conn.bot_kind==="business"){
+          const profile=await telegramBusinessProfile(paywallOwner),shop=await connectedShopifyContext(paywallOwner,prompt);
+          const prices=[...(profile?.catalog||[]).map((x:any)=>x.price),...(shop?.products||[]).map((x:any)=>x.priceRangeV2?.minVariantPrice?.amount)];
+          if(unverifiedClaims(answer,prices))answer="I can't confirm that business detail yet. Would you like me to ask the team?";
+        }
+        await persistConversation(conversation,paywallOwner,responseChat,participant,prompt,answer);
+        await reply(token,responseChat,answer,responseBusiness);
+        return json({ok:true,route:"quick-choice"});
+      }
       const businessAction=data.match(/^(confirm|decline|suggest|message|complete|no_show|cust:(?:accept|cancel|change|wait|contact|attend|new)):([A-F0-9]{8})$/);
       if(businessAction&&paywallOwner&&conn.bot_kind==='business'){
         if(businessAction[1].startsWith('cust:')){const {data:allowed}=await sb.rpc('telegram_business_allow_message',{p_business_id:paywallOwner,p_customer_id:Number(q.from?.id||0)});if(!allowed)return json({ok:true,route:'rate-limited'});}
@@ -1175,7 +1205,7 @@ Deno.serve(async (req: Request) => {
         const profile=await telegramBusinessProfile(paywallOwner),option=businessMenu(profile)[Number(businessChoice[1])];
         await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
         if(option){
-          await telegram(token,"editMessageText",{chat_id:responseChat,message_id:q.message.message_id,text:`${String(q.message?.text||"Choose an option")}\n✅ You selected: ${option}`,reply_markup:{inline_keyboard:[]},...(responseBusiness?{business_connection_id:responseBusiness}:{})}).catch(()=>{});
+          // Menus remain usable. The selection is also written into chat history.
           await reply(token,responseChat,option,responseBusiness);
           const participant=Number(q.from?.id||0),conversation=participant?await activeConversation(paywallOwner,responseChat,participant):null;
           const kind=classify(option);
@@ -1452,15 +1482,8 @@ Deno.serve(async (req: Request) => {
     });
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
-    const firstBusinessMessage=conn.bot_kind==="business"&&paywallOwner&&(!persistentHistory||persistentHistory.length===0);
     const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner):null;
     const selectedMenuOption=businessProfile?matchingMenuOption(text,businessMenu(businessProfile)):null;
-    // Reply-keyboard taps are customer messages in Telegram; keep the keyboard available.
-    const followWithMenu=async()=>{
-      if(!firstBusinessMessage)return;
-      const name=String(businessProfile?.assistant_name||conn.bot_name||"your assistant"),business=String(businessProfile?.business_name||"the business");
-      await sendBusinessMenu(token,chatId,businessProfile,businessConnectionId,`I'm ${name}, the virtual assistant for ${business}. What else can I help with?`);
-    };
     if(businessProfile&&/^\/(?:delete_my_data|privacy_delete)(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       if(!privateConversation)throw new Error('Open a private chat to request deletion.');
       const scope={business_id:paywallOwner,customer_id:senderId};
@@ -1525,7 +1548,6 @@ Deno.serve(async (req: Request) => {
       if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,commerce.message);
       await reply(token,chatId,commerce.message,businessConnectionId);
       for(const product of commerce.products)await sendShopifyProduct(token,chatId,product,businessConnectionId);
-      await followWithMenu();
       return json({ok:true,route:"business-products",count:commerce.products.length});
     }
     if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
@@ -1547,7 +1569,6 @@ Deno.serve(async (req: Request) => {
     if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
     const shouldSpeak=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     await reply(token,chatId,answer,businessConnectionId);
-    await followWithMenu();
     if(shouldSpeak)queueVoiceReply(token,chatId,answer,businessConnectionId);
     return json({ ok: true,route:voice?"voice":"ai" });
   } catch (e) {
