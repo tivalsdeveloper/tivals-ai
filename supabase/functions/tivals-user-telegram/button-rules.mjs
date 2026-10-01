@@ -14,6 +14,15 @@ export function menuRows(labels) {
   const rows=[];for(let i=0;i<unique.length;i+=2)rows.push(unique.slice(i,i+2).map(text=>({text})));
   return rows;
 }
+export function inlineChoiceRows(labels) {
+  const actions={"✅ Yes":"quick:yes","❌ No":"quick:no","▶️ Continue":"quick:continue","🏠 Main menu":"quick:menu"};
+  return menuRows(labels).map(row=>row.map(button=>({text:button.text,callback_data:actions[button.text]})));
+}
+// One decision per question message, even when Telegram sends a second callback ID.
+export function selectionKey(chatId,messageId) {
+  if(!Number.isSafeInteger(chatId)||!Number.isSafeInteger(messageId)||messageId<=0) return null;
+  return `selected:${chatId}:${messageId}`;
+}
 export function matchingMenuOption(message,labels) {
   const value=String(message||"").trim().toLocaleLowerCase();
   return labels.find(label=>String(label).trim().toLocaleLowerCase()===value)||null;
