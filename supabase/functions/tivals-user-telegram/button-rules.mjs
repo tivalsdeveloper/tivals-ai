@@ -2,7 +2,9 @@
 export function automaticButtons(message) {
   const value=String(message||"").trim();
   if (!value) return [];
-  if (/\[ASK:\s*yes_no\]/i.test(value) || /\b(?:would you like|do you want|should I|can I|is that correct|are you sure)\b[^?]*\?\s*$/i.test(value)) return ["✅ Yes","❌ No"];
+  const question=value.replace(/\[ASK:\s*yes_no\]/gi,"").trim().split(/[.!?]\s+/).at(-1).trim();
+  if (/\b(?:how|what|which|when|where|why)\b[^?]*\?\s*$/i.test(question) || /\b(?:or)\b[^?]*\?\s*$/i.test(question)) return [];
+  if (/\[ASK:\s*yes_no\]/i.test(value) || /\b(?:would you like|do you want|should I|can I|is that correct|are you sure)\b[^?]*\?\s*$/i.test(question)) return ["✅ Yes","❌ No"];
   if (/\b(?:shall we continue|ready to continue|more products|next tip)\b[^?]*\??\s*$/i.test(value)) return ["▶️ Continue","🏠 Main menu"];
   return [];
 }
@@ -26,4 +28,10 @@ export function selectionKey(chatId,messageId) {
 export function matchingMenuOption(message,labels) {
   const value=String(message||"").trim().toLocaleLowerCase();
   return labels.find(label=>String(label).trim().toLocaleLowerCase()===value)||null;
+}
+export function ambiguousAffirmation(message,history) {
+  if(!/^(?:✅\s*)?(?:yes|yeah|yep|sure)\s*[.!]?$/i.test(String(message||'').trim()))return false;
+  const last=[...(history||[])].reverse().find(entry=>entry.role==='assistant');
+  const question=String(last?.content||'').split(/[.!?]\s+/).at(-1);
+  return /\bor\b[^?]*\?\s*$/i.test(question||'');
 }

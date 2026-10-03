@@ -1,5 +1,6 @@
 import {classify,redact,shouldNotify,nextStatus,autoConfirmAllowed,unverifiedClaims,secureEqual} from "./business-flow.mjs";
-import {automaticButtons,cleanAnswer,menuRows,inlineChoiceRows,matchingMenuOption,selectionKey} from "./button-rules.mjs";
+import {automaticButtons,cleanAnswer,menuRows,inlineChoiceRows,matchingMenuOption,selectionKey,ambiguousAffirmation} from "./button-rules.mjs";
+import {parseEmailRevision,canSendDraft} from "./email-draft-rules.mjs";
 import {bookingDate} from "./booking-time.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -937,13 +938,31 @@ async function createEmailDraft(profile:any,request:string) {
     const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error(d?.error||"The email draft could not be prepared.");return parseEmailDraft(String(d.reply));
   } finally {clearTimeout(timer);}
 }
+function emailApprovalButtons(id:string,replyDraft=false){return {inline_keyboard:[
+  [{text:replyDraft?"✅ Send reply":"✅ Send email",callback_data:`gmail_send:${id}`},{text:"✏️ Edit",callback_data:`gmail_edit:${id}`}],
+  [{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]
+]};}
+async function resumeEmailEdit(token:string,ownerId:number,chatId:number,text:string){
+  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,source_message_id,expires_at").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
+  if(!editing)return false;
+  if(text==="/cancel"){
+    await sb.from("telegram_pending_emails").delete().eq("id",editing.id).eq("telegram_user_id",ownerId).eq("status","editing");
+    await reply(token,chatId,"❌ Email draft cancelled. Nothing was sent.");return true;
+  }
+  if(text.startsWith("/"))return false;
+  let revised;try{revised=parseEmailRevision(text,editing.subject);}catch(e){await reply(token,chatId,String((e as Error).message));return true;}
+  const {data:updated,error:updateError}=await sb.from("telegram_pending_emails").update({...revised,status:"pending"}).eq("id",editing.id).eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,source_message_id").maybeSingle();if(updateError)throw updateError;
+  if(!updated){await reply(token,chatId,"This email draft expired. Nothing was sent.");return true;}
+  await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Review edited email</b>\n\n<b>To:</b> ${esc(updated.recipient)}\n<b>Subject:</b> ${esc(updated.subject)}\n\n${esc(toolText(updated.body,2400))}\n\n<i>Nothing is sent until you tap Send.</i>`,parse_mode:"HTML",reply_markup:emailApprovalButtons(updated.id,Boolean(updated.source_message_id))});
+  return true;
+}
 async function showEmailConfirmation(token:string,chatId:number,tg:number,profile:any,request:string) {
   await consumeOwnerAiUsage(tg);const draft=await createEmailDraft(profile,request);
   await sb.from("telegram_pending_emails").delete().lt("expires_at",new Date().toISOString());
   const id=crypto.randomUUID(),expires=new Date(Date.now()+10*60_000).toISOString();
   const {error}=await sb.from("telegram_pending_emails").insert({id,telegram_user_id:tg,chat_id:chatId,recipient:draft.recipient,subject:draft.subject,body:draft.body,status:"pending",expires_at:expires});if(error)throw error;
   const preview=draft.body.length>2400?draft.body.slice(0,2399)+"…":draft.body;
-  await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Confirm email</b>\n\n<b>To:</b> ${esc(draft.recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(preview)}\n\n<i>Nothing is sent until you confirm. This draft expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Send email",callback_data:`gmail_send:${id}`},{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]]}});
+  await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Confirm email</b>\n\n<b>To:</b> ${esc(draft.recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(preview)}\n\n<i>Nothing is sent until you confirm. This draft expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:emailApprovalButtons(id)});
 }
 async function handleEmailCommand(token:string,chatId:number,tg:number,profile:any,command:{command:string;args:string}) {
   if(command.command==="email") {
@@ -974,13 +993,24 @@ async function handleEmailCommand(token:string,chatId:number,tg:number,profile:a
   const id=crypto.randomUUID();
   const {error}=await sb.from("telegram_pending_emails").insert({id,telegram_user_id:tg,chat_id:chatId,recipient,subject:draft.subject,body:draft.body,status:"pending",expires_at:new Date(Date.now()+10*60_000).toISOString(),gmail_thread_id:mail.thread_id||null,in_reply_to:mail.internet_message_id||null,email_references:mail.references||null,source_message_id:mail.id});
   if(error)throw error;
-  await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Confirm reply</b>\n\n<b>Original:</b> ${esc(toolText(mail.subject,120))}\n<b>To:</b> ${esc(recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(toolText(draft.body,2400))}\n\n<i>Nothing is sent until you tap Send. Expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Send reply",callback_data:`gmail_send:${id}`},{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]]}});
+  await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Confirm reply</b>\n\n<b>Original:</b> ${esc(toolText(mail.subject,120))}\n<b>To:</b> ${esc(recipient)}\n<b>Subject:</b> ${esc(draft.subject)}\n\n${esc(toolText(draft.body,2400))}\n\n<i>Nothing is sent until you tap Send. Expires in 10 minutes.</i>`,parse_mode:"HTML",reply_markup:emailApprovalButtons(id,true)});
 }
-async function handleEmailConfirmation(token:string,q:any,ownerId:number,action:"send"|"cancel",id:string) {
+async function handleEmailConfirmation(token:string,q:any,ownerId:number,action:"send"|"cancel"|"edit",id:string) {
   const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
   if(!tg||tg!==ownerId||!chatId||q?.message?.business_connection_id){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Only the bot owner can confirm email in a private chat.",show_alert:true}).catch(()=>{});return"gmail-confirm-rejected";}
   const {data:p,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,body,status,expires_at,gmail_thread_id,in_reply_to,email_references,source_message_id").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",chatId).maybeSingle();if(error)throw error;
-  if(!p||p.status!=="pending"||new Date(p.expires_at).getTime()<=Date.now()){if(p?.id)await sb.from("telegram_pending_emails").delete().eq("id",p.id).eq("telegram_user_id",tg);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This email draft expired or was already used.",show_alert:true}).catch(()=>{});return"gmail-confirm-expired";}
+  if(!p||new Date(p.expires_at).getTime()<=Date.now()){if(p?.id)await sb.from("telegram_pending_emails").delete().eq("id",p.id).eq("telegram_user_id",tg);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This email draft expired or was already used.",show_alert:true}).catch(()=>{});return"gmail-confirm-expired";}
+  if(!canSendDraft(p.status)){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:p.status==="editing"?"Finish editing first. Nothing was sent.":"This email is already processing.",show_alert:true}).catch(()=>{});return"gmail-not-pending";}
+  if(action==="edit"){
+    const {data:active}=await sb.from("telegram_pending_emails").select("id").eq("telegram_user_id",tg).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).limit(1).maybeSingle();
+    if(active){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Finish the current email edit first.",show_alert:true}).catch(()=>{});return"gmail-edit-busy";}
+    const {data:editing,error:editError}=await sb.from("telegram_pending_emails").update({status:"editing"}).eq("id",id).eq("telegram_user_id",tg).eq("chat_id",chatId).eq("status","pending").select("id").maybeSingle();if(editError)throw editError;
+    await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:editing?"Edit your draft in chat.":"Draft unavailable."}).catch(()=>{});
+    if(!editing)return"gmail-edit-unavailable";
+    await telegram(token,"editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+    await reply(token,chatId,"✏️ Send the revised email body in your next message. To change the subject too, start with `Subject: Your new subject` on its own line, followed by the body. Send /cancel to discard. Nothing will be sent until you approve the updated preview.");
+    return"gmail-editing";
+  }
   if(action==="cancel"){if(p.source_message_id)await sb.from("telegram_gmail_monitor_events").update({status:"ignored",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("gmail_message_id",p.source_message_id);await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Email cancelled."}).catch(()=>{});await telegram(token,"editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});await reply(token,chatId,"❌ **Email cancelled.** Nothing was sent.");return"gmail-cancelled";}
   const {data:claimed,error:claimError}=await sb.from("telegram_pending_emails").update({status:"sending"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,gmail_thread_id,in_reply_to,email_references,source_message_id").maybeSingle();if(claimError)throw claimError;
   if(!claimed){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This email is already being processed.",show_alert:true}).catch(()=>{});return"gmail-confirm-duplicate";}
@@ -1164,6 +1194,12 @@ Deno.serve(async (req: Request) => {
         }
         const conversation=await activeConversation(paywallOwner,responseChat,participant),history=await conversationHistory(conversation.id);
         const prompt=quick[1]==="yes"?"Yes":quick[1]==="no"?"No":"Continue";
+        if(ambiguousAffirmation(prompt,history)){
+          const clarification="Which of those options would you like? Please name the one you mean.";
+          await persistConversation(conversation,paywallOwner,responseChat,participant,prompt,clarification);
+          await reply(token,responseChat,clarification,responseBusiness);
+          return json({ok:true,route:"quick-clarification"});
+        }
         await consumeOwnerAiUsage(paywallOwner);
         let answer=await personalAi(conn,`${connectorKey}:${responseChat}:${participant}`,prompt,history,paywallOwner);
         if(conn.bot_kind==="business"){
@@ -1232,9 +1268,9 @@ Deno.serve(async (req: Request) => {
       if(paywallOwner&&chatSelect){const route=await selectConversation(token,q,paywallOwner,chatSelect[1].toLowerCase());return json({ok:true,route});}
       const reminderCancel=data.match(/^reminder_cancel:([0-9a-f-]{36})$/i);
       if(paywallOwner&&reminderCancel){const route=await cancelReminder(token,q,paywallOwner,reminderCancel[1].toLowerCase());return json({ok:true,route});}
-      const emailAction=data.match(/^gmail_(send|cancel):([0-9a-f-]{36})$/i);
+      const emailAction=data.match(/^gmail_(send|cancel|edit):([0-9a-f-]{36})$/i);
       if(emailAction&&paywallOwner){
-        const route=await handleEmailConfirmation(token,q,paywallOwner,emailAction[1].toLowerCase() as "send"|"cancel",emailAction[2].toLowerCase());
+        const route=await handleEmailConfirmation(token,q,paywallOwner,emailAction[1].toLowerCase() as "send"|"cancel"|"edit",emailAction[2].toLowerCase());
         return json({ok:true,route});
       }
       const githubAction=data.match(/^github_personal_(apply|cancel):([0-9a-f-]{36})$/i);
@@ -1291,6 +1327,7 @@ Deno.serve(async (req: Request) => {
       await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
       text=normalizeSpokenToolCommand(await transcribeVoice(await telegramFileBytes(token,String(voice?.file_id||"")),String(voice?.mime_type||"audio/ogg")));
     }
+    if(ownerPrivate&&text&&await resumeEmailEdit(token,paywallOwner,chatId,text))return json({ok:true,route:"gmail-edit-preview"});
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId,conn.bot_kind); return json({ok:true,route:"owner-app"});
     }
@@ -1550,10 +1587,19 @@ Deno.serve(async (req: Request) => {
       for(const product of commerce.products)await sendShopifyProduct(token,chatId,product,businessConnectionId);
       return json({ok:true,route:"business-products",count:commerce.products.length});
     }
-    if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
     // Business bots receive their creator's business profile; personal bots remain isolated.
     let answer:string;
-    try{answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,text,persistentHistory,paywallOwner);}
+    if(businessProfile&&ambiguousAffirmation(text,persistentHistory)){
+      answer="Which of those options would you like? Please name the one you mean.";
+      if(conversation)await persistConversation(conversation,paywallOwner,chatId,senderId,text,answer);
+      await reply(token,chatId,answer,businessConnectionId);
+      return json({ok:true,route:"business-clarification"});
+    }
+    const lastAnswer=[...(persistentHistory||[])].reverse().find(entry=>entry.role==="assistant")?.content||"";
+    const contextualText=businessProfile&&/^(?:✅\s*)?(?:yes|yeah|yep|sure|no|❌\s*no)\s*[.!]?$/i.test(text)&&lastAnswer
+      ?`The customer answered ${text} to your previous question: ${lastAnswer.slice(-450)}. Continue that topic directly without greeting or introducing yourself.`:text;
+    if(paywallOwner)await consumeOwnerAiUsage(paywallOwner);
+    try{answer=await personalAi(conn,`${connectorKey}:${chatId}:${senderId||"channel"}`,contextualText,persistentHistory,paywallOwner);}
     catch(error){
       if(!businessProfile)throw error;
       const fallback='Sorry, something went wrong. Connecting you with our team.';
