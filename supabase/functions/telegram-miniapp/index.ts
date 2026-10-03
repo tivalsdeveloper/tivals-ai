@@ -98,7 +98,7 @@ async function isAdmin(tg:number) {
 }
 async function consumeAiUsage(tg:number) {
   if(await isAdmin(tg))return;
-  const access=await paidAccess(tg),limit=access.plan==="pro"?1000:access.plan==="basic"?200:20;
+  const access=await paidAccess(tg),limit=access.plan==="pro"?1000:access.plan==="basic"?200:25;
   const today=new Date().toISOString().slice(0,10);
   const {data,error}=await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle();
   if(error)throw error;
@@ -136,10 +136,7 @@ async function personalBotAccess(tg:number) {
   const {data:sub}=await sb.from("telegram_subscriptions").select("plan,status,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle();
   const subscribed=Boolean(sub&&sub.status==="active"&&["basic","pro"].includes(sub.plan)&&new Date(sub.subscription_expiration_date).getTime()>Date.now());
   if(subscribed)return{allowed:true,owner:false,plan:String(sub.plan),trial:false,trial_expires_at:null};
-  let {data:trial,error}=await sb.from("telegram_personal_bot_trials").select("started_at,expires_at").eq("telegram_user_id",tg).maybeSingle();
-  if(error)throw error;
-  if(!trial){const made=await sb.from("telegram_personal_bot_trials").insert({telegram_user_id:tg}).select("started_at,expires_at").single();if(made.error)throw made.error;trial=made.data;}
-  const allowed=new Date(trial.expires_at).getTime()>Date.now();return{allowed,owner:false,plan:allowed?"trial":"expired",trial:true,trial_expires_at:trial.expires_at};
+  return{allowed:true,owner:false,plan:"free",trial:false,trial_expires_at:null};
 }
 async function ownedBot(tg:number) {
   const {data,error}=await sb.from("telegram_owned_bots")
@@ -229,7 +226,7 @@ async function botApi(token:string, method:string, payload?:Record<string,unknow
 }
 async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
   if(!["personal","business"].includes(botKind))throw new Error("Choose Personal bot or Business bot.");
-  const access=await personalBotAccess(tg);if(!access.allowed)throw new Error("Your personal bot free trial has ended. Choose Basic or Pro to reconnect or continue using it.");
+  const access=await personalBotAccess(tg);if(!access.allowed)throw new Error("Personal bot access is unavailable.");
   const token=String(rawToken||"").trim();
   if(!/^\d{5,}:[A-Za-z0-9_-]{25,}$/.test(token)) throw new Error("Enter a valid BotFather token.");
   const me=await botApi(token,"getMe");
@@ -318,7 +315,7 @@ async function telegram(method:string, payload:Record<string,unknown>) {
   return d?.result;
 }
 const plans = {
-  free:{label:"Free",stars:0,ai:20,images:1},
+  free:{label:"Free",stars:0,ai:25,images:1},
   basic:{label:"Basic",stars:100,ai:200,images:10},
   pro:{label:"Pro",stars:250,ai:1000,images:50}
 } as const;
@@ -346,7 +343,7 @@ async function getDashboard(tg:number) {
   const list = Array.isArray(connections?.connections) ? connections.connections : [];
   const planData = admin
     ? {id:"owner",label:"Owner",stars:0,ai:null,images:null,active:true,expiration:null}
-    : { id:plan, ...plans[plan as "free"|"basic"|"pro"], active, expiration:active ? sub.subscription_expiration_date : null };
+    : { id:plan, ...plans[plan as "free"|"basic"|"pro"], active:plan==="free"||active, expiration:active ? sub.subscription_expiration_date : null };
   return {
     owner:admin,
     plan:planData,
@@ -388,7 +385,7 @@ async function getPersonalBotDashboard(tg:number) {
   ]);
   const connections=Array.isArray(accountData?.connections)?accountData.connections:[];
   const planId=access.owner?"owner":access.plan;
-  const planData=access.owner?{id:"owner",label:"Owner",ai:null,images:null,active:true,trial:false,expiration:null}:{id:planId,label:planId==="pro"?"Pro":planId==="basic"?"Basic":planId==="trial"?"7-day trial":"Trial ended",ai:planId==="pro"?1000:planId==="basic"?200:20,images:planId==="pro"?50:planId==="basic"?10:1,active:access.allowed,trial:Boolean(access.trial),expiration:access.trial_expires_at};
+  const planData=access.owner?{id:"owner",label:"Owner",ai:null,images:null,active:true,trial:false,expiration:null}:{id:planId,label:planId==="pro"?"Pro":planId==="basic"?"Basic":"Free",ai:planId==="pro"?1000:planId==="basic"?200:25,images:planId==="pro"?50:planId==="basic"?10:1,active:true,trial:false,expiration:null};
   return {
     plan:planData,
     usage:{ai:Number(usage?.ai_messages||0),images:Number(usage?.image_generations||0)},
@@ -493,7 +490,7 @@ Deno.serve(async req => {
     }
 
     if(action==="save_gmail_monitoring") {
-      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Your free trial has ended. Choose Basic or Pro to enable Gmail monitoring."},403);
+      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Personal bot access is unavailable."},403);
       const enabled=Boolean(body?.enabled),{data:bot}=await sb.from("telegram_owned_bots").select("is_active").eq("telegram_user_id",tg).maybeSingle();
       if(enabled&&!bot?.is_active)return json({error:"Connect your personal Telegram bot first."},400);
       const status=await oauth("status",tg),gmail=(status?.connections||[]).find((x:any)=>x?.provider==="gmail");
@@ -578,7 +575,7 @@ Deno.serve(async req => {
     }
 
     if(action==="save_own_bot_profile" || action==="save_personal_bot_profile") {
-      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Your personal bot free trial has ended. Choose Basic or Pro to continue."},403);
+      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Personal bot access is unavailable."},403);
       const purposes=["general","education","coding","math","custom"];
       const levels=["primary","secondary","college","professional","all"];
       const teaching=["adaptive","step_by_step","socratic","concise","detailed"];
@@ -618,7 +615,7 @@ Deno.serve(async req => {
     }
 
     if(action==="set_bot_kind") {
-      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Your bot trial has ended. Choose Basic or Pro to continue."},403);
+      const access=await personalBotAccess(tg);if(!access.allowed)return json({error:"Personal bot access is unavailable."},403);
       const kind=String(body?.bot_kind||"");if(!["personal","business"].includes(kind))return json({error:"Choose Personal bot or Business bot."},400);
       const {data:current,error:lookupError}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
       if(lookupError)throw lookupError;if(!current?.is_active||!current?.token_enc)return json({error:"Connect your Telegram bot first."},400);

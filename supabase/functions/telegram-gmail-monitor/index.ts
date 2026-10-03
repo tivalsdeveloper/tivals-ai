@@ -25,7 +25,7 @@ async function access(tg:number){
   const {data:admin}=await sb.from("telegram_admins").select("role").eq("telegram_user_id",tg).maybeSingle();if(admin)return{allowed:true,plan:"owner",limit:Number.MAX_SAFE_INTEGER};
   const {data:sub}=await sb.from("telegram_subscriptions").select("plan,status,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle();
   if(sub&&sub.status==="active"&&["basic","pro"].includes(sub.plan)&&new Date(sub.subscription_expiration_date).getTime()>Date.now())return{allowed:true,plan:String(sub.plan),limit:sub.plan==="pro"?1000:200};
-  const {data:trial}=await sb.from("telegram_personal_bot_trials").select("expires_at").eq("telegram_user_id",tg).maybeSingle();return{allowed:Boolean(trial&&new Date(trial.expires_at).getTime()>Date.now()),plan:"trial",limit:20};
+  return{allowed:true,plan:"free",limit:25};
 }
 async function takeAiUsage(tg:number,limit:number){if(!Number.isFinite(limit))return true;const today=new Date().toISOString().slice(0,10),{data}=await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),used=Number(data?.ai_messages||0);if(used>=limit)return false;const {error}=await sb.from("telegram_daily_usage").upsert({telegram_user_id:tg,usage_date:today,ai_messages:used+1,image_generations:Number(data?.image_generations||0),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id,usage_date"});if(error)throw error;return true;}
 async function draftReply(profile:any,message:any){
@@ -47,8 +47,7 @@ Deno.serve(async req=>{
       const hasOwnedBot=Boolean(bot?.is_active&&bot?.token_enc);
       const token=hasOwnedBot?await decrypt(String(bot.token_enc)):MAIN_BOT_TOKEN;
       if(!token)throw new Error("No Telegram bot is available for Gmail notifications.");
-      const entitlement=hasOwnedBot?await access(tg):{allowed:true,plan:"main",limit:20};
-      if(!entitlement.allowed){await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Personal bot trial ended.",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg);await telegram(token,chatId,{text:"⏸ <b>Gmail monitoring paused</b>\n\nYour personal bot trial has ended. Open /app to choose Basic or Pro.",parse_mode:"HTML"});continue;}
+      const entitlement=hasOwnedBot?await access(tg):{allowed:true,plan:"main",limit:25};
       const since=setting.last_checked_at?Math.floor(new Date(setting.last_checked_at).getTime()/1000):0;
       const result=await oauth(tg,`in:inbox is:unread newer_than:2d -from:me${Number.isFinite(since)&&since>0?` after:${since}`:""}`),messages=Array.isArray(result?.messages)?result.messages:[];
       for(const message of messages){

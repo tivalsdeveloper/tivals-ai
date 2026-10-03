@@ -822,8 +822,8 @@ async function consumeOwnerAiUsage(tg:number) {
     .select("plan,status,subscription_expiration_date")
     .eq("telegram_user_id",tg).maybeSingle();
   const active=Boolean(data&&data.status==="active"&&["basic","pro"].includes(data.plan)&&new Date(data.subscription_expiration_date).getTime()>Date.now());
-  if(!active){let {data:trial,error:trialError}=await sb.from("telegram_personal_bot_trials").select("expires_at").eq("telegram_user_id",tg).maybeSingle();if(trialError)throw trialError;if(!trial){const made=await sb.from("telegram_personal_bot_trials").insert({telegram_user_id:tg}).select("expires_at").single();if(made.error)throw made.error;trial=made.data;}if(new Date(trial.expires_at).getTime()<=Date.now())throw new Error("The creator's 7-day personal bot trial has ended. They can choose Basic or Pro from /app.");}
-  const plan=active?String(data.plan):"trial",limit=plan==="pro"?1000:plan==="basic"?200:20;
+  // The free tier renews daily and has no trial expiration.
+  const plan=active?String(data.plan):"free",limit=plan==="pro"?1000:plan==="basic"?200:25;
   const today=new Date().toISOString().slice(0,10);
   const {data:usage,error}=await sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle();
   if(error)throw error;
