@@ -36,7 +36,7 @@ function acceptChat(key:string) {
 
 const SUBSCRIPTION_PERIOD = 2592000;
 const PLAN_CONFIG = {
-  free:  { label: "Free",  stars: 0,   ai: 20,   images: 1 },
+  free:  { label: "Free",  stars: 0,   ai: 25,   images: 1 },
   basic: { label: "Basic", stars: 100, ai: 200,  images: 10 },
   pro:   { label: "Pro",   stars: 250, ai: 1000, images: 50 }
 } as const;
@@ -421,7 +421,7 @@ async function subscriptionMenu(chatId: number|string, business?: string) {
   const [basic, pro] = await Promise.all([createSubscriptionLink("basic"), createSubscriptionLink("pro")]);
   const p:any = {
     chat_id: chatId,
-    text: "⭐ <b>Tivals AI subscriptions</b>\n\nFree — 20 AI messages/day, 1 image/day\nBasic — 100 ⭐/month, 200 AI messages/day, 10 images/day\nPro — 250 ⭐/month, 1000 AI messages/day, 50 images/day\n\nSubscriptions renew every 30 days through Telegram Stars.",
+    text: "⭐ <b>Tivals AI subscriptions</b>\n\nFree forever — 25 AI messages/day, 1 image/day\nBasic — 100 ⭐/month, 200 AI messages/day, 10 images/day\nPro — 250 ⭐/month, 1000 AI messages/day, 50 images/day\n\nPaid subscriptions renew every 30 days through Telegram Stars.",
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: [
       [{ text: "⭐ Basic — 100 Stars/month", url: basic }],
