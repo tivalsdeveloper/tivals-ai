@@ -2076,7 +2076,8 @@ Deno.serve(async (req: Request) => {
     }
     const groupRemindCommand=text.match(/^\/remind(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     const groupRemindersCommand=/^\/reminders(?:@[A-Za-z0-9_]+)?\s*$/i.test(text);
-    if(isGroupChat&&(groupRemindCommand||groupRemindersCommand)){
+    const groupNaturalReminderCommand=text.match(/^(?:please\s+)?(?:remind\s+(?:me|us)|set\s+(?:a\s+)?reminder)\s+in\s+(\d{1,3})\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\s+(?:(?:to|about)\s+)?([\s\S]+)$/i);
+    if(isGroupChat&&(groupRemindCommand||groupRemindersCommand||groupNaturalReminderCommand)){
       try{
         if(!tg)throw new Error("Telegram could not identify the group member.");
         if(groupRemindersCommand){
@@ -2087,7 +2088,10 @@ Deno.serve(async (req: Request) => {
           await telegram("sendMessage",{chat_id:chatId,text:"<b>Your group reminders</b>\n\n"+body+"\n\nCancel one with /remind cancel ID",parse_mode:"HTML"});
           return json({ok:true,route:"group-reminders-list"});
         }
-        const spec=String(groupRemindCommand?.[1]||"").trim(),cancel=spec.match(/^cancel\s+([0-9a-f-]{4,36})$/i);
+        const natural=groupNaturalReminderCommand;
+        const naturalUnit=natural?String(natural[2]).toLowerCase():"";
+        const normalizedUnit=natural?(naturalUnit.startsWith("s")?"s":naturalUnit.startsWith("m")?"m":naturalUnit.startsWith("h")?"h":"d"):"";
+        const spec=(natural?(String(natural[1])+normalizedUnit+" "+String(natural[3]).trim()):String(groupRemindCommand?.[1]||"")).trim(),cancel=spec.match(/^cancel\s+([0-9a-f-]{4,36})$/i);
         if(cancel){
           const {data:rows,error}=await sb.from("telegram_group_reminders").select("id").eq("group_id",Number(chatId)).eq("creator_id",tg).eq("status","pending");
           if(error)throw error;
