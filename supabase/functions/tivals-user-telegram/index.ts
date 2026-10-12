@@ -876,7 +876,7 @@ function zonedDateTime(date:string,time:string,timeZone:string) {
   let utc=wall-(shown-wall);const parts2=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(new Date(utc));
   const get2=(type:string)=>Number(parts2.find(x=>x.type===type)?.value||0),shown2=Date.UTC(get2("year"),get2("month")-1,get2("day"),get2("hour"),get2("minute"),get2("second"));utc-=shown2-wall;return new Date(utc);
 }
-function reminderIntent(text:string) {return /^\/remind(?:\s|$)/i.test(text)||/\bremind me\b/i.test(text)||/\bset (?:a |an )?reminder\b/i.test(text);}
+function reminderIntent(text:string) {return /^\/remind(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)||/\bremind me\b/i.test(text)||/\bset (?:a |an )?reminder\b/i.test(text);}
 function parseReminderJson(value:string) {
   const start=value.indexOf("{"),end=value.lastIndexOf("}");if(start<0||end<=start)throw new Error("Tell me when and what to remind you about.");let data:any;try{data=JSON.parse(value.slice(start,end+1));}catch{throw new Error("I could not understand the reminder time. Try `/remind 2026-09-26 09:00 | Your message`.");}
   const message=String(data?.message||"").trim().slice(0,1000),when=new Date(String(data?.remind_at||""));if(!message||!Number.isFinite(when.getTime()))throw new Error("Include a reminder message and a clear date and time.");return{message,when};
