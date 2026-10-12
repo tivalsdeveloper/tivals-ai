@@ -1313,7 +1313,7 @@ Deno.serve(async (req: Request) => {
     } else if(!update?.business_message&&chatType!=="private"){
       const mode=String(conn.group_mode||"mentions");
       if(mode==="off")return json({ok:true,ignored:true,reason:"groups-disabled"});
-      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
+      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|github|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
       if(mode!=="all"&&!groupCommand&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
     }
     if(!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
@@ -1442,6 +1442,46 @@ Deno.serve(async (req: Request) => {
           :"🛍️ Store products could not be loaded right now. Please try again later.";
         await reply(token,chatId,message,businessConnectionId);
         return json({ok:true,route:"store-error"});
+      }
+    }
+    const groupGithubCommand=text.match(/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+(connect|status|repos|issues|prs|disconnect)(?:\s+([^\s]+))?)?\s*$/i);
+    if(groupChat&&groupGithubCommand){
+      const action=String(groupGithubCommand[1]||"status").toLowerCase();
+      const repository=String(groupGithubCommand[2]||"").trim();
+      const isGroupAdmin=async()=>{
+        const member=await telegram(token,"getChatMember",{chat_id:chatId,user_id:senderId});
+        const status=String(member?.result?.status||"");
+        return status==="creator"||status==="administrator";
+      };
+      try{
+        if(!senderId)throw new Error("Telegram could not identify the group member.");
+        if(action==="connect"){
+          if(!await isGroupAdmin())throw new Error("Only a group administrator can connect GitHub for this group.");
+          const link=await oauth("create_github_group_link",senderId,"github",{chat_id:Number(chatId),chat_title:String(message?.chat?.title||"Telegram group")});
+          if(!link?.url)throw new Error(link?.error||"Could not create the GitHub authorization link.");
+          await telegram(token,"sendMessage",{chat_id:chatId,text:"Connect one shared GitHub account for this group. Only a group administrator can start or replace this connection. Review GitHub permissions before approving.",reply_markup:{inline_keyboard:[[{text:"Connect GitHub account",url:String(link.url)}]]}});
+          return json({ok:true,route:"group-github-connect"});
+        }
+        if(action==="disconnect"&&!await isGroupAdmin())throw new Error("Only a group administrator can disconnect the shared GitHub account.");
+        const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:action,repository});
+        if(data?.error)throw new Error(String(data.error));
+        if(action==="disconnect"){
+          await reply(token,chatId,"GitHub has been disconnected from this group.");
+        }else if(action==="status"){
+          await reply(token,chatId,data.connected?("Group GitHub connection\n\nAccount: @"+String(data.account||"unknown")+"\nConnected by Telegram user ID: "+Number(data.connected_by||0)+"\n\nCommands: /github repos · /github issues owner/repo · /github prs owner/repo"):"No GitHub account is connected. Ask a group administrator to run /github connect.");
+        }else if(action==="repos"){
+          const rows=Array.isArray(data.repositories)?data.repositories:[];
+          const body=rows.length?rows.map((r:any)=>"• "+String(r.name||"repository")+(r.private?" · private":"")+(r.description?"\n  "+String(r.description).slice(0,160):"")+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No repositories were returned for the connected account.";
+          await reply(token,chatId,"GitHub repositories (@"+String(data.account||"")+")\n\n"+body);
+        }else{
+          const rows=Array.isArray(data.items)?data.items:[];
+          const body=rows.length?rows.map((r:any)=>"• #"+Number(r.number||0)+" · "+String(r.title||"Untitled").slice(0,180)+" — @"+String(r.user||"unknown")+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No open items found.";
+          await reply(token,chatId,"GitHub "+(action==="prs"?"pull requests":"issues")+" · "+repository+"\n\n"+body);
+        }
+        return json({ok:true,route:"group-github-"+action});
+      }catch(e){
+        await reply(token,chatId,String((e as Error)?.message||e));
+        return json({ok:true,route:"group-github-error"});
       }
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
