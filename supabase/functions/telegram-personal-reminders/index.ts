@@ -38,5 +38,26 @@ Deno.serve(async req=>{
       await sb.from("telegram_personal_reminders").update({status:attempts>=3?"failed":"pending",attempts,last_error:lastError,updated_at:new Date().toISOString()}).eq("id",item.id).eq("status","sending");failed+=1;
     }
   }
-  return json({ok:true,processed:(due||[]).length,sent,failed,skipped});
+  await sb.from("telegram_group_reminders").update({status:"pending",updated_at:new Date().toISOString()}).eq("status","sending").lt("updated_at",staleBefore).lt("attempts",3);
+  const {data:groupDue,error:groupError}=await sb.from("telegram_group_reminders").select("id,group_id,group_title,creator_name,message,attempts").eq("status","pending").lte("remind_at",new Date().toISOString()).lt("attempts",3).order("remind_at").limit(50);
+  if(groupError)return json({error:"Could not load group reminders.",sent,failed},500);
+  let groupSent=0,groupFailed=0,groupSkipped=0;
+  for(const item of groupDue||[]){
+    const claimedAt=new Date().toISOString();
+    const {data:claimed,error:claimError}=await sb.from("telegram_group_reminders").update({status:"sending",updated_at:claimedAt}).eq("id",item.id).eq("status","pending").select("id").maybeSingle();
+    if(claimError||!claimed){groupSkipped+=1;continue;}
+    try{
+      const token=Deno.env.get("TELEGRAM_BOT_TOKEN")||"";
+      if(!token)throw new Error("Main Telegram bot token is not configured.");
+      const message="Group: "+String(item.group_title||"Telegram group")+"\\nReminder for: "+String(item.creator_name||"group member")+"\\n\\n"+String(item.message||"");
+      await sendTelegram(token,Number(item.group_id),message);
+      const {error:sentError}=await sb.from("telegram_group_reminders").update({status:"sent",sent_at:new Date().toISOString(),updated_at:new Date().toISOString(),last_error:null}).eq("id",item.id).eq("status","sending");
+      if(sentError)throw sentError;groupSent+=1;
+    }catch(error){
+      const attempts=Number(item.attempts||0)+1,lastError=String((error as Error)?.message||error).slice(0,500);
+      await sb.from("telegram_group_reminders").update({status:attempts>=3?"failed":"pending",attempts,last_error:lastError,updated_at:new Date().toISOString()}).eq("id",item.id).eq("status","sending");
+      groupFailed+=1;
+    }
+  }
+  return json({ok:true,processed:(due||[]).length,sent,failed,skipped,groupProcessed:(groupDue||[]).length,groupSent,groupFailed,groupSkipped});
 });
