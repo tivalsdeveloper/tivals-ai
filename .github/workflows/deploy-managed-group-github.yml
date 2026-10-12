@@ -1,9 +1,10 @@
 name: Deploy managed Telegram GitHub group fix
 
 on:
+  workflow_dispatch:
   push:
     paths:
-      - '.github/workflows/deploy-managed-group-github.yml'
+      - 'supabase/functions/tivals-user-telegram/**'
 
 permissions:
   contents: read
