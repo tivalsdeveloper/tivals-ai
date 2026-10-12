@@ -882,6 +882,8 @@ function parseReminderJson(value:string) {
   const message=String(data?.message||"").trim().slice(0,1000),when=new Date(String(data?.remind_at||""));if(!message||!Number.isFinite(when.getTime()))throw new Error("Include a reminder message and a clear date and time.");return{message,when};
 }
 async function reminderDraft(profile:any,text:string,timeZone:string) {
+  const relative=text.match(/^\/remind(?:@[A-Za-z0-9_]+)?\s+(\d{1,3})\s*(m|h|d)\s+([\s\S]+)$/i);
+  if(relative){const amount=Number(relative[1]),unit=relative[2].toLowerCase(),factor=unit==="m"?60_000:unit==="h"?3_600_000:86_400_000;if(amount<1)throw new Error("Choose a reminder at least one minute in the future.");return{message:relative[3].trim().slice(0,1000),when:new Date(Date.now()+amount*factor)};}
   const explicit=text.match(/^\/remind\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})\s*\|\s*([\s\S]+)$/i);
   if(explicit){const when=zonedDateTime(explicit[1],explicit[2],timeZone);if(!when)throw new Error("That reminder date, time, or timezone is invalid.");return{message:explicit[3].trim().slice(0,1000),when};}
   const prompt=["Extract a reminder from the request.","Return only JSON with: remind_at (ISO 8601 including timezone offset), message (the reminder text).","If the date or time is missing or ambiguous, return {\"remind_at\":\"\",\"message\":\"\"}.",`Current time: ${new Date().toISOString()}`,`User timezone: ${timeZone}`,`Request: ${toolText(text,1200)}`].join("\n");
@@ -907,7 +909,7 @@ async function emailReminder(ownerId:number, mode:string) {
   return `Hourly Gmail checks: ${settings?.enabled?"on":"off"}. ${connection?"Gmail connected.":"Connect Gmail with /connect first."} Use /reminder email on or /reminder email off. Personal reminders use /remind tomorrow at 7 PM | Study mathematics.`;
 }
 async function createReminder(ownerId:number,creatorId:number,chatId:number,message:string,when:Date,timeZone:string) {
-  if(!message)throw new Error("Add a message after the reminder time.");if(when.getTime()<=Date.now()+60_000)throw new Error("Choose a reminder time at least one minute in the future.");if(when.getTime()>Date.now()+366*24*60*60_000)throw new Error("Reminders can be scheduled up to one year ahead.");
+  if(!message)throw new Error("Add a message after the reminder time.");if(when.getTime()<=Date.now()+15_000)throw new Error("Choose a reminder time at least 15 seconds in the future.");if(when.getTime()>Date.now()+366*24*60*60_000)throw new Error("Reminders can be scheduled up to one year ahead.");
   const {data,error}=await sb.from("telegram_personal_reminders").insert({bot_owner_id:ownerId,creator_id:creatorId,chat_id:chatId,message,remind_at:when.toISOString(),timezone:timeZone,status:"pending"}).select("id,message,remind_at,timezone").single();if(error)throw error;return data;
 }
 async function showReminders(token:string,chatId:number,ownerId:number,creatorId:number) {
@@ -1299,6 +1301,8 @@ Deno.serve(async (req: Request) => {
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
     const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private");
+    const groupChat=chatType==="group"||chatType==="supergroup";
+    const reminderConversation=Boolean(privateConversation||(groupChat&&paywallOwner&&senderId));
     if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
       const mode=String(conn.channel_mode||"commands");
@@ -1309,7 +1313,7 @@ Deno.serve(async (req: Request) => {
     } else if(!update?.business_message&&chatType!=="private"){
       const mode=String(conn.group_mode||"mentions");
       if(mode==="off")return json({ok:true,ignored:true,reason:"groups-disabled"});
-      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
+      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
       if(mode!=="all"&&!groupCommand&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
     }
     if(!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
@@ -1473,7 +1477,7 @@ Deno.serve(async (req: Request) => {
     if(privateConversation&&/^\/chats(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await showChats(token,chatId,paywallOwner,senderId);return json({ok:true,route:"chats"});
     }
-    if(privateConversation&&/^\/reminders(?:@[A-Za-z0-9_]+)?$/i.test(text)){
+    if(reminderConversation&&/^\/reminders(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       await showReminders(token,chatId,paywallOwner,senderId);return json({ok:true,route:"reminders"});
     }
     const emailReminderCommand=text.match(/^\/reminder(?:@[A-Za-z0-9_]+)?(?:\s+(?:email\s+)?(on|off|status))?$/i);
@@ -1482,7 +1486,7 @@ Deno.serve(async (req: Request) => {
       await reply(token,chatId,await emailReminder(paywallOwner,String(emailReminderCommand[1]||"status").toLowerCase()));
       return json({ok:true,route:"email-reminder"});
     }
-    if(privateConversation&&reminderIntent(text)){
+    if(reminderConversation&&reminderIntent(text)){
       const explicit=/^\/remind\s+\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*\|/i.test(text);if(!explicit)await consumeOwnerAiUsage(paywallOwner);
       const timeZone=validTimezone(String(conn.timezone||""))?String(conn.timezone):"Africa/Johannesburg",draft=await reminderDraft(conn,text,timeZone),saved=await createReminder(paywallOwner,senderId,chatId,draft.message,draft.when,timeZone);
       await telegram(token,"sendMessage",{chat_id:chatId,text:`⏰ <b>Reminder scheduled</b>\n\n<b>When:</b> ${esc(reminderDisplay(saved.remind_at,saved.timezone))}\n<b>Reminder:</b> ${esc(saved.message)}`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"❌ Cancel reminder",callback_data:`reminder_cancel:${saved.id}`}]]}});return json({ok:true,route:"reminder-created"});
