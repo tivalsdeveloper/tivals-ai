@@ -80,7 +80,7 @@ async function stateRow(state: string, provider: string) {
   if (error || !data || new Date(data.expires_at).getTime() < Date.now()) return null;
   return data;
 }
-async function createState(tg: number, provider: string) {
+async function createState(tg: number, provider: string, groupId?: number) {
   const state = randomState();
 
   // Remove only expired OAuth states. Do not delete still-valid states for the
@@ -95,6 +95,7 @@ async function createState(tg: number, provider: string) {
     state,
     telegram_user_id: tg,
     provider,
+    ...(groupId ? { group_id: groupId } : {}),
     expires_at: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
   });
   if (error) throw error;
@@ -1041,6 +1042,37 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method === "GET" && u.pathname.endsWith("/github/user/callback")) {
     const state=u.searchParams.get("state") || "",code=u.searchParams.get("code") || "";
+    const groupState=await stateRow(state,"github_group");
+    if(groupState){
+      const fail=(message:string)=>Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`,302);
+      if(!code||!groupState.group_id)return fail("The group GitHub authorization link is invalid or expired. Run /github connect in the group again.");
+      try{
+        const token=await githubExchangeUserCode(code);
+        const access=String(token.access_token||"");
+        const user=await githubJson(access,"https://api.github.com/user");
+        if(!user?.login)throw new Error("GitHub did not return an account profile.");
+        const expiresIn=Number(token.expires_in||0);
+        const {error}=await sb.from("telegram_group_github_connections").upsert({
+          chat_id:Number(groupState.group_id),
+          chat_title:String(groupState.group_title||"Telegram group").slice(0,200),
+          connected_by:Number(groupState.telegram_user_id),
+          account_login:String(user.login),
+          account_id:Number(user.id||0)||null,
+          access_token_enc:await encrypt(access),
+          refresh_token_enc:token.refresh_token?await encrypt(String(token.refresh_token)):null,
+          token_type:String(token.token_type||"bearer"),
+          scope:String(token.scope||"repo read:org"),
+          expires_at:expiresIn>0?new Date(Date.now()+expiresIn*1000).toISOString():null,
+          updated_at:new Date().toISOString()
+        },{onConflict:"chat_id"});
+        if(error)throw error;
+        await sb.from("telegram_oauth_states").delete().eq("state",state);
+        return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(String(user.login))}&group=1`,302);
+      }catch(e){return fail(String((e as Error)?.message||e));}
+    }
+  }
+  if (req.method === "GET" && u.pathname.endsWith("/github/user/callback")) {
+    const state=u.searchParams.get("state") || "",code=u.searchParams.get("code") || "";
     const fail=(message:string)=>Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`,302);
     const st=await stateRow(state,"github_user");
     if(!st || !code) return fail("The GitHub authorization link is invalid or expired. Return to Telegram and try again.");
@@ -1279,6 +1311,22 @@ Deno.serve(async (req: Request) => {
     try{return json({shop:await configureShopifyApp(tg,String(body.shop||""),String(body.client_id||""),String(body.client_secret||""))});}
     catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
+  if (action === "create_github_group_link") {
+    if (!internal(req)) return json({error:"Unauthorized"},401);
+    const chatId=Number(body.chat_id||0);
+    if(!Number.isSafeInteger(tg)||tg<=0||!Number.isSafeInteger(chatId)||chatId>=0) return json({error:"A valid Telegram group chat is required."},400);
+    try{
+      if(!GITHUB_CLIENT_SECRET)throw new Error("GitHub OAuth is not configured. Add GITHUB_CLIENT_SECRET to Supabase secrets.");
+      const app=await githubAppInfo(),clientId=String(app?.client_id||"");
+      if(!clientId)throw new Error("GitHub OAuth client ID is unavailable.");
+      const state=await createState(tg,"github_group",chatId);
+      const {error}=await sb.from("telegram_oauth_states").update({group_title:String(body.chat_title||"Telegram group").slice(0,200)}).eq("state",state);
+      if(error)throw error;
+      const redirectUri=`${SUPABASE_URL}/functions/v1/telegram-oauth/github/user/callback`;
+      const params=new URLSearchParams({client_id:clientId,redirect_uri:redirectUri,state,scope:"repo read:org"});
+      return json({url:`https://github.com/login/oauth/authorize?${params.toString()}`});
+    }catch(e){return json({error:String((e as Error)?.message||e)},400);}
+  }
   if (action === "create_github_user_link") {
     if (!internal(req)) return json({error:"Unauthorized"},401);
     try { return json(await githubUserAuthorizationLink(tg)); }
@@ -1287,6 +1335,49 @@ Deno.serve(async (req: Request) => {
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
 
+  if(action==="github_group_action"){
+    if(!internal(req))return json({error:"Unauthorized"},401);
+    const chatId=Number(body.chat_id||0),command=String(body.command||"status").toLowerCase(),repository=String(body.repository||"").trim();
+    if(!Number.isSafeInteger(chatId)||chatId>=0)return json({error:"A valid group chat is required."},400);
+    try{
+      const {data:conn,error}=await sb.from("telegram_group_github_connections").select("*").eq("chat_id",chatId).maybeSingle();
+      if(error)throw error;
+      if(command==="disconnect"){
+        const {error:delError}=await sb.from("telegram_group_github_connections").delete().eq("chat_id",chatId);
+        if(delError)throw delError;
+        return json({ok:true,disconnected:true});
+      }
+      if(!conn)return json({error:"No GitHub account is connected to this group. A group administrator can run /github connect."},404);
+      if(command==="status")return json({connected:true,account:conn.account_login,connected_by:conn.connected_by,updated_at:conn.updated_at});
+      let access=await decrypt(String(conn.access_token_enc||""));
+      if(!access)throw new Error("The stored GitHub authorization is empty. Reconnect with /github connect.");
+      if(conn.expires_at&&new Date(conn.expires_at).getTime()<=Date.now()+60000){
+        const refresh=await decrypt(String(conn.refresh_token_enc||"")).catch(()=> "");
+        if(!refresh||!GITHUB_CLIENT_SECRET)throw new Error("The shared GitHub authorization expired. A group administrator must run /github connect again.");
+        const app=await githubAppInfo();
+        const refreshRes=await fetch("https://github.com/login/oauth/access_token",{method:"POST",headers:{accept:"application/json","content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams({client_id:String(app?.client_id||""),client_secret:GITHUB_CLIENT_SECRET,grant_type:"refresh_token",refresh_token:refresh})});
+        const refreshed=await refreshRes.json().catch(()=>({}));
+        if(!refreshRes.ok||!refreshed?.access_token)throw new Error("The shared GitHub authorization expired. A group administrator must run /github connect again.");
+        access=String(refreshed.access_token);
+        const expiresIn=Number(refreshed.expires_in||0);
+        const {error:refreshSaveError}=await sb.from("telegram_group_github_connections").update({access_token_enc:await encrypt(access),refresh_token_enc:refreshed.refresh_token?await encrypt(String(refreshed.refresh_token)):conn.refresh_token_enc,expires_at:expiresIn>0?new Date(Date.now()+expiresIn*1000).toISOString():null,updated_at:new Date().toISOString()}).eq("chat_id",chatId);
+        if(refreshSaveError)throw refreshSaveError;
+      }
+      const headers={authorization:`Bearer ${access}`,accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot","x-github-api-version":"2022-11-28"};
+      const api=async(path:string)=>{const r=await fetch("https://api.github.com"+path,{headers});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(String(d?.message||`GitHub request failed (${r.status}).`));return d;};
+      if(command==="repos"){
+        const rows=await api("/user/repos?sort=updated&per_page=10&affiliation=owner,collaborator,organization_member");
+        return json({connected:true,account:conn.account_login,repositories:(Array.isArray(rows)?rows:[]).map((x:any)=>({name:x.full_name,description:x.description,private:Boolean(x.private),url:x.html_url,updated_at:x.updated_at}))});
+      }
+      if(command==="issues"||command==="prs"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error(`Usage: /github ${command} owner/repository`);
+        const path=command==="issues"?`/repos/${repository}/issues?state=open&per_page=10`:`/repos/${repository}/pulls?state=open&per_page=10`;
+        const rows=await api(path);
+        return json({connected:true,account:conn.account_login,items:(Array.isArray(rows)?rows:[]).filter((x:any)=>command==="prs"||!x.pull_request).map((x:any)=>({number:x.number,title:x.title,url:x.html_url,state:x.state,user:x.user?.login,created_at:x.created_at}))});
+      }
+      return json({error:"Unknown GitHub group action."},400);
+    }catch(e){return json({error:String((e as Error)?.message||e)},400);}
+  }
   if (action === "status") {
     const { data, error } = await sb.from("telegram_oauth_connections")
       .select("provider,account_label,scope,expires_at,updated_at,metadata,persistent_until,needs_reconnect")

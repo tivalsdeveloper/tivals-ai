@@ -314,7 +314,8 @@ async function groupMessageAllowed(message:any,text:string) {
   if(!mainBotIdentity){const d=await telegram("getMe",{});mainBotIdentity={id:Number(d?.result?.id||0),username:String(d?.result?.username||"")};}
   const repliedToBot=Number(message?.reply_to_message?.from?.id||0)===mainBotIdentity.id;
   const mentioned=Boolean(mainBotIdentity.username&&new RegExp(`@${mainBotIdentity.username.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}\\b`,"i").test(text));
-  return repliedToBot||mentioned;
+  const addressedCommand=/^\/(?:remind|reminders|github)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
+  return repliedToBot||mentioned||addressedCommand;
 }
 
 type PlanName = "free" | "basic" | "pro";
@@ -2040,6 +2041,76 @@ Deno.serve(async (req: Request) => {
 
     if (!text) return json({ ok:true, ignored:true });
 
+    const groupChatType=String(message?.chat?.type||"private");
+    const isGroupChat=groupChatType==="group"||groupChatType==="supergroup";
+    const groupGithubCommand=text.match(/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+(connect|status|repos|issues|prs|disconnect)(?:\s+([^\s]+))?)?\s*$/i);
+    if(isGroupChat&&groupGithubCommand){
+      const action=String(groupGithubCommand[1]||"status").toLowerCase();
+      const repository=String(groupGithubCommand[2]||"").trim();
+      const isAdmin=async()=>{const member=await telegram("getChatMember",{chat_id:chatId,user_id:tg});const status=String(member?.result?.status||"");return status==="creator"||status==="administrator";};
+      try{
+        if(!tg)throw new Error("Telegram could not identify the group member.");
+        if(action==="connect"){
+          if(!await isAdmin())throw new Error("Only a group administrator can connect GitHub for this group.");
+          const link=await oauthCall("create_github_group_link",tg,"github",{chat_id:Number(chatId),chat_title:String(message?.chat?.title||"Telegram group")});
+          if(!link?.url)throw new Error(link?.error||"Could not create the GitHub authorization link.");
+          await telegram("sendMessage",{chat_id:chatId,text:"Connect one shared GitHub account for this group. Only a group administrator can start or replace this connection. Review the permissions on GitHub before approving.",reply_markup:{inline_keyboard:[[{text:"Connect GitHub account",url:String(link.url)}]]}});
+          return json({ok:true,route:"group-github-connect"});
+        }
+        if(action==="disconnect"&&!await isAdmin())throw new Error("Only a group administrator can disconnect the shared GitHub account.");
+        const data=await oauthCall("github_group_action",tg,"github",{chat_id:Number(chatId),command:action,repository:repository});
+        if(data?.error)throw new Error(String(data.error));
+        if(action==="disconnect")await sendFormatted(chatId,"GitHub has been disconnected from this group.",business);
+        else if(action==="status")await sendFormatted(chatId,data.connected?("**Group GitHub connection**\n\nAccount: @"+esc(String(data.account||"unknown"))+"\nConnected by Telegram user ID: "+Number(data.connected_by||0)+"\n\nCommands: /github repos · /github issues owner/repo · /github prs owner/repo"):"No GitHub account is connected. Ask a group administrator to run /github connect.",business);
+        else if(action==="repos"){
+          const rows=Array.isArray(data.repositories)?data.repositories:[];
+          const body=rows.length?rows.map((r:any)=>"• <a href=\""+esc(String(r.url||"https://github.com"))+"\">"+esc(String(r.name||"repository"))+"</a>"+(r.private?" · private":"")+(r.description?"\n  "+esc(String(r.description).slice(0,160)):"")).join("\n"):"No repositories were returned for the connected account.";
+          await telegram("sendMessage",{chat_id:chatId,text:"<b>GitHub repositories</b> (@"+esc(String(data.account||""))+")\n\n"+body,parse_mode:"HTML",disable_web_page_preview:true});
+        }else{
+          const rows=Array.isArray(data.items)?data.items:[];
+          const body=rows.length?rows.map((r:any)=>"• <a href=\""+esc(String(r.url||"https://github.com"))+"\">#"+Number(r.number||0)+" · "+esc(String(r.title||"Untitled").slice(0,180))+"</a> — @"+esc(String(r.user||"unknown"))).join("\n"):"No open items found.";
+          await telegram("sendMessage",{chat_id:chatId,text:"<b>GitHub "+(action==="prs"?"pull requests":"issues")+"</b> · "+esc(repository)+"\n\n"+body,parse_mode:"HTML",disable_web_page_preview:true});
+        }
+        return json({ok:true,route:"group-github-"+action});
+      }catch(e){await sendFormatted(chatId,String((e as Error)?.message||e),business);return json({ok:true,route:"group-github-error"});}
+    }
+    const groupRemindCommand=text.match(/^\/remind(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    const groupRemindersCommand=/^\/reminders(?:@[A-Za-z0-9_]+)?\s*$/i.test(text);
+    if(isGroupChat&&(groupRemindCommand||groupRemindersCommand)){
+      try{
+        if(!tg)throw new Error("Telegram could not identify the group member.");
+        if(groupRemindersCommand){
+          const {data:rows,error}=await sb.from("telegram_group_reminders").select("id,message,remind_at,status").eq("group_id",Number(chatId)).eq("creator_id",tg).eq("status","pending").order("remind_at").limit(15);
+          if(error)throw error;
+          const list=rows||[];
+          const body=list.length?list.map((r:any)=>"• <code>"+String(r.id).slice(0,8)+"</code> — "+esc(String(r.message))+"\n  "+new Date(r.remind_at).toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})).join("\n"):"You have no upcoming reminders in this group.";
+          await telegram("sendMessage",{chat_id:chatId,text:"<b>Your group reminders</b>\n\n"+body+"\n\nCancel one with /remind cancel ID",parse_mode:"HTML"});
+          return json({ok:true,route:"group-reminders-list"});
+        }
+        const spec=String(groupRemindCommand?.[1]||"").trim(),cancel=spec.match(/^cancel\s+([0-9a-f-]{4,36})$/i);
+        if(cancel){
+          const {data:rows,error}=await sb.from("telegram_group_reminders").select("id").eq("group_id",Number(chatId)).eq("creator_id",tg).eq("status","pending");
+          if(error)throw error;
+          const hit=(rows||[]).find((r:any)=>String(r.id).toLowerCase().startsWith(cancel[1].toLowerCase()));
+          if(!hit)throw new Error("No pending reminder matching that ID belongs to you in this group. Use /reminders to check your IDs.");
+          const {error:updateError}=await sb.from("telegram_group_reminders").update({status:"cancelled",updated_at:new Date().toISOString()}).eq("id",hit.id).eq("creator_id",tg);
+          if(updateError)throw updateError;
+          await sendFormatted(chatId,"Reminder cancelled.",business);
+          return json({ok:true,route:"group-reminder-cancel"});
+        }
+        const parsed=spec.match(/^(\d{1,3})(s|m|h|d)\s+([\s\S]+)$/i);
+        if(!parsed)throw new Error("Usage: /remind 30m Reminder text · /remind 2h Reminder text · /remind cancel ID · /reminders");
+        const amount=Number(parsed[1]),unit=parsed[2].toLowerCase(),note=String(parsed[3]||"").trim().slice(0,1000),factor=unit==="s"?1000:unit==="m"?60000:unit==="h"?3600000:86400000,delay=amount*factor;
+        if(!note)throw new Error("Add the reminder text after the time.");
+        if(delay<30000||delay>30*86400000)throw new Error("Choose a reminder between 30 seconds and 30 days from now.");
+        const when=new Date(Date.now()+delay).toISOString(),creatorName=String(message?.from?.username?"@"+message.from.username:message?.from?.first_name||"Group member").slice(0,100);
+        const {data:created,error}=await sb.from("telegram_group_reminders").insert({group_id:Number(chatId),group_title:String(message?.chat?.title||"Telegram group").slice(0,200),creator_id:tg,creator_name:creatorName,message:note,remind_at:when}).select("id,remind_at").single();
+        if(error)throw error;
+        await telegram("sendMessage",{chat_id:chatId,text:"Reminder set for "+new Date(when).toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})+".\n"+note+"\n\nReminder ID: "+String(created.id).slice(0,8)+" · Only you can cancel it with /remind cancel "+String(created.id).slice(0,8)});
+        return json({ok:true,route:"group-reminder-created",id:created.id});
+      }catch(e){await sendFormatted(chatId,String((e as Error)?.message||e),business);return json({ok:true,route:"group-reminder-error"});}
+    }
+
     const storeCommand=text.match(/^\/store(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(storeCommand){
       const term=String(storeCommand[1]||"").trim().slice(0,80);
@@ -2097,6 +2168,9 @@ Deno.serve(async (req: Request) => {
 
     if (text === "/start" || text.startsWith("/start ")) {
       await telegram("setMyCommands",{commands:mainBotCommands()}).catch(()=>{});
+      if(String(message?.chat?.type||"")==="group"||String(message?.chat?.type||"")==="supergroup"){
+        await telegram("setMyCommands",{commands:[{command:"github",description:"Connect or browse group GitHub"},{command:"remind",description:"Set a group reminder"},{command:"reminders",description:"List your group reminders"}],scope:{type:"all_group_chats"}}).catch(()=>{});
+      }
       await setMiniAppMenu(chatId);
       if(String(message?.chat?.type||"")==="private"){await sendBotTypeChooser(chatId,business);return json({ok:true,route:"bot-welcome"});}
       await sendFormatted(chatId, [
