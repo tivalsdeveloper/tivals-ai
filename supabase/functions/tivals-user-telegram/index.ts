@@ -313,10 +313,12 @@ async function handleGithubNavigation(token:string,q:any,tg:number) {
   if(data==="ghroot"){await sendGithubRepositoryPicker(token,chatId,tg);return "github-repositories";}
   if(data==="ghcreate"){await reply(token,chatId,"Create a repository with /github create repository my-project as private (or as public).");return "github-create-help";}
   if(data.startsWith("ghaction:")){
-    const repository=messageText.match(/^Repository:\s*([^\n]+)/m)?.[1]?.trim()||"",path=messageText.match(/^Path:\s*([^\n]+)/m)?.[1]?.trim()||".";
+    let repository=messageText.match(/^Repository:\s*([^\n]+)/m)?.[1]?.trim()||"",path=messageText.match(/^Path:\s*([^\n]+)/m)?.[1]?.trim()||".";
+    const fileHeader=messageText.match(/^File:\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\n]+)/m);
+    if(fileHeader){repository=fileHeader[1];path=fileHeader[2].trim();}
     if(!repository.includes("/")){await reply(token,chatId,"Repository context was missing. Send /github to choose a repository again.");return "github-action-no-context";}
     const folder=path==="."?"":path.replace(/^\/+|\/+$/g,"")+"/",action=data.slice(8);
-    const text=action==="folder"?("Use /github create folder "+repository+":"+folder+"new-folder"):action==="file"?("Use /github create file "+repository+":"+folder+"new-file.txt containing your instructions"):("Use /github edit file "+repository+":"+folder+"file-name.ext to describe the changes");
+    const text=action==="folder"?("Use /github create folder "+repository+":"+folder+"new-folder"):action==="file"?("Use /github create file "+repository+":"+folder+"new-file.txt containing your instructions"):("Use /github edit file "+repository+":"+path+" to describe the changes");
     await reply(token,chatId,text+"\n\nGitHub will show a preview and ask for confirmation before committing.");return "github-action-help";
   }
   const repoIndex=data.match(/^ghrepo:(\d{1,2})$/);
