@@ -1365,6 +1365,15 @@ Deno.serve(async (req: Request) => {
       }
       const headers={authorization:`Bearer ${access}`,accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot","x-github-api-version":"2022-11-28"};
       const api=async(path:string)=>{const r=await fetch("https://api.github.com"+path,{headers});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(String(d?.message||`GitHub request failed (${r.status}).`));return d;};
+      if(command==="challenge-create"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("A valid owner/repository is required.");
+        const title=String(body.title||"").trim().slice(0,240),details=String(body.issue_body||"").trim().slice(0,12000);
+        if(!title||!details)throw new Error("Challenge title and instructions are required.");
+        const write=await fetch("https://api.github.com/repos/"+repository+"/issues",{method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({title:"Challenge: "+title,body:"## Challenge\n\n"+details+"\n\n## Submission requirements\n- Describe your approach.\n- Link your code or pull request.\n- Explain how you tested it.\n\n## Review\nAwaiting community submissions and review."})});
+        const issue=await write.json().catch(()=>({}));
+        if(!write.ok)throw new Error(String(issue?.message||"GitHub could not create the challenge."));
+        return json({connected:true,account:conn.account_login,number:issue.number,title:issue.title,url:issue.html_url,repository});
+      }
       if(command==="repos"){
         const rows=await api("/user/repos?sort=updated&per_page=10&affiliation=owner,collaborator,organization_member");
         return json({connected:true,account:conn.account_login,repositories:(Array.isArray(rows)?rows:[]).map((x:any)=>({name:x.full_name,description:x.description,private:Boolean(x.private),url:x.html_url,updated_at:x.updated_at}))});
