@@ -1,4 +1,5 @@
 import {classify,redact,shouldNotify,nextStatus,autoConfirmAllowed,unverifiedClaims,secureEqual} from "./business-flow.mjs";
+import { unzipSync } from "npm:fflate@0.8.2";
 import {automaticButtons,cleanAnswer,menuRows,inlineChoiceRows,matchingMenuOption,selectionKey,ambiguousAffirmation} from "./button-rules.mjs";
 import {parseEmailRevision,canSendDraft} from "./email-draft-rules.mjs";
 import {bookingDate} from "./booking-time.mjs";
@@ -13,7 +14,7 @@ const PIXAZO_STUDIO_URL = `${SUPABASE_URL}/functions/v1/pixazo-studio`;
 const OAUTH_URL = `${SUPABASE_URL}/functions/v1/telegram-oauth`;
 const WEB_SEARCH_URL = `${SUPABASE_URL}/functions/v1/web-search`;
 const YOUTUBE_SEARCH_URL = `${SUPABASE_URL}/functions/v1/youtube-search`;
-const APP_URL = "https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-3";
+const APP_URL = "https://tivalsdeveloper.site/opencs-community.html";
 const BUSINESS_APP_URL = APP_URL;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AIMLAPI_BASE = "https://api.aimlapi.com/v1";
@@ -286,48 +287,6 @@ function githubContextModelData(data:any) {
   const r=data?.repository||{},files=Array.isArray(data?.root_files)?data.root_files:[],commits=Array.isArray(data?.recent_commits)?data.recent_commits:[],issues=Array.isArray(data?.open_issues)?data.open_issues:[];
   return toolText([`Repository: ${r?.full_name||"Unknown"}`,`Description: ${r?.description||"No description"}`,`Visibility: ${r?.private?"private":"public"}`,`Default branch: ${r?.default_branch||"Unknown"}`,`Language: ${r?.language||"Unknown"}`,`Root files: ${files.slice(0,30).map((x:any)=>x?.path||x?.name||"").filter(Boolean).join(", ")||"none"}`,"Recent commits:",...commits.slice(0,5).map((x:any)=>`- ${toolText(x?.message,240)}`),"Open issues:",...(issues.length?issues.slice(0,8).map((x:any)=>`- #${x?.number}: ${toolText(x?.title,220)}`):["- none"]),"README excerpt:",String(data?.readme||"No README returned").slice(0,4000)].join("\n"),7500);
 }
-
-async function sendGithubDirectoryPicker(token:string,chatId:number,tg:number,repository:string,path="") {
-  const d=await oauth("github_directory",tg,"github",{repository,path});
-  const entries=(Array.isArray(d.entries)?d.entries:[]).slice(0,30);
-  const lines=entries.map((x:any,i:number)=>(i+1)+". ["+(x.type==="dir"?"DIR":"FILE")+"] "+String(x.path||x.name||"").slice(0,180));
-  const rows:any[][]=[];
-  for(let i=0;i<entries.length;i+=2){const row:any[]=[];for(let j=i;j<Math.min(i+2,entries.length);j++){const e=entries[j];row.push({text:(e.type==="dir"?"📁 ":"📄 ")+String(e.name||String(e.path||"").split("/").pop()||"item").slice(0,48),callback_data:"ghnav:"+(j+1)});}rows.push(row);}
-  rows.push([{text:"➕ Create file",callback_data:"ghaction:file"},{text:"📁 Create folder",callback_data:"ghaction:folder"}]);
-  rows.push([{text:"✏️ Edit file",callback_data:"ghaction:edit"},{text:"📚 Repositories",callback_data:"ghroot"}]);
-  await telegram(token,"sendMessage",{chat_id:chatId,text:"Repository: "+repository+"\nPath: "+(path||".")+"\n\n"+(lines.join("\n")||"(This folder is empty.)")+"\n\nTap a file or folder above, or choose an action below.",reply_markup:{inline_keyboard:rows}});
-}
-async function sendGithubRepositoryPicker(token:string,chatId:number,tg:number) {
-  const d=await oauth("github_repositories",tg,"github",{max_results:30});
-  const repos=(Array.isArray(d.repositories)?d.repositories:[]).slice(0,30);
-  const lines=repos.map((r:any,i:number)=>(i+1)+". "+String(r.full_name||r.name||"").slice(0,160));
-  const rows:any[][]=[];
-  for(let i=0;i<repos.length;i+=2){const row:any[]=[];for(let j=i;j<Math.min(i+2,repos.length);j++)row.push({text:String(repos[j].full_name||repos[j].name||"Repository").slice(0,55),callback_data:"ghrepo:"+(j+1)});rows.push(row);}
-  rows.push([{text:"➕ Create repository",callback_data:"ghcreate"}]);
-  await telegram(token,"sendMessage",{chat_id:chatId,text:"GitHub repositories\n\n"+(lines.join("\n")||"No repositories found. Connect GitHub and try again.")+"\n\nTap a repository to browse its files and folders.",reply_markup:{inline_keyboard:rows}});
-}
-async function handleGithubNavigation(token:string,q:any,tg:number) {
-  const data=String(q?.data||""),chatId=Number(q?.message?.chat?.id||0),messageText=String(q?.message?.text||"");
-  if(!tg||Number(q?.from?.id)!==tg||q?.message?.chat?.type!=="private"||q?.message?.business_connection_id){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Open the bot's private chat to manage GitHub.",show_alert:true}).catch(()=>{});return "github-navigation-rejected";}
-  await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
-  if(data==="ghroot"){await sendGithubRepositoryPicker(token,chatId,tg);return "github-repositories";}
-  if(data==="ghcreate"){await reply(token,chatId,"Create a repository with /github create repository my-project as private (or as public).");return "github-create-help";}
-  if(data.startsWith("ghaction:")){
-    let repository=messageText.match(/^Repository:\s*([^\n]+)/m)?.[1]?.trim()||"",path=messageText.match(/^Path:\s*([^\n]+)/m)?.[1]?.trim()||".";
-    const fileHeader=messageText.match(/^File:\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([^\n]+)/m);
-    if(fileHeader){repository=fileHeader[1];path=fileHeader[2].trim();}
-    if(!repository.includes("/")){await reply(token,chatId,"Repository context was missing. Send /github to choose a repository again.");return "github-action-no-context";}
-    const folder=path==="."?"":path.replace(/^\/+|\/+$/g,"")+"/",action=data.slice(8);
-    const text=action==="folder"?("Use /github create folder "+repository+":"+folder+"new-folder"):action==="file"?("Use /github create file "+repository+":"+folder+"new-file.txt containing your instructions"):("Use /github edit file "+repository+":"+path+" to describe the changes");
-    await reply(token,chatId,text+"\n\nGitHub will show a preview and ask for confirmation before committing.");return "github-action-help";
-  }
-  const repoIndex=data.match(/^ghrepo:(\d{1,2})$/);
-  if(repoIndex){const idx=Number(repoIndex[1]),repo=messageText.split("\n").map((line:string)=>line.match(/^\s*(\d+)\.\s+(\S+)/)).find((m:any)=>m&&Number(m[1])===idx)?.[2]||"";if(!repo.includes("/")){await reply(token,chatId,"That repository selection could not be resolved. Send /github and choose again.");return "github-repository-selection-missing";}await sendGithubDirectoryPicker(token,chatId,tg,repo,"");return "github-repository-open";}
-  const navIndex=data.match(/^ghnav:(\d{1,2})$/);
-  if(navIndex){const idx=Number(navIndex[1]),repository=messageText.match(/^Repository:\s*([^\n]+)/m)?.[1]?.trim()||"",selected=messageText.split("\n").map((line:string)=>line.match(/^\s*(\d+)\.\s+\[(DIR|FILE)\]\s+(.+)$/)).find((m:any)=>m&&Number(m[1])===idx);if(!repository.includes("/")||!selected){await reply(token,chatId,"That file/folder selection could not be resolved. Send /github and choose again.");return "github-navigation-selection-missing";}const kind=selected[2],filePath=selected[3].trim();if(kind==="DIR"){await sendGithubDirectoryPicker(token,chatId,tg,repository,filePath);return "github-directory-open";}const file=await oauth("github_file",tg,"github",{repository,path:filePath});if(Number(file.size)>120000)throw new Error("This file exceeds the 120 KB reader limit.");const source=githubDecode(String(file.content_base64||""));await telegram(token,"sendMessage",{chat_id:chatId,text:"File: "+repository+":"+filePath+"\n\n"+source.slice(0,2800)+(source.length>2800?"\n\nPreview truncated. Use /github read file "+repository+":"+filePath+" for a larger view.":""),reply_markup:{inline_keyboard:[[{text:"✏️ Edit file",callback_data:"ghaction:edit"},{text:"📚 Repositories",callback_data:"ghroot"}]]}});return "github-file-open";}
-  return "github-navigation-ignored";
-}
-
 async function oauth(action:string,tg:number,provider="",extra:Record<string,unknown>={}) {
   const r=await fetch(OAUTH_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+SERVICE_KEY},body:JSON.stringify({action,telegram_user_id:tg,provider,...extra})});
   const d=await r.json().catch(()=>({}));
@@ -341,7 +300,82 @@ function githubTarget(request:string){
   return {repository:m[1],path:String(m[2]||natural?.[1]||"").replace(/^\/+|[.,;]+$/g,"")};
 }
 function githubDecode(encoded:string){const raw=atob(encoded.replace(/\s/g,""));return new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(raw,c=>c.charCodeAt(0)))}
-async function githubConfirmDraft(token:string,chatId:number,tg:number,action:"create_repository"|"upsert_file"|"create_issue"|"create_challenge",repository:string,payload:Record<string,unknown>,preview:string){
+function githubUploadPath(basePath:string,relativePath:string){const joined=[String(basePath||""),String(relativePath||"")].filter(Boolean).join("/").replace(/\\/g,"/").replace(/^\/+|\/+$/g,"");if(!joined||joined.length>450||joined.split("/").some((part:string)=>!part||part==="."||part===".."||part.includes("\0")))throw new Error("Invalid upload path. Use a relative file path such as src/main.py.");return joined;}
+function validateGithubZip(bytes:Uint8Array){const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);const floor=Math.max(0,bytes.length-65557);let end=-1;for(let i=bytes.length-22;i>=floor;i--){if(view.getUint32(i,true)===0x06054b50){end=i;break;}}if(end<0)throw new Error("Invalid ZIP archive.");const disk=view.getUint16(end+4,true),centralDisk=view.getUint16(end+6,true),entriesOnDisk=view.getUint16(end+8,true),entryCount=view.getUint16(end+10,true),centralSize=view.getUint32(end+12,true),centralOffset=view.getUint32(end+16,true),commentLength=view.getUint16(end+20,true);if(disk!==0||centralDisk!==0||entriesOnDisk!==entryCount||entryCount===0xffff||centralSize===0xffffffff||centralOffset===0xffffffff||end+22+commentLength>bytes.length||centralOffset+centralSize>end||entryCount>100)throw new Error("Unsupported or oversized ZIP archive.");let pos=centralOffset,total=0,files=0;for(let i=0;i<entryCount;i++){if(pos+46>bytes.length||view.getUint32(pos,true)!==0x02014b50)throw new Error("Invalid ZIP directory.");const flags=view.getUint16(pos+8,true),method=view.getUint16(pos+10,true),size=view.getUint32(pos+24,true),nameLength=view.getUint16(pos+28,true),extraLength=view.getUint16(pos+30,true),commentLen=view.getUint16(pos+32,true),diskStart=view.getUint16(pos+34,true),external=view.getUint32(pos+38,true);if((flags&1)!==0||![0,8].includes(method)||diskStart!==0||size===0xffffffff)throw new Error("Encrypted or unsupported ZIP entries are not allowed.");const name=new TextDecoder().decode(bytes.subarray(pos+46,pos+46+nameLength));const clean=githubUploadPath("",name.replace(/\/+$/,""));if((external>>>16&0xf000)===0xa000)throw new Error("ZIP symbolic links are not allowed.");if(!name.endsWith("/")){files++;if(size>5_000_000)throw new Error("ZIP entry "+clean+" exceeds the 5 MB per-file limit.");total+=size;if(total>20_000_000)throw new Error("The extracted ZIP exceeds the 20 MB total limit.");}if(files>40)throw new Error("This ZIP contains more than 40 files. Split it into smaller ZIP archives and send them in the same upload session.");pos+=46+nameLength+extraLength+commentLen;if(pos>centralOffset+centralSize)throw new Error("Invalid ZIP directory size.");}if(!entryCount)throw new Error("The ZIP is empty.");return true;}
+async function githubContributorIdentity(tg:number,telegramUsername:string){const cleanTelegram=String(telegramUsername||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,32);const {data,error}=await sb.from("telegram_github_profiles").select("github_username,github_user_id,github_verified,github_profile_url").eq("telegram_user_id",tg).maybeSingle();if(error)throw error;return {telegram_user_id:tg,telegram_username:cleanTelegram,github_username:String(data?.github_username||""),github_user_id:data?.github_user_id||null,github_verified:Boolean(data?.github_verified||false)};}
+async function githubBatchWrite(chatId:number,tg:number,session:any,files:Array<{path:string,bytes:Uint8Array}>,username:string){let completed=0;const failures:string[]=[];const identity=await githubContributorIdentity(tg,username);for(const file of files){try{const path=githubUploadPath(String(session?.payload?.base_path||""),file.path);const data=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"write",repository:String(session.repository||""),path,content_base64:bytesToB64(file.bytes),mode:"upload",message:"Batch upload "+path,...identity});if(data?.error)throw new Error(String(data.error));completed++;}catch(e){failures.push(file.path+": "+String((e as Error)?.message||e));break;}}const count=Number(session?.payload?.uploaded_count||0)+completed;await sb.from("telegram_pending_github_actions").update({payload:{...(session.payload||{}),batch_upload:true,uploaded_count:count}}).eq("id",session.id).eq("telegram_user_id",tg).eq("status","running");return {completed,count,failures};}
+
+async function hasPendingChallengeSession(chatId:number,senderId:number){const {data}=await sb.from("telegram_pending_github_actions").select("id").eq("chat_id",chatId).eq("telegram_user_id",senderId).in("action",["challenge_create","challenge_submit"]).eq("status","pending").gt("expires_at",new Date().toISOString()).limit(1).maybeSingle();return Boolean(data);}
+async function challengeReviewSolution(title:string,description:string,solution:string){
+  const prompt="Evaluate this programming solution against the task. Return ONLY JSON with score 0-100 and brief feedback. Challenge: "+title+"\nTask: "+description+"\nSolution:\n"+solution.slice(0,12000);
+  const key=Deno.env.get("OPENROUTER_API_KEY")||"";
+  if(key){for(const model of ["openrouter/free","google/gemini-2.0-flash-exp:free"]){try{const r=await fetch("https://openrouter.ai/api/v1/chat/completions",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify({model,messages:[{role:"system",content:"Return only valid JSON with score and feedback."},{role:"user",content:prompt}],temperature:0.1,max_tokens:400})});const d=await r.json().catch(()=>({}));const raw=String(d?.choices?.[0]?.message?.content||"").replace(/^\s*\x60{3}(?:json)?|\x60{3}\s*$/gm,"").trim();const match=raw.match(/\{[\s\S]*\}/);const v=JSON.parse(match?match[0]:raw);return {score:Math.max(0,Math.min(100,Number(v.score)||0)),feedback:String(v.feedback||"Reviewed.").slice(0,900)};}catch{}}}
+  const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+SERVICE_KEY},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:"Return only JSON with score from 0 to 100 and brief feedback."},{role:"user",content:prompt}]})});const d=await r.json().catch(()=>({}));const raw=String(d?.reply||d?.answer||d?.choices?.[0]?.message?.content||"");const match=raw.match(/\{[\s\S]*\}/);const v=JSON.parse(match?match[0]:raw.trim());return {score:Math.max(0,Math.min(100,Number(v.score)||0)),feedback:String(v.feedback||"Reviewed.").slice(0,900)};
+}
+async function challengeManifest(id:number){
+ const {data:c}=await sb.from("telegram_challenges").select("*").eq("id",id).maybeSingle();if(!c)return;
+ const {data:rows}=await sb.from("telegram_challenge_submissions").select("*").eq("challenge_id",id).order("score",{ascending:false}).order("submitted_at",{ascending:true});
+ const entries=Array.isArray(rows)?rows:[];const creator=c.creator_username?"@"+c.creator_username:"Telegram user "+c.creator_telegram_id;
+ const lines=["# OpenCS Challenge: "+c.title,"","- Challenge ID: "+c.id,"- Made by Telegram: "+creator,"- Ends: "+new Date(c.ends_at).toISOString(),"- Status: "+c.status,"- Completed solutions: "+entries.length,"","## Task",String(c.description),"","## AI ranking","",...(entries.length?entries.map((x:any,i:number)=>(i+1)+". "+(x.telegram_username?"@"+x.telegram_username:"Telegram user "+x.telegram_user_id)+" — "+Number(x.score).toFixed(1)+"/100\n   Feedback: "+String(x.feedback||"").replace(/\n/g," ").slice(0,400)):["No solutions submitted yet."]),"","AI scores are automated assessments; code was not necessarily executed or tested.",""];
+ if(c.repository){try{const identity=await githubContributorIdentity(Number(c.creator_telegram_id),String(c.creator_username||""));const data=await oauth("github_group_action",Number(c.creator_telegram_id),"github",{chat_id:Number(c.chat_id),command:"write",repository:String(c.repository),path:"CHALLENGES/CHALLENGE-"+id+".md",content_base64:bytesToB64(new TextEncoder().encode(lines.join("\n"))),mode:"upload",message:"Update OpenCS challenge "+id,...identity});if(data?.error)throw new Error(String(data.error));}catch(e){console.error("Challenge report sync failed",String((e as Error)?.message||e));}}
+}
+async function handleChallengeCommand(token:string,chatId:number,senderId:number,username:string,text:string){
+ const a=text.trim().split(/\s+/),cmd=String(a[1]||"help").toLowerCase();
+ if(cmd==="create"){const id=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:senderId,chat_id:chatId,action:"challenge_create",repository:"",payload:{stage:"title",username},status:"pending",expires_at:new Date(Date.now()+3600000).toISOString()});if(error)throw error;await reply(token,chatId,"Create challenge — step 1/4. Send a title.");return "challenge-create";}
+ if(cmd==="list"){const {data}=await sb.from("telegram_challenges").select("id,title,ends_at,status").eq("chat_id",chatId).order("created_at",{ascending:false}).limit(15);await reply(token,chatId,(data?.length?data.map((c:any)=>"#"+c.id+" "+c.title+" — "+c.status+" — ends "+new Date(c.ends_at).toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})).join("\n"):"No challenges yet.")+"\nUse /challenge submit ID or /challenge leaderboard ID.");return "challenge-list";}
+ if(cmd==="submit"){const id=Number(a[2]);const {data:c}=await sb.from("telegram_challenges").select("*").eq("id",id).eq("chat_id",chatId).maybeSingle();if(!c||c.status!=="open"||new Date(c.ends_at).getTime()<=Date.now())throw new Error("Challenge unavailable or ended.");const sid=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id:sid,telegram_user_id:senderId,chat_id:chatId,action:"challenge_submit",repository:"",payload:{stage:"solution",challenge_id:id,username},status:"pending",expires_at:new Date(Math.min(Date.now()+1800000,new Date(c.ends_at).getTime())).toISOString()});if(error)throw error;await reply(token,chatId,"Paste your solution in your next message (maximum 12,000 characters). AI will score it out of 100.");return "challenge-submit";}
+ if(cmd==="leaderboard"||cmd==="close"){const id=Number(a[2]);const {data:c}=await sb.from("telegram_challenges").select("*").eq("id",id).eq("chat_id",chatId).maybeSingle();if(!c)throw new Error("Challenge not found in this chat.");if(cmd==="close"){if(Number(c.creator_telegram_id)!==senderId)throw new Error("Only the creator can close this challenge.");await sb.from("telegram_challenges").update({status:"closed",closed_at:new Date().toISOString()}).eq("id",id);}else if(c.status==="open"&&new Date(c.ends_at).getTime()<=Date.now()){await sb.from("telegram_challenges").update({status:"closed",closed_at:new Date().toISOString()}).eq("id",id);}
+ const {data:rows}=await sb.from("telegram_challenge_submissions").select("*").eq("challenge_id",id).order("score",{ascending:false}).order("submitted_at",{ascending:true});await challengeManifest(id);const finalStatus=(cmd==="close"||new Date(c.ends_at).getTime()<=Date.now())?"closed":c.status;await reply(token,chatId,"Challenge #"+id+": "+c.title+"\nStatus: "+finalStatus+"\n"+((rows||[]).length?(rows||[]).map((x:any,i:number)=>(i+1)+". "+(x.telegram_username?"@"+x.telegram_username:"Telegram user "+x.telegram_user_id)+" — "+Number(x.score).toFixed(1)+"/100\n"+String(x.feedback||"").slice(0,180)).join("\n"):"No submissions yet."));return "challenge-"+cmd;}
+ await reply(token,chatId,"OpenCS Challenges\n/challenge create — create a task/project challenge\n/challenge list — list challenges\n/challenge submit ID — submit a solution\n/challenge leaderboard ID — rankings\n/challenge close ID — close your challenge\n\nCreator wizard asks for title, task, deadline (YYYY-MM-DD HH:MM South African time), and optional GitHub owner/repo.");return "challenge-help";
+}
+async function sendPrivateGithubMenu(token:string,chatId:number,tg:number){
+  const status=await oauth("github_user_status",tg,"github");
+  if(!status.authorized){
+    const link=await oauth("create_github_user_link",tg,"github");
+    await telegram(token,"sendMessage",{chat_id:chatId,text:"GitHub is not connected yet. Connect your account to use the private GitHub menu, including private repositories.",reply_markup:{inline_keyboard:[[{text:"Connect GitHub",url:String(link.url)}],[{text:"Open GitHub",url:"https://github.com"}]]}});
+    return "github-private-connect";
+  }
+  const data=await oauth("github_repositories",tg,"github",{max_results:20});
+  const repositories=Array.isArray(data.repositories)?data.repositories:[];
+  const id=crypto.randomUUID();
+  const payload={stage:"choose_repo",repositories:repositories.map((r:any)=>({full_name:String(r.full_name||r.name||""),name:String(r.name||""),private:Boolean(r.private),html_url:String(r.html_url||""),description:String(r.description||"")})).filter((r:any)=>r.full_name).slice(0,20)};
+  const {error}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:tg,chat_id:chatId,action:"github_private_wizard",repository:"",payload,status:"pending",expires_at:new Date(Date.now()+30*60_000).toISOString()});
+  if(error)throw error;
+  const rows=payload.repositories.map((r:any,i:number)=>[{text:(r.private?"Private · ":"")+String(r.full_name).slice(0,45),callback_data:"gp:repo:"+id+":"+i}]);
+  rows.push([{text:"Create new repository",callback_data:"gp:action:"+id+":newrepo"}],[{text:"Refresh repositories",callback_data:"gp:action:"+id+":refresh"}],[{text:"Cancel",callback_data:"gp:cancel:"+id}]);
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"GitHub — private menu\n\n"+(data.account?"Connected account: "+String(data.account)+"\n\n":"")+(repositories.length?"Choose a repository. Private repositories are marked in the list.":"No repositories were returned. You can create a new repository below.")+"\n\nThese controls work only in your private chat with this bot.",reply_markup:{inline_keyboard:rows}});
+  return "github-private-menu";
+}
+async function showPrivateGithubDirectory(token:string,chatId:number,id:string,session:any,path:string){
+  const result=await oauth("github_directory",Number(session.telegram_user_id),"github",{repository:String(session.repository||""),path});
+  const entries=Array.isArray(result.entries)?result.entries:[];
+  const payload={...(session.payload||{}),stage:"browse",path,items:entries.map((e:any)=>({name:String(e.name||""),path:String(e.path||""),type:String(e.type||""),size:Number(e.size||0)}))};
+  const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",session.telegram_user_id).eq("status","pending");
+  if(error)throw error;
+  const rows=payload.items.slice(0,18).map((entry:any,index:number)=>[{text:(entry.type==="dir"?"Folder · ":"File · ")+String(entry.name).slice(0,48),callback_data:"gp:item:"+id+":"+index}]);
+  if(path)rows.push([{text:"Parent folder",callback_data:"gp:action:"+id+":parent"}]);
+  rows.push([{text:"Repository actions",callback_data:"gp:action:"+id+":menu"}],[{text:"Cancel",callback_data:"gp:cancel:"+id}]);
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"Repository: "+String(session.repository)+(path?"\nFolder: "+path:"\nRoot folder")+(result.truncated?"\nShowing the first 100 entries.":"")+"\n\nSelect a file to read it or a folder to open it.",reply_markup:{inline_keyboard:rows}});
+}
+
+async function githubWizardMenu(token:string,chatId:number,session:any){
+  const repo=String(session?.repository||"");
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"GitHub repository selected: "+repo+"\n\nChoose what you want to do:",reply_markup:{inline_keyboard:[
+    [{text:"Create file",callback_data:"gw:action:"+session.id+":file"},{text:"Create folder",callback_data:"gw:action:"+session.id+":folder"}],
+    [{text:"Upload files / folders",callback_data:"gw:action:"+session.id+":upload"}],
+    [{text:"Create new repository",callback_data:"gw:action:"+session.id+":newrepo"}],
+    [{text:"Choose another repository",callback_data:"gw:action:"+session.id+":back"},{text:"Cancel",callback_data:"gw:cancel:"+session.id}]
+  ]}});
+}
+async function isTelegramGroupAdmin(token:string,chatId:number,userId:number){
+  try{const result=await telegram(token,"getChatMember",{chat_id:chatId,user_id:userId});return ["creator","administrator"].includes(String(result?.result?.status||""));}catch{return false;}
+}
+function githubWizardValidPath(value:string){
+  const path=String(value||"").trim().replace(/\\/g,"/").replace(/^\/+|\/+$/g,"");
+  if(!path||path.length>450||path.split("/").some((part:string)=>!part||part==="."||part===".."||/[\0-\x1f]/.test(part)))throw new Error("Enter a valid relative path, for example src/main.py.");
+  return path;
+}
+async function githubConfirmDraft(token:string,chatId:number,tg:number,action:"create_repository"|"upsert_file"|"create_issue",repository:string,payload:Record<string,unknown>,preview:string){
   const id=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:tg,chat_id:chatId,action,repository,payload,status:"pending",expires_at:new Date(Date.now()+600000).toISOString()});if(error)throw error;
   await telegram(token,"sendMessage",{chat_id:chatId,text:`🐙 <b>Confirm GitHub change</b>\n\n${esc(preview.slice(0,2200))}\n\nNothing changes until you confirm. Expires in 10 minutes.`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"✅ Confirm",callback_data:`github_personal_apply:${id}`},{text:"❌ Cancel",callback_data:`github_personal_cancel:${id}`}]]}});
 }
@@ -354,7 +388,7 @@ async function githubConfirmAction(token:string,q:any,tg:number,action:string,id
   const {data:claimed,error:claimError}=await sb.from("telegram_pending_github_actions").update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").gt("expires_at",new Date().toISOString()).select("*").maybeSingle();if(claimError)throw claimError;
   if(!claimed){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Already processing.",show_alert:true});return"github-duplicate"}
   await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Working on GitHub…"});
-  try{const d=claimed.action==="create_repository"?await oauth("github_create_repository",tg,"github",claimed.payload):(claimed.action==="create_issue"||claimed.action==="create_challenge")?await oauth("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload.title,issue_body:claimed.payload.body}):await oauth("github_upsert_file",tg,"github",{repository:claimed.repository,...claimed.payload});await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);const label=claimed.action==="create_repository"?"repository created":claimed.action==="create_issue"?"issue created":claimed.action==="create_challenge"?"challenge report created":"file updated";await reply(token,chatId,"GitHub "+label+"\n"+(d.html_url||d.full_name||claimed.repository));return"github-applied"}
+  try{const d=claimed.action==="create_repository"?await oauth("github_create_repository",tg,"github",claimed.payload):claimed.action==="create_issue"?await oauth("github_create_issue",tg,"github",{repository:claimed.repository,title:claimed.payload.title,issue_body:claimed.payload.body}):await oauth("github_upsert_file",tg,"github",{repository:claimed.repository,...claimed.payload});await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`✅ GitHub ${claimed.action==="create_repository"?"repository created":claimed.action==="create_issue"?"issue created":"file updated"}\n${d.html_url||d.full_name||claimed.repository}`);return"github-applied"}
   catch(e){await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`GitHub could not confirm the change. Check GitHub before retrying. ${String((e as Error).message||e)}`);return"github-failed"}
 }
 async function ownerConnectMenu(token:string,chatId:number,tg:number,business="") {
@@ -371,6 +405,11 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
   const labels:any={gmail:"📧 Gmail",github:"🐙 GitHub",shopify:"🛍️ Shopify",tiktok:"🎵 TikTok",website:"🌐 Tivals AI Website"};
   const text=list.length?"<b>Connected tools</b>\n\n"+list.map((x:any)=>"• "+(labels[x.provider]||x.provider)+": <b>"+esc(x.account_label||"Connected")+"</b>").join("\n"):"<b>Connected tools</b>\n\nNo tools connected yet. Use /connect.";
   await telegram(token,"sendMessage",{chat_id:chatId,text,parse_mode:"HTML",...(business?{business_connection_id:business}:{})});
+}
+async function publicAppEntry(token:string,chatId:number,business="") {
+  // Telegram only permits web_app keyboard buttons in private chats.
+  // In groups, use a regular URL button to avoid BUTTON_TYPE_INVALID.
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"📚 <b>OpenCS Community</b>\n\nOpen the community app. Bot management and connected accounts remain restricted to the bot owner.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open OpenCS Community",url:APP_URL}]]},...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="",kind="personal") {
   const businessBot=kind==="business",url=APP_URL,label="Bot Studio";
@@ -1092,15 +1131,6 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
     const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await reply(token,chatId,gmailDirectReply(data,resolved.title));return"gmail";
   }
   if(tool==="github"){
-    if(!request||/^(?:check(?:\s+my)?\s+github(?:\s+account)?|repos|repositories|list repositories|browse repositories)$/i.test(request)){await sendGithubRepositoryPicker(token,chatId,tg);return "github-repositories";}
-    if(/\bcreate\s+folder\b/i.test(request)){
-      const match=request.match(/\bcreate\s+folder\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+):([A-Za-z0-9_./ -]+)/i);
-      if(!match)throw new Error("Use /github create folder owner/repository:path/to/folder-name");
-      const repository=match[1],folder=match[2].trim().replace(/^\/+|\/+$/g,"");
-      if(!folder||folder.split("/").some((part:string)=>!part||part==="."||part===".."))throw new Error("Use a valid folder path without empty, . or .. segments.");
-      const filePath=folder+"/.gitkeep",content="# This file keeps the folder in Git.\\n";
-      await githubConfirmDraft(token,chatId,tg,"upsert_file",repository,{path:filePath,content_base64:bytesToB64(new TextEncoder().encode(content)),message:"Create folder "+folder,sha:""},"Repository: "+repository+"\\nCreate folder: "+folder+"\\nGit stores folders through files, so this adds .gitkeep.");return "github-folder-draft";
-    }
     if(/\bcreate\s+(?:an?\s+)?issue\b/i.test(request)){
       const match=request.match(/\bcreate\s+(?:an?\s+)?issue\s+in\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*\|\s*([^|]+)\|\s*([\s\S]+)/i);
       if(!match)throw new Error("Use @github create issue in owner/repository | Title | Details");
@@ -1123,8 +1153,11 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
     }
     if(/\b(?:read|open|show|view)\s+(?:(?:the|this)\s+)?(?:file|code|source(?:\s+code)?)\b/i.test(request)){
       if(!target?.path)throw new Error("Use @github read file owner/repository:path/to/file");
-      const d=await oauth("github_file",tg,"github",target);if(Number(d.size)>120000)throw new Error("This file exceeds the 120 KB reader limit.");
-      const source=githubDecode(String(d.content_base64||""));await reply(token,chatId,`📄 **${target.repository}:${target.path}**\n\n${source.length>9000?"First 9,000 characters:\n":""}\`\`\`\n${source.slice(0,9000).replace(/\`\`\`/g,"` ` `")}\n\`\`\``);return"github-file";
+      const d=await oauth("github_file",tg,"github",target);
+      if(d.is_binary){await reply(token,chatId,"Binary file: "+target.repository+":"+target.path+"\nSize: "+Number(d.size||0)+" bytes\nGitHub: "+String(d.html_url||"Open the repository file on GitHub.")+"\n\nThis format cannot be displayed as plain text.");return "github-file-binary";}
+      const source=d.is_pdf?String(d.extracted_text||""):githubDecode(String(d.content_base64||""));
+      const heading=d.is_pdf?"PDF text · "+Number(d.pages_read||0)+"/"+Number(d.total_pages||0)+" pages":"File contents";
+      await reply(token,chatId,"📄 **"+target.repository+":"+target.path+"**\n"+heading+"\n\n"+(source.length>9000?"First 9,000 characters:\n":"")+source.slice(0,9000));return d.is_pdf?"github-pdf":"github-file";
     }
     if(/\b(?:fix|edit|update|change|create|append)\s+(?:(?:a|the|this)\s+)?(?:file|code|source(?:\s+code)?)\b|\b(?:add|append)\s+(?:this\s+)?(?:text|code|content)?\s*(?:to|into)\s+(?:the\s+)?file\b/i.test(request)){
       if(!target?.path)throw new Error("Use @github fix code owner/repository:path/to/file to ...");
@@ -1148,14 +1181,6 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
       await githubConfirmDraft(token,chatId,tg,"upsert_file",target.repository,{path:target.path,content_base64:bytesToB64(new TextEncoder().encode(draft.content)),message:String(draft.commit_message||`${creating?"Create":"Update"} ${target.path}`).slice(0,200),sha:d?.sha||""},`File: ${target.repository}:${target.path}\nCommit: ${draft.commit_message||"Update file"}\nPreview:\n${draft.content.slice(0,1500)}`);return"github-file-draft";
     }
     await consumeOwnerAiUsage(tg);const data=await oauth("github_repositories",tg,"github",{max_results:20}),repo=selectGithubRepository(request,data);if(repo){const context=await oauth("github_repository_context",tg,"github",{repository:repo});await answerWithTool(token,chatId,profile,memoryKey,"GitHub repository",request||`Inspect ${repo}`,githubContextModelData(context));return"github-repository";}await answerWithTool(token,chatId,profile,memoryKey,"GitHub",request||"Check my GitHub account",githubModelData(data));return"github";
-  }
-  if(tool==="challenge"){
-    const match=request.match(/^create\s+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*\|\s*([^|]+)\|\s*([\s\S]+)/i);
-    if(!match)throw new Error("Use /challenge create owner/repository | Challenge title | Challenge instructions and acceptance criteria");
-    const repository=match[1],title=match[2].trim().slice(0,240),body=match[3].trim().slice(0,12000);
-    if(!title||!body)throw new Error("Include a challenge title and instructions.");
-    const challengeBody="## Challenge\n\n"+body+"\n\n## Submission requirements\n- Include a description of your approach.\n- Include relevant source code or a repository link.\n- Explain how you tested the solution.\n\n## Review\nThis challenge is awaiting community submissions and review.\n";
-    await githubConfirmDraft(token,chatId,tg,"create_challenge",repository,{title:"Challenge: "+title,body:challengeBody},"Repository: "+repository+"\nChallenge: "+title+"\nInstructions:\n"+body.slice(0,1000));return "github-challenge-draft";
   }
   if(tool==="website"||tool==="site"){
     const data=await oauth("status",tg),list=Array.isArray(data?.connections)?data.connections:[],site=list.find((x:any)=>x?.provider==="website");if(!site)throw new Error("Tivals AI Website is not connected. Use /connect first.");await reply(token,chatId,`🌐 **Connected website account**\n\n${site.account_label||"Tivals AI Website"}`);return"website";
@@ -1235,6 +1260,340 @@ Deno.serve(async (req: Request) => {
           customer_id:Number(q.from?.id||0),action:data.slice(0,64)
         });
         if(pressError){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});return json({ok:true,route:"duplicate-or-unavailable-button-press"});}
+      }
+
+      if(data==="github_menu_open"){
+        const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!paywallOwner||tg!==paywallOwner||chatId!==tg||String(q?.message?.chat?.type||"")!=="private"||q?.message?.business_connection_id){
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Open this menu in your private chat with your own bot.",show_alert:true}).catch(()=>{});
+          return json({ok:true,route:"github-menu-open-rejected"});
+        }
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Opening GitHub…"}).catch(()=>{});
+        try{const route=await sendPrivateGithubMenu(token,chatId,tg);return json({ok:true,route});}
+        catch(error){await reply(token,chatId,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
+      }
+      if(data==="owner_connect_menu"){
+        const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!paywallOwner||tg!==paywallOwner||chatId!==tg||String(q?.message?.chat?.type||"")!=="private"||q?.message?.business_connection_id){
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Only the bot owner can manage connected tools.",show_alert:true}).catch(()=>{});
+          return json({ok:true,route:"owner-connect-menu-rejected"});
+        }
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        await ownerConnectMenu(token,chatId,tg);
+        return json({ok:true,route:"owner-connect-menu"});
+      }
+      const privateGithubClick=data.match(/^(?:gp|github_private):(repo|action|item|cancel):([0-9a-f-]{36})(?::([A-Za-z0-9_-]+))?$/i);
+      if(privateGithubClick){
+        const kind=privateGithubClick[1].toLowerCase(),id=privateGithubClick[2].toLowerCase(),value=String(privateGithubClick[3]||"").toLowerCase();
+        const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!paywallOwner||tg!==paywallOwner||chatId!==tg||String(q?.message?.chat?.type||"")!=="private"||q?.message?.business_connection_id){
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"GitHub controls are available only to this bot's owner in a private chat.",show_alert:true}).catch(()=>{});
+          return json({ok:true,route:"github-private-rejected"});
+        }
+        const {data:session,error:sessionError}=await sb.from("telegram_pending_github_actions").select("*").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",chatId).eq("action","github_private_wizard").eq("status","pending").maybeSingle();
+        if(sessionError)throw sessionError;
+        if(!session||new Date(session.expires_at).getTime()<=Date.now()){
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This GitHub menu expired. Send /github to open a new one.",show_alert:true}).catch(()=>{});
+          return json({ok:true,route:"github-private-expired"});
+        }
+        const payload={...(session.payload||{})};
+        const edit=async(text:string,reply_markup:any)=>telegram(token,"editMessageText",{chat_id:chatId,message_id:q.message.message_id,text,reply_markup}).catch(()=>telegram(token,"sendMessage",{chat_id:chatId,text,reply_markup}));
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        if(kind==="cancel"){
+          await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+          await edit("GitHub menu cancelled.",{inline_keyboard:[]});
+          return json({ok:true,route:"github-private-cancel"});
+        }
+        if(kind==="repo"){
+          const selected=(Array.isArray(payload.repositories)?payload.repositories:[])[Number(value)];
+          if(!selected?.full_name)throw new Error("That repository selection is no longer available. Send /github to refresh.");
+          const nextPayload={...payload,stage:"choose_action"};
+          const {error}=await sb.from("telegram_pending_github_actions").update({repository:String(selected.full_name),payload:nextPayload}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending");
+          if(error)throw error;
+          await edit("Repository selected: "+String(selected.full_name)+"\n\nChoose an action:",{inline_keyboard:[
+            [{text:"Browse files and folders",callback_data:"gp:action:"+id+":browse"}],
+            [{text:"Read a file",callback_data:"gp:action:"+id+":read"},{text:"Create a file",callback_data:"gp:action:"+id+":create"}],
+            [{text:"Edit a file",callback_data:"gp:action:"+id+":edit"},{text:"Issues",callback_data:"gp:action:"+id+":issues"}],
+            [{text:"Create repository",callback_data:"gp:action:"+id+":newrepo"},{text:"Choose another repository",callback_data:"gp:action:"+id+":back"}],
+            [{text:"Cancel",callback_data:"gp:cancel:"+id}]
+          ]});
+          return json({ok:true,route:"github-private-repository"});
+        }
+        if(kind==="item"){
+          const entry=(Array.isArray(payload.items)?payload.items:[])[Number(value)];
+          if(!entry?.path)throw new Error("That file or folder is no longer available. Reopen the folder.");
+          if(entry.type==="dir"){
+            await showPrivateGithubDirectory(token,chatId,id,session,String(entry.path));
+          }else{
+            const result=await oauth("github_file",tg,"github",{repository:String(session.repository||""),path:String(entry.path)});
+            const isBinary=Boolean(result.is_binary);
+            const source=result.is_pdf?String(result.extracted_text||""):isBinary?"Binary file · "+Number(result.size||0)+" bytes. It cannot be displayed as plain text.\nGitHub: "+String(result.html_url||"Open the repository file on GitHub."):githubDecode(String(result.content_base64||""));
+            const heading=result.is_pdf?"PDF text · "+Number(result.pages_read||0)+"/"+Number(result.total_pages||0)+" pages":isBinary?"Binary file · "+Number(result.size||0)+" bytes":"";
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"File: "+String(session.repository)+":"+String(entry.path)+"\n"+heading+"\n\n"+(source.length>8500?"First 8,500 characters:\n":"")+source.slice(0,8500),reply_markup:{inline_keyboard:[[{text:"Back to folder",callback_data:"gp:action:"+id+":browse"},{text:"Repository actions",callback_data:"gp:action:"+id+":menu"}]]}});
+          }
+          return json({ok:true,route:"github-private-item"});
+        }
+        if(kind==="action"){
+          if(value==="refresh"||value==="back"){
+            await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+            const route=await sendPrivateGithubMenu(token,chatId,tg);
+            return json({ok:true,route});
+          }
+          if(value==="browse"){
+            await showPrivateGithubDirectory(token,chatId,id,session,String(payload.path||""));
+            return json({ok:true,route:"github-private-browse"});
+          }
+          if(value==="parent"){
+            const path=String(payload.path||"").split("/").slice(0,-1).join("/");
+            await showPrivateGithubDirectory(token,chatId,id,session,path);
+            return json({ok:true,route:"github-private-parent"});
+          }
+          if(value==="menu"){
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"Repository: "+String(session.repository||"")+"\n\nChoose an action:",reply_markup:{inline_keyboard:[
+              [{text:"Browse files and folders",callback_data:"gp:action:"+id+":browse"}],
+              [{text:"Read a file",callback_data:"gp:action:"+id+":read"},{text:"Create a file",callback_data:"gp:action:"+id+":create"}],
+              [{text:"Edit a file",callback_data:"gp:action:"+id+":edit"},{text:"Issues",callback_data:"gp:action:"+id+":issues"}],
+              [{text:"Create repository",callback_data:"gp:action:"+id+":newrepo"},{text:"Choose another repository",callback_data:"gp:action:"+id+":back"}],
+              [{text:"Cancel",callback_data:"gp:cancel:"+id}]
+            ]}});
+            return json({ok:true,route:"github-private-actions"});
+          }
+          const repo=String(session.repository||"");
+          const guidance:Record<string,string>={
+            read:"To read a file, send: @github read file "+repo+":path/to/file",
+            create:"To create a file, send: @github create file "+repo+":path/to/file then paste the file contents after the command.",
+            edit:"To edit a file, send: @github edit file "+repo+":path/to/file then provide the replacement contents.",
+            issues:"To create an issue, send: @github create issue in "+repo+" | Issue title | Describe the issue",
+            newrepo:"To create a repository, send: @github create repository my-project as private (or add 'as public')."
+          };
+          if(!guidance[value])throw new Error("Unknown GitHub action.");
+          await telegram(token,"sendMessage",{chat_id:chatId,text:guidance[value],reply_markup:{inline_keyboard:[[{text:"Browse repository",callback_data:"gp:action:"+id+":browse"},{text:"Repository actions",callback_data:"gp:action:"+id+":menu"}],[{text:"Choose another repository",callback_data:"gp:action:"+id+":back"}]]}});
+          return json({ok:true,route:"github-private-"+value});
+        }
+      }
+
+      const githubWizardClick=data.match(/^(?:github_wiz|gw):(repo|action|visibility|foldermode|apply|cancel|browse|read|editfile|deletefile|deletefolder|confirmdelete):([0-9a-f-]{36})(?::([A-Za-z0-9_-]+))?$/i);
+      if(githubWizardClick){
+        const kind=githubWizardClick[1].toLowerCase(),id=githubWizardClick[2].toLowerCase(),value=String(githubWizardClick[3]||"").toLowerCase();
+        const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!tg||!chatId||!["group","supergroup"].includes(String(q?.message?.chat?.type||""))){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Use this GitHub menu in the group where it was opened.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-wizard-rejected"});}
+        const deleteIntent=kind==="deletefile"||kind==="deletefolder"||kind==="confirmdelete"||(kind==="action"&&value==="delete_repo");
+        const {data:session,error:sessionError}=await sb.from("telegram_pending_github_actions").select("*").eq("id",id).eq("chat_id",chatId).eq("action","github_wizard").eq("status","pending").maybeSingle();
+        if(sessionError)throw sessionError;
+        if(!session||new Date(session.expires_at).getTime()<=Date.now()){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This GitHub menu expired. Send /github to start again.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-wizard-expired"});}
+        if(!deleteIntent&&Number(session.telegram_user_id)!==tg){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This menu belongs to another member. Send /github yourself to load your own repositories.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-wizard-wrong-owner"});}
+        const payload={...(session.payload||{})};const edit=async(text:string,reply_markup:any)=>telegram(token,"editMessageText",{chat_id:chatId,message_id:q.message.message_id,text,reply_markup}).catch(()=>telegram(token,"sendMessage",{chat_id:chatId,text,reply_markup}));
+        const adminOnly=kind==="deletefile"||kind==="deletefolder"||kind==="confirmdelete"||(kind==="action"&&value==="delete_repo");
+        if(adminOnly&&!await isTelegramGroupAdmin(token,chatId,tg)){
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Only group administrators can delete GitHub content.",show_alert:true}).catch(()=>{});
+          return json({ok:true,route:"github-delete-admin-only"});
+        }
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});
+        if(kind==="cancel"){
+          await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+          await edit("GitHub menu cancelled.",{inline_keyboard:[]});
+          return json({ok:true,route:"github-wizard-cancel"});
+        }
+        if(kind==="repo"){
+          const index=Number(value),repos=Array.isArray(payload.repositories)?payload.repositories:[];
+          const selected=repos[index];if(!selected?.full_name){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"That repository selection is unavailable.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-wizard-bad-repo"});}
+          payload.repository=String(selected.full_name);payload.stage="choose_action";
+          const {error}=await sb.from("telegram_pending_github_actions").update({repository:payload.repository,payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+          const actionRows:any[][]=[
+            [{text:"Browse / read files",callback_data:"gw:action:"+id+":browse"},{text:"Edit a file",callback_data:"gw:action:"+id+":edit"}],
+            [{text:"Create file",callback_data:"gw:action:"+id+":file"},{text:"Create folder",callback_data:"gw:action:"+id+":folder"}],
+            [{text:"Upload files / folders",callback_data:"gw:action:"+id+":upload"}],
+            [{text:"Issues",callback_data:"gw:action:"+id+":issues"},{text:"Pull requests",callback_data:"gw:action:"+id+":prs"}],
+            [{text:"Commits",callback_data:"gw:action:"+id+":commits"},{text:"Branches",callback_data:"gw:action:"+id+":branches"}],
+            [{text:"Releases",callback_data:"gw:action:"+id+":releases"},{text:"Help",callback_data:"gw:action:"+id+":help"}],
+            [{text:"Create new repository",callback_data:"gw:action:"+id+":newrepo"}]
+          ];
+          actionRows.push([{text:"Delete repository (group admins only)",callback_data:"gw:action:"+id+":delete_repo"}]);
+          actionRows.push([{text:"Choose another repository",callback_data:"gw:action:"+id+":back"},{text:"Cancel",callback_data:"gw:cancel:"+id}]);
+          await edit("Repository selected: "+payload.repository+"\n\nChoose an action:",{inline_keyboard:actionRows});
+          return json({ok:true,route:"github-wizard-repository"});
+        }
+        if(kind==="action"){
+          if(value==="delete_repo"){
+            payload.delete_kind="repository";payload.delete_target=String(payload.repository||"");
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",session.telegram_user_id);if(error)throw error;
+            await edit("Confirm repository deletion\n\nThis permanently deletes "+String(payload.repository)+" from GitHub. This cannot be undone.",{inline_keyboard:[[{text:"Yes, delete repository",callback_data:"gw:confirmdelete:"+id}],[{text:"Cancel",callback_data:"gw:action:"+id+":back"}]]});
+            return json({ok:true,route:"github-delete-repository-confirm"});
+          }
+          if(value==="back"){
+            const repos=Array.isArray(payload.repositories)?payload.repositories:[];
+            const rows=repos.slice(0,20).map((r:any,i:number)=>[{text:String(r.full_name||r.name||"repository").slice(0,60)+(r.private?" · private":""),callback_data:"gw:repo:"+id+":"+i}]);
+            rows.push([{text:"Create new repository",callback_data:"gw:action:"+id+":newrepo"}],[{text:"Cancel",callback_data:"gw:cancel:"+id}]);
+            payload.stage="choose_repo";const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Choose a repository to work on:",{inline_keyboard:rows});return json({ok:true,route:"github-wizard-back"});
+          }
+          if(value==="browse"||value==="edit"){
+            payload.browse_mode=value==="edit"?"edit":"read";payload.browse_path="";
+            const result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"ls",repository:String(payload.repository||""),path:""});
+            if(result?.error)throw new Error(String(result.error));
+            payload.browse_items=Array.isArray(result.items)?result.items:[];payload.stage="browsing";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            const rows:any[][]=[];
+            payload.browse_items.slice(0,15).forEach((item:any,i:number)=>{
+              rows.push([{text:(item.type==="dir"?"Folder: ":"File: ")+String(item.name||item.path||"item").slice(0,42),callback_data:"gw:"+(item.type==="dir"?"browse":"read")+":"+id+":"+i}]);
+              rows.push([{text:(item.type==="dir"?"Delete folder (admins): ":"Delete file (admins): ")+String(item.name||item.path||"item").slice(0,28),callback_data:"gw:"+(item.type==="dir"?"deletefolder":"deletefile")+":"+id+":"+i}]);
+            });
+            rows.push([{text:"Back to repository actions",callback_data:"gw:action:"+id+":back"}],[{text:"Cancel",callback_data:"gw:cancel:"+id}]);
+            await edit((value==="edit"?"Choose a file to edit":"Browse files (read-only)")+" in "+String(payload.repository),{inline_keyboard:rows});
+            return json({ok:true,route:"github-wizard-browse"});
+          }
+          if(["issues","prs","commits","branches","releases"].includes(value)){
+            const result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:value,repository:String(payload.repository||"")});
+            if(result?.error)throw new Error(String(result.error));
+            const items=Array.isArray(result.items)?result.items:[];
+            const listing=items.slice(0,8).map((item:any)=>"• "+String(item.title||item.name||item.sha||"Item")+"\n"+String(item.url||"")).join("\n\n");
+            await edit("GitHub "+value+" · "+String(payload.repository)+"\n\n"+(listing||"No items found."),{inline_keyboard:[[{text:"Back to repository actions",callback_data:"gw:action:"+id+":back"}]]});
+            return json({ok:true,route:"github-wizard-"+value});
+          }
+          if(value==="help"){
+            await edit("GitHub actions\n\nBrowse/read: inspect folders and read files without changing them.\nEdit: select a file, paste replacement contents, review and confirm.\nCreate files/folders and upload multiple files or ZIP archives.\nIssues, pull requests, commits, branches and releases are read-only lists.",{inline_keyboard:[[{text:"Back to repository actions",callback_data:"gw:action:"+id+":back"}]]});
+            return json({ok:true,route:"github-wizard-help"});
+          }
+          if(value==="newrepo"){
+            payload.stage="await_repo_name";const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Create a new GitHub repository\n\nSend the repository name. Use letters, numbers, dots, underscores, or hyphens.",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-repo-name"});
+          }
+          if(value==="file"){
+            payload.stage="await_file_name";payload.base_path="";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Create a file in "+String(payload.repository)+"\n\nType the file name, including any subfolders if needed (example: src/main.py).",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-file-name"});
+          }
+          if(value==="folder"){
+            payload.stage="await_folder_name";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Create or use a folder in "+String(payload.repository)+"\n\nType the folder name (example: src/components).",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-folder-name"});
+          }
+          if(value==="upload"){
+            const repo=String(payload.repository||"");if(!repo)throw new Error("Choose a repository first.");
+            const uploadId=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id:uploadId,telegram_user_id:tg,chat_id:chatId,action:"upsert_file",repository:repo,payload:{batch_upload:true,base_path:"",uploaded_count:0},status:"pending",expires_at:new Date(Date.now()+2*60*60_000).toISOString()});if(error)throw error;
+            await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+            await edit("Multi-file upload is ready for "+repo+".\n\nPress Start upload, then send files as Telegram documents. Upload folders as ZIP archives to preserve their paths.",{inline_keyboard:[[{text:"Start upload",callback_data:"github_batch_start:"+uploadId},{text:"Cancel upload",callback_data:"github_batch_cancel:"+uploadId}]]});
+            return json({ok:true,route:"github-wizard-upload"});
+          }
+        }
+        if(kind==="deletefile"||kind==="deletefolder"){
+          const items=Array.isArray(payload.browse_items)?payload.browse_items:[];
+          const selected=items[Number(value)],expected=kind==="deletefolder"?"dir":"file";
+          if(!selected||selected.type!==expected)throw new Error("That item is no longer available. Browse the folder again.");
+          payload.delete_kind=kind==="deletefolder"?"folder":"file";payload.delete_target=String(selected.path||"");
+          const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",session.telegram_user_id);if(error)throw error;
+          await edit("Confirm "+payload.delete_kind+" deletion\n\nRepository: "+String(payload.repository)+"\nPath: "+payload.delete_target+"\n\n"+(payload.delete_kind==="folder"?"All files inside this folder (up to 100) will be deleted.":"This file will be permanently deleted.")+"\n\nThis cannot be undone.",{inline_keyboard:[[{text:"Confirm deletion",callback_data:"gw:confirmdelete:"+id}],[{text:"Cancel",callback_data:"gw:action:"+id+":browse"}]]});
+          return json({ok:true,route:"github-delete-item-confirm"});
+        }
+        if(kind==="confirmdelete"){
+          const deleteKind=String(payload.delete_kind||""),target=String(payload.delete_target||"");
+          if(!target||!["file","folder","repository"].includes(deleteKind))throw new Error("Deletion confirmation expired. Start again.");
+          const command=deleteKind==="repository"?"delete_repository":deleteKind==="folder"?"delete_folder":"delete_file";
+          const result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command,repository:String(payload.repository||""),path:target});
+          if(result?.error)throw new Error(String(result.error));
+          await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",session.telegram_user_id);
+          await edit(deleteKind==="repository"?"Repository deleted: "+String(payload.repository):deleteKind==="folder"?"Folder deleted: "+target+" ("+String(result.deleted_files||0)+" files)":"File deleted: "+target,{inline_keyboard:[]});
+          return json({ok:true,route:"github-delete-confirmed",deleted:deleteKind});
+        }
+        if(kind==="browse"){
+          const items=Array.isArray(payload.browse_items)?payload.browse_items:[];
+          const selected=items[Number(value)];if(!selected||selected.type!=="dir")throw new Error("Folder selection expired. Browse again.");
+          payload.browse_path=String(selected.path||"");payload.base_path=payload.browse_path;
+          const result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"ls",repository:String(payload.repository||""),path:payload.browse_path});
+          if(result?.error)throw new Error(String(result.error));
+          payload.browse_items=Array.isArray(result.items)?result.items:[];
+          const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+          const rows:any[][]=[];
+          payload.browse_items.slice(0,15).forEach((item:any,i:number)=>{
+            rows.push([{text:(item.type==="dir"?"Folder: ":"File: ")+String(item.name||item.path||"item").slice(0,42),callback_data:"gw:"+(item.type==="dir"?"browse":"read")+":"+id+":"+i}]);
+            rows.push([{text:(item.type==="dir"?"Delete folder (admins): ":"Delete file (admins): ")+String(item.name||item.path||"item").slice(0,28),callback_data:"gw:"+(item.type==="dir"?"deletefolder":"deletefile")+":"+id+":"+i}]);
+          });
+          rows.push(
+            [{text:"Create file here",callback_data:"gw:foldermode:"+id+":create"},{text:"Create folder here",callback_data:"gw:foldermode:"+id+":folder"}],
+            [{text:"Upload files / folders here",callback_data:"gw:foldermode:"+id+":upload"}],
+            [{text:"Back to repository actions",callback_data:"gw:action:"+id+":back"}]
+          );
+          await edit("Folder "+String(payload.repository)+"/"+payload.browse_path+"\n\nChoose an item or create content in this folder.",{inline_keyboard:rows});
+          return json({ok:true,route:"github-wizard-browse-folder"});
+        }
+        if(kind==="read"||kind==="editfile"){
+          const items=Array.isArray(payload.browse_items)?payload.browse_items:[];
+          const selected=items[Number(value)];if(!selected||selected.type!=="file")throw new Error("File selection expired. Browse again.");
+          if(kind==="read"){
+            const result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"open",repository:String(payload.repository||""),path:String(selected.path||"")});
+            if(result?.error)throw new Error(String(result.error));
+            payload.path=String(selected.path||"");
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Read-only file: "+String(payload.repository)+"/"+payload.path+"\n\n"+String(result.content||"").slice(0,2500),{inline_keyboard:[[{text:"Edit this file",callback_data:"gw:editfile:"+id+":"+value}],[{text:"Back to files",callback_data:"gw:action:"+id+":"+(payload.browse_mode==="edit"?"edit":"browse")}]]});
+            return json({ok:true,route:"github-wizard-read-file"});
+          }
+          payload.path=String(selected.path||"");payload.stage="await_edit_content";
+          const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+          await edit("Edit "+String(payload.repository)+"/"+payload.path+"\n\nPaste the complete replacement content in your next message. Nothing changes until you confirm.",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});
+          return json({ok:true,route:"github-wizard-edit-file"});
+        }
+        if(kind==="foldermode"){
+          const base=String(payload.base_path||"");
+          if(value==="create"){
+            payload.base_path=base;payload.stage="await_file_name";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Create a file inside "+base+"\n\nType the file name (example: main.py).",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-folder-create-file"});
+          }
+          if(value==="folder"){
+            payload.base_path=base;payload.stage="await_folder_name";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+            await edit("Create a subfolder inside "+(base||String(payload.repository))+"\\n\\nType the folder name (example: components).",{inline_keyboard:[[{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-folder-create-folder"});
+          }
+          if(value==="upload"){
+            const uploadId=crypto.randomUUID();const {error}=await sb.from("telegram_pending_github_actions").insert({id:uploadId,telegram_user_id:tg,chat_id:chatId,action:"upsert_file",repository:String(payload.repository||""),payload:{batch_upload:true,base_path:base,uploaded_count:0},status:"pending",expires_at:new Date(Date.now()+2*60*60_000).toISOString()});if(error)throw error;
+            await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+            await edit("Upload files into "+base+".\n\nPress Start upload, then send files as documents or a ZIP archive containing a folder structure.",{inline_keyboard:[[{text:"Start upload",callback_data:"github_batch_start:"+uploadId},{text:"Cancel upload",callback_data:"github_batch_cancel:"+uploadId}]]});return json({ok:true,route:"github-wizard-folder-upload"});
+          }
+        }
+        if(kind==="visibility"){
+          if(payload.stage!=="choose_repo_visibility"||!["public","private"].includes(value))return json({ok:true,route:"github-wizard-invalid-visibility"});
+          payload.private=value==="private";payload.stage="confirm_repo";
+          const {error}=await sb.from("telegram_pending_github_actions").update({payload}).eq("id",id).eq("telegram_user_id",tg);if(error)throw error;
+          await edit("Confirm new repository\n\nName: "+String(payload.new_repo_name)+"\nVisibility: "+value+"\n\nCreate it on GitHub?",{inline_keyboard:[[{text:"Confirm create",callback_data:"gw:apply:"+id},{text:"Cancel",callback_data:"gw:cancel:"+id}]]});return json({ok:true,route:"github-wizard-confirm-repo"});
+        }
+        if(kind==="apply"){
+          if(payload.stage!=="confirm_file"&&payload.stage!=="confirm_edit"&&payload.stage!=="confirm_repo")return json({ok:true,route:"github-wizard-invalid-apply"});
+          const {data:claimed,error}=await sb.from("telegram_pending_github_actions").update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").select("*").maybeSingle();if(error)throw error;if(!claimed){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This action is already processing.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-wizard-duplicate"});}
+          try{
+            let result:any;
+            if(payload.stage==="confirm_repo"){
+              const creatorIdentity=await githubContributorIdentity(tg,String(q.from?.username||""));
+              result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"create_repository",name:String(payload.new_repo_name||""),description:"Created from Telegram GitHub menu",private:Boolean(payload.private),telegram_username:creatorIdentity.telegram_username,telegram_user_id:tg});
+              if(result?.error)throw new Error(String(result.error));
+              const repository=String(result.full_name||"");const repositories=[...(Array.isArray(payload.repositories)?payload.repositories:[]),{full_name:repository,name:repository.split("/").pop(),private:Boolean(result.private),url:result.html_url}].filter((r:any)=>r.full_name);
+              const nextPayload={...payload,stage:"choose_action",repository,repositories};
+              const {error:updateError}=await sb.from("telegram_pending_github_actions").update({status:"pending",repository,payload:nextPayload,expires_at:new Date(Date.now()+30*60_000).toISOString()}).eq("id",id).eq("telegram_user_id",tg);if(updateError)throw updateError;
+              await telegram(token,"editMessageText",{chat_id:chatId,message_id:q.message.message_id,text:"Repository created: "+repository+"\n"+String(result.html_url||"")+"\n\nChoose your next action:",reply_markup:{inline_keyboard:[
+                [{text:"Browse / read files",callback_data:"gw:action:"+id+":browse"},{text:"Edit a file",callback_data:"gw:action:"+id+":edit"}],
+                [{text:"Create file",callback_data:"gw:action:"+id+":file"},{text:"Create folder",callback_data:"gw:action:"+id+":folder"}],
+                [{text:"Upload files / folders",callback_data:"gw:action:"+id+":upload"}],
+                [{text:"Issues",callback_data:"gw:action:"+id+":issues"},{text:"Pull requests",callback_data:"gw:action:"+id+":prs"}],
+                [{text:"Commits",callback_data:"gw:action:"+id+":commits"},{text:"Branches",callback_data:"gw:action:"+id+":branches"}],
+                [{text:"Releases",callback_data:"gw:action:"+id+":releases"},{text:"Help",callback_data:"gw:action:"+id+":help"}],
+                [{text:"Create another repository",callback_data:"gw:action:"+id+":newrepo"}],
+                [{text:"Cancel",callback_data:"gw:cancel:"+id}]
+              ]}});
+              return json({ok:true,route:"github-wizard-repo-created"});
+            }
+            const repository=String(payload.repository||""),path=String(payload.path||""),content=String(payload.file_content||"");
+            const identity=await githubContributorIdentity(tg,String(q?.from?.username||""));
+            result=await oauth("github_group_action",tg,"github",{chat_id:chatId,command:"write",repository,path,content_base64:bytesToB64(new TextEncoder().encode(content)),mode:payload.stage==="confirm_edit"?"edit":"create",message:(payload.stage==="confirm_edit"?"Update ":"Create ")+path,...identity});
+            if(result?.error)throw new Error(String(result.error));
+            await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+            await telegram(token,"editMessageText",{chat_id:chatId,message_id:q.message.message_id,text:(payload.stage==="confirm_edit"?"File edited and committed: ":"File created and committed: ")+repository+"/"+path+"\n"+String(result.url||"")+"\nCommit: "+String(result.commit_sha||""),reply_markup:{inline_keyboard:[]}});
+            return json({ok:true,route:"github-wizard-file-created"});
+          }catch(error){
+            await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg);
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"GitHub could not complete the action: "+String((error as Error)?.message||error)}).catch(()=>{});
+            return json({ok:true,route:"github-wizard-apply-failed"});
+          }
+        }
+        return json({ok:true,route:"github-wizard-noop"});
       }
       responseChat=Number(q?.message?.chat?.id||0);responseBusiness=String(q?.message?.business_connection_id||"");
       const quick=data.match(/^quick:(yes|no|continue|menu)$/);
@@ -1334,7 +1693,24 @@ Deno.serve(async (req: Request) => {
         const route=await handleEmailConfirmation(token,q,paywallOwner,emailAction[1].toLowerCase() as "send"|"cancel"|"edit",emailAction[2].toLowerCase());
         return json({ok:true,route});
       }
-      if(paywallOwner&&/^gh(?:root|create|repo:\d{1,2}|nav:\d{1,2}|action:(?:file|folder|edit))$/.test(data)){const route=await handleGithubNavigation(token,q,paywallOwner);return json({ok:true,route})}
+      const batchAction=data.match(/^github_batch_(start|finish|cancel):([0-9a-f-]{36})$/i);
+      if(batchAction){
+        const mode=batchAction[1].toLowerCase(),id=batchAction[2].toLowerCase(),tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!tg||!chatId||!["group","supergroup"].includes(String(q?.message?.chat?.type||""))){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Use this upload session in the group where it was created.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-batch-rejected"});}
+        const {data:session,error}=await sb.from("telegram_pending_github_actions").select("*").eq("id",id).eq("telegram_user_id",tg).eq("chat_id",chatId).eq("action","upsert_file").maybeSingle();if(error)throw error;
+        if(!session||!session.payload?.batch_upload||new Date(session.expires_at).getTime()<=Date.now()){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This upload session expired. Start a new one.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-batch-expired"});}
+        if(mode==="start"){
+          if(session.status!=="pending"){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Upload session is already active."}).catch(()=>{});return json({ok:true,route:"github-batch-already-active"});}
+          const {data:active,error:activeError}=await sb.from("telegram_pending_github_actions").update({status:"running"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").select("*").maybeSingle();if(activeError)throw activeError;if(!active){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Could not start this upload session.",show_alert:true}).catch(()=>{});return json({ok:true,route:"github-batch-start-failed"});}
+          await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Upload mode started."}).catch(()=>{});
+          await telegram(token,"sendMessage",{chat_id:chatId,text:"Upload mode is active for "+String(active.repository||"the repository")+(active.payload?.base_path?" / "+String(active.payload.base_path):"")+".\n\nSend as many files as you need as Telegram documents. To place a file inside a folder, add its relative path as the document caption, for example: src/main.py. To upload a folder, send it as a ZIP archive; folder paths will be preserved. Each uploaded file is committed to GitHub.\n\nFile limit: 5 MB each; ZIP archive limit: 10 MB and 40 files per archive. Send /github done when finished.",reply_markup:{inline_keyboard:[[{text:"Finish upload",callback_data:"github_batch_finish:"+id},{text:"Cancel upload",callback_data:"github_batch_cancel:"+id}]]}});
+          return json({ok:true,route:"github-batch-start"});
+        }
+        await sb.from("telegram_pending_github_actions").delete().eq("id",id).eq("telegram_user_id",tg).eq("chat_id",chatId);
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:mode==="finish"?"Upload session finished.":"Upload session cancelled."}).catch(()=>{});
+        await telegram(token,"sendMessage",{chat_id:chatId,text:mode==="finish"?"Upload session finished. Files uploaded in this session: "+Number(session.payload?.uploaded_count||0)+".":"Upload session cancelled. Files already committed to GitHub were not removed."});
+        return json({ok:true,route:"github-batch-"+mode});
+      }
       const githubAction=data.match(/^github_personal_(apply|cancel):([0-9a-f-]{36})$/i);
       if(githubAction&&paywallOwner){const route=await githubConfirmAction(token,q,paywallOwner,githubAction[1].toLowerCase(),githubAction[2].toLowerCase());return json({ok:true,route})}
       if(data.startsWith("tool_suggest:")){
@@ -1342,6 +1718,10 @@ Deno.serve(async (req: Request) => {
         const tool=data.slice("tool_suggest:".length),callbackChat=Number(q?.message?.chat?.id||0),callbackBusiness=String(q?.message?.business_connection_id||"");
         if (paywallOwner && callbackBusiness && !(await businessBelongsToOwner(token, callbackBusiness, paywallOwner))) {
           return json({ ok: true, route: "business-owner-rejected" });
+        }
+        if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
+          try{const route=await sendPrivateGithubMenu(token,callbackChat,paywallOwner);return json({ok:true,route,tool});}
+          catch(error){await reply(token,callbackChat,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
         }
         if(callbackChat&&TOOL_SUGGESTION_TEXT[tool])await reply(token,callbackChat,TOOL_SUGGESTION_TEXT[tool],callbackBusiness);
         return json({ok:true,route:"tool-suggestion",tool});
@@ -1352,9 +1732,12 @@ Deno.serve(async (req: Request) => {
     const chatId = Number(message?.chat?.id || 0);
     const senderId = Number(message?.from?.id || 0);
     let text = String(message?.text || message?.caption || "").trim();
+    // Telegram group commands may include the bot username, e.g. /app@lufunoBot.
+    text=text.replace(/^\/([A-Za-z0-9_]+)@[A-Za-z0-9_]+(?=\s|$)/, "/$1");
     const voice=message?.voice||null;
     const speakTool=String(conn.voice_mode||"off")==="always"||(Boolean(voice)&&String(conn.voice_mode||"off")!=="off");
     const photos=Array.isArray(message?.photo)?message.photo:[];
+    const document=message?.document||null;
     const imageDocument=/^image\//i.test(String(message?.document?.mime_type||""))?message.document:null;
     const businessConnectionId = String(message?.business_connection_id || "");
     responseChat=chatId;responseBusiness=businessConnectionId;
@@ -1362,8 +1745,10 @@ Deno.serve(async (req: Request) => {
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
     const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private");
     const groupChat=chatType==="group"||chatType==="supergroup";
+    let activeGithubUploadSession:any=null;
+    if(groupChat&&senderId&&(document||/^\/github(?:@[A-Za-z0-9_]+)?\s+done\s*$/i.test(text))){const {data:uploadSession}=await sb.from("telegram_pending_github_actions").select("*").eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","upsert_file").eq("status","running").contains("payload",{batch_upload:true}).gt("expires_at",new Date().toISOString()).order("created_at",{ascending:false}).limit(1).maybeSingle();activeGithubUploadSession=uploadSession||null;}
     const reminderConversation=Boolean(privateConversation||(groupChat&&paywallOwner&&senderId));
-    if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
+    if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument&&!document) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
       const mode=String(conn.channel_mode||"commands");
       if(mode==="off")return json({ok:true,ignored:true,reason:"channel-disabled"});
@@ -1373,10 +1758,21 @@ Deno.serve(async (req: Request) => {
     } else if(!update?.business_message&&chatType!=="private"){
       const mode=String(conn.group_mode||"mentions");
       if(mode==="off")return json({ok:true,ignored:true,reason:"groups-disabled"});
-      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|github|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
-      if(mode!=="all"&&!groupCommand&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
+      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|github|challenge|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
+      if(mode!=="all"&&!groupCommand&&!activeGithubUploadSession&&!await hasPendingChallengeSession(chatId,senderId)&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
     }
-    if(!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
+    if(!activeGithubUploadSession&&!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
+    if(groupChat&&senderId&&/^\/challenge(?:\s|$)/i.test(text)){try{const route=await handleChallengeCommand(token,chatId,senderId,String(message?.from?.username||""),text);return json({ok:true,route});}catch(e){await reply(token,chatId,"Challenge error: "+String((e as Error)?.message||e));return json({ok:true,route:"challenge-error"});}}
+    if(groupChat&&senderId&&text&&!/^\/challenge(?:\s|$)/i.test(text)){
+      const {data:p}=await sb.from("telegram_pending_github_actions").select("*").eq("telegram_user_id",senderId).eq("chat_id",chatId).in("action",["challenge_create","challenge_submit"]).eq("status","pending").gt("expires_at",new Date().toISOString()).order("created_at",{ascending:false}).limit(1).maybeSingle();
+      if(p){const v=p.payload||{};if(/^\/cancel$/i.test(text)){await sb.from("telegram_pending_github_actions").delete().eq("id",p.id);await reply(token,chatId,"Cancelled.");return json({ok:true,route:"challenge-cancel"});}
+       if(p.action==="challenge_create"){if(v.stage==="title"){v.title=text.slice(0,120);v.stage="description";await sb.from("telegram_pending_github_actions").update({payload:v}).eq("id",p.id);await reply(token,chatId,"Step 2/4: describe the task and requirements (max 3,000 characters).");return json({ok:true,route:"challenge-title"});}
+        if(v.stage==="description"){v.description=text.slice(0,3000);v.stage="deadline";await sb.from("telegram_pending_github_actions").update({payload:v}).eq("id",p.id);await reply(token,chatId,"Step 3/4: deadline in South African time: YYYY-MM-DD HH:MM (example 2026-10-20 18:00).");return json({ok:true,route:"challenge-description"});}
+        if(v.stage==="deadline"){const m=text.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$/);if(!m){await reply(token,chatId,"Invalid format. Use YYYY-MM-DD HH:MM.");return json({ok:true,route:"challenge-bad-date"});}const end=new Date(m[1]+"T"+m[2]+":00+02:00");if(!Number.isFinite(end.getTime())||end.getTime()<=Date.now()){await reply(token,chatId,"Deadline must be a valid future date and time.");return json({ok:true,route:"challenge-past-date"});}v.ends_at=end.toISOString();v.stage="repository";await sb.from("telegram_pending_github_actions").update({payload:v}).eq("id",p.id);await reply(token,chatId,"Step 4/4: send GitHub repository as owner/repo to publish a CHALLENGES report, or type skip.");return json({ok:true,route:"challenge-deadline"});}
+        if(v.stage==="repository"){const repo=text.toLowerCase()==="skip"?"":text.trim();if(repo&&!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)){await reply(token,chatId,"Use owner/repo format or type skip.");return json({ok:true,route:"challenge-bad-repo"});}const {data:c,error}=await sb.from("telegram_challenges").insert({chat_id:chatId,creator_telegram_id:senderId,creator_username:String(v.username||"")||null,title:String(v.title||"Challenge"),description:String(v.description||""),ends_at:String(v.ends_at),repository:repo||null,status:"open"}).select("*").single();if(error)throw error;await sb.from("telegram_pending_github_actions").delete().eq("id",p.id);await challengeManifest(Number(c.id));await reply(token,chatId,"Challenge created! ID #"+c.id+" — "+c.title+"\nDeadline: "+new Date(c.ends_at).toLocaleString("en-ZA",{timeZone:"Africa/Johannesburg"})+"\nSubmit: /challenge submit "+c.id+"\nRanking: /challenge leaderboard "+c.id);return json({ok:true,route:"challenge-created"});}}
+       if(p.action==="challenge_submit"&&v.stage==="solution"){if(text.length>12000){await reply(token,chatId,"Solution too long. Maximum 12,000 characters.");return json({ok:true,route:"challenge-too-long"});}const {data:c}=await sb.from("telegram_challenges").select("*").eq("id",Number(v.challenge_id)).eq("chat_id",chatId).maybeSingle();if(!c||c.status!=="open"||new Date(c.ends_at).getTime()<=Date.now()){await sb.from("telegram_pending_github_actions").delete().eq("id",p.id);await reply(token,chatId,"Challenge has ended; solution not accepted.");return json({ok:true,route:"challenge-ended"});}await reply(token,chatId,"AI is reviewing your solution…");const review=await challengeReviewSolution(String(c.title),String(c.description),text);const {error}=await sb.from("telegram_challenge_submissions").upsert({challenge_id:Number(c.id),telegram_user_id:senderId,telegram_username:String(message?.from?.username||v.username||"")||null,solution:text,score:review.score,feedback:review.feedback,submitted_at:new Date().toISOString()},{onConflict:"challenge_id,telegram_user_id"});if(error)throw error;await sb.from("telegram_pending_github_actions").delete().eq("id",p.id);await challengeManifest(Number(c.id));await reply(token,chatId,"AI score: "+review.score.toFixed(1)+"/100\n"+review.feedback+"\nUse /challenge leaderboard "+c.id+" to view rankings. You can resubmit before the deadline.");return json({ok:true,route:"challenge-submitted"});}
+      }
+    }
     if(paywallOwner&&conn.bot_kind==='business'&&senderId!==paywallOwner){const {data:allowed,error:rateError}=await sb.rpc('telegram_business_allow_message',{p_business_id:paywallOwner,p_customer_id:senderId});if(rateError||!allowed)return json({ok:true,ignored:true,reason:'business-rate-limited'});}
     if (paywallOwner && update?.business_message && !(await businessBelongsToOwner(token, businessConnectionId, paywallOwner))) {
       return json({ ok: true, route: "business-owner-rejected" });
@@ -1394,6 +1790,10 @@ Deno.serve(async (req: Request) => {
     if(ownerPrivate&&text&&await resumeEmailEdit(token,paywallOwner,chatId,text))return json({ok:true,route:"gmail-edit-preview"});
     if (paywallOwner && senderId === paywallOwner && ["/app","/dashboard","/settings"].includes(text)) {
       await ownerApp(token,chatId,businessConnectionId,conn.bot_kind); return json({ok:true,route:"owner-app"});
+    }
+    // In groups, /app opens the app entry point for members without granting owner tools.
+    if (groupChat && /^\/app$/i.test(text)) {
+      await publicAppEntry(token,chatId,businessConnectionId); return json({ok:true,route:"public-app-entry"});
     }
     if (paywallOwner && senderId === paywallOwner && text === "/connect") {
       await ownerConnectMenu(token,chatId,paywallOwner,businessConnectionId); return json({ok:true,route:"owner-connect"});
@@ -1422,7 +1822,7 @@ Deno.serve(async (req: Request) => {
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
     if(youtubeSlash||youtubeTool?.tool==="youtube"||youtubeNatural){const query=String(youtubeSlash?.[1]||youtubeNatural?.[1]||youtubeTool?.request||"").trim();if(!query){await reply(token,chatId,"Try /youtube Python tutorial or @youtube Python tutorial.",businessConnectionId);return json({ok:true,route:"youtube-help"})}await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>sendYouTubeSearch(token,chatId,query,businessConnectionId));return json({ok:true,route:"youtube"})}
-    if (paywallOwner && senderId !== paywallOwner && (/^\/(?:app|dashboard|settings|connect|accounts|email|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
+    if (paywallOwner && senderId !== paywallOwner && !(groupChat && /^\/github(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) && (/^\/(?:app|dashboard|settings|connect|accounts|email|emails|unread|findemail|reademail|replyemail|sendemail|reminder|disconnect_)/i.test(text)||parseToolRequest(text))) {
       await reply(token,chatId,"Only the bot owner can manage this bot's apps and connected tools.",businessConnectionId); return json({ok:true,route:"owner-only"});
     }
     if (text === "@") {
@@ -1460,7 +1860,12 @@ Deno.serve(async (req: Request) => {
         const short=history.length>0;
         await reply(token,chatId,short?`Welcome back! How can I help you with ${business}?`:`👋 Hi${String(message?.from?.first_name||"").trim()?`, ${String(message.from.first_name).slice(0,40)}`:""}! I'm ${name}, the virtual assistant for ${business}. I can help with ${businessMenu(profile).slice(0,3).map(x=>x.replace(/^[^\p{L}\p{N}]+/u,"")).join(", ")} 24/7.`,businessConnectionId);
         await sendBusinessMenu(token,chatId,profile,businessConnectionId);
-      } else await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts":""}`,businessConnectionId);
+      } else await reply(token,chatId,`${greeting||`Hi! I am ${conn.bot_name||conn.account_label||"your AI assistant"}. How can I help?`}${paywallOwner&&senderId===paywallOwner?"\n\nOwner commands: /app, /connect, /accounts, /github":""}`,businessConnectionId);
+      if(ownerPrivate){
+        await telegram(token,"sendMessage",{chat_id:chatId,text:"Owner shortcuts",reply_markup:{inline_keyboard:[
+          [{text:"GitHub menu",callback_data:"github_menu_open"},{text:"Connect / manage tools",callback_data:"owner_connect_menu"}]
+        ]}}).catch(error=>console.error("Owner shortcut buttons failed",String((error as Error)?.message||error)));
+      }
       return json({ ok: true });
     }
     if(conn.bot_kind==="business"&&paywallOwner&&/^(?:\/(?:menu|new)(?:@[A-Za-z0-9_]+)?|start over|something else|main menu)$/i.test(text)){
@@ -1504,32 +1909,146 @@ Deno.serve(async (req: Request) => {
         return json({ok:true,route:"store-error"});
       }
     }
-    const groupChallengeCommand=text.match(/^\/challenge(?:@[A-Za-z0-9_]+)?\s+create(?:\s+([\s\S]+))?$/i);
-    if(groupChat&&groupChallengeCommand){
+    if(groupChat&&activeGithubUploadSession&&document){
       try{
-        const member=await telegram(token,"getChatMember",{chat_id:chatId,user_id:senderId}),status=String(member?.result?.status||"");
-        if(status!=="creator"&&status!=="administrator")throw new Error("Only a group administrator can publish a challenge to the connected GitHub repository.");
-        const args=String(groupChallengeCommand[1]||"").trim();
-        const match=args.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*\|\s*([^|]+)\|\s*([\s\S]+)/);
-        if(!match){await reply(token,chatId,"Create a challenge using:\n/challenge create owner/repository | Challenge title | Instructions and acceptance criteria\n\nA group administrator must run this command. GitHub must already be connected with /github connect.");return json({ok:true,route:"group-challenge-help"});}
-        const repository=match[1],title=match[2].trim().slice(0,240),details=match[3].trim().slice(0,12000);
-        const result=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"challenge-create",repository,title,issue_body:details});
-        if(result?.error)throw new Error(String(result.error));
-        await reply(token,chatId,"Challenge published to GitHub:\n"+String(result.title||title)+"\n"+String(result.url||""));
-        return json({ok:true,route:"group-challenge-created",url:result.url||null});
-      }catch(e){await reply(token,chatId,String((e as Error)?.message||e));return json({ok:true,route:"group-challenge-error"});}
+        const bytes=await telegramFileBytes(token,String(document.file_id),10_000_000);
+        const filename=String(document.file_name||"upload.bin").replace(/\\/g,"/").split("/").pop()||"upload.bin";
+        const captionPath=String(message?.caption||"").trim();
+        const relative=captionPath&&!/^\/github(?:@|\s|$)/i.test(captionPath)?captionPath:filename;
+        let files:Array<{path:string,bytes:Uint8Array}>=[];
+        if(/\.zip$/i.test(filename)||/application\/(?:zip|x-zip-compressed)/i.test(String(document.mime_type||""))){
+          validateGithubZip(bytes);
+          const entries=unzipSync(bytes),names=Object.keys(entries),fileNames=names.filter(name=>!name.endsWith("/")&&!name.split("/").includes("__MACOSX")&&!name.split("/").includes(".DS_Store"));
+          let total=0;
+          for(const name of fileNames){const path=githubUploadPath("",name);const content=entries[name];total+=content.length;if(content.length>5_000_000)throw new Error("ZIP entry "+name+" exceeds the 5 MB per-file limit.");if(total>20_000_000)throw new Error("The extracted ZIP exceeds the 20 MB total limit.");files.push({path,bytes:content});}
+          const dirs=names.filter(name=>name.endsWith("/")).map(name=>name.replace(/\/+$/,"")).filter(Boolean);
+          for(const dir of dirs){const clean=githubUploadPath("",dir);if(!fileNames.some(name=>name.startsWith(clean+"/")))files.push({path:clean+"/.gitkeep",bytes:new Uint8Array()});}
+          if(!files.length)throw new Error("The ZIP did not contain any uploadable files.");
+        }else{
+          if(bytes.length>5_000_000)throw new Error("Keep each individual file under 5 MB.");
+          files=[{path:relative,bytes}];
+        }
+        const result=await githubBatchWrite(chatId,senderId,activeGithubUploadSession,files,String(message?.from?.username||""));
+        if(result.failures.length)throw new Error("Uploaded "+result.completed+" file(s) before a failure: "+result.failures[0]);
+        await telegram(token,"sendMessage",{chat_id:chatId,text:"Uploaded "+result.completed+" file(s) to "+String(activeGithubUploadSession.repository||"GitHub")+". Total in this session: "+result.count+". Send more files or finish using the buttons below.",reply_markup:{inline_keyboard:[[{text:"Finish upload",callback_data:"github_batch_finish:"+activeGithubUploadSession.id},{text:"Cancel upload",callback_data:"github_batch_cancel:"+activeGithubUploadSession.id}]]}});
+        return json({ok:true,route:"group-github-batch-upload",count:result.completed});
+      }catch(e){await reply(token,chatId,"Upload failed: "+String((e as Error)?.message||e)+"\nThe upload session remains active. You can retry or use Finish upload.");return json({ok:true,route:"group-github-batch-upload-error"});}
     }
-    const groupGithubCommand=text.match(/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+(connect|status|repos|issues|prs|disconnect)(?:\s+([^\s]+))?)?\s*$/i);
+    if(groupChat&&senderId&&text&&!/^\/github(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)){
+      const {data:wizard,error:wizardError}=await sb.from("telegram_pending_github_actions").select("*").eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","github_wizard").eq("status","pending").gt("expires_at",new Date().toISOString()).order("created_at",{ascending:false}).limit(1).maybeSingle();
+      if(wizardError)throw wizardError;
+      if(wizard&&["await_file_name","await_file_content","await_edit_content","await_folder_name","await_repo_name"].includes(String(wizard.payload?.stage||""))){
+        const p={...(wizard.payload||{})};const stage=String(p.stage||"");
+        try{
+          if(stage==="await_file_name"){
+            const name=githubWizardValidPath(text);
+            p.path=githubWizardValidPath([String(p.base_path||""),name].filter(Boolean).join("/"));p.stage="await_file_content";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload:p}).eq("id",wizard.id).eq("telegram_user_id",senderId);if(error)throw error;
+            await reply(token,chatId,"File path: "+p.repository+"/"+p.path+"\n\nNow paste the complete file contents in your next message. Nothing is committed until you confirm the preview.");
+            return json({ok:true,route:"github-wizard-await-file-content"});
+          }
+          if(stage==="await_file_content"||stage==="await_edit_content"){
+            if(!text.trim())throw new Error("The file content is empty. Paste the complete file contents.");
+            if(new TextEncoder().encode(text).length>120000)throw new Error("The file exceeds the 120 KB text limit. Use Upload files / folders for larger files.");
+            p.file_content=text;p.stage=stage==="await_edit_content"?"confirm_edit":"confirm_file";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload:p}).eq("id",wizard.id).eq("telegram_user_id",senderId);if(error)throw error;
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"Review new file\n\nRepository: "+p.repository+"\nPath: "+p.path+"\n\nPreview:\n"+text.slice(0,2200)+(text.length>2200?"\n… preview truncated":"")+"\n\nConfirm to commit this file to GitHub.",reply_markup:{inline_keyboard:[[{text:"Confirm create file",callback_data:"gw:apply:"+wizard.id},{text:"Cancel",callback_data:"gw:cancel:"+wizard.id}]]}});
+            return json({ok:true,route:"github-wizard-confirm-file"});
+          }
+          if(stage==="await_folder_name"){
+            const folder=githubWizardValidPath(text),repository=String(p.repository||wizard.repository||"");
+            const identity=await githubContributorIdentity(senderId,String(message?.from?.username||""));
+            try{
+              const created=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"write",repository,path:folder+"/.gitkeep",content_base64:bytesToB64(new Uint8Array()),mode:"create",message:"Create folder "+folder,...identity});
+              if(created?.error)throw new Error(String(created.error));
+            }catch(folderError){
+              if(!/already exists/i.test(String((folderError as Error)?.message||folderError)))throw folderError;
+            }
+            p.base_path=folder;p.stage="choose_folder_mode";
+            const {error}=await sb.from("telegram_pending_github_actions").update({repository,payload:p}).eq("id",wizard.id).eq("telegram_user_id",senderId);if(error)throw error;
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"Folder created: "+repository+"/"+folder+"\n\nWhat would you like to do next?",reply_markup:{inline_keyboard:[
+              [{text:"Create files in this folder",callback_data:"gw:foldermode:"+wizard.id+":create"}],
+              [{text:"Upload files / folders here",callback_data:"gw:foldermode:"+wizard.id+":upload"}],
+              [{text:"Cancel",callback_data:"gw:cancel:"+wizard.id}]
+            ]}});
+            return json({ok:true,route:"github-wizard-folder-options"});
+          }
+          if(stage==="await_repo_name"){
+            const name=text.trim();
+            if(!/^[A-Za-z0-9_.-]{1,100}$/.test(name))throw new Error("Invalid repository name. Use 1–100 letters, numbers, dots, underscores, or hyphens.");
+            p.new_repo_name=name;p.stage="choose_repo_visibility";
+            const {error}=await sb.from("telegram_pending_github_actions").update({payload:p}).eq("id",wizard.id).eq("telegram_user_id",senderId);if(error)throw error;
+            await telegram(token,"sendMessage",{chat_id:chatId,text:"New repository name: "+name+"\n\nChoose visibility:",reply_markup:{inline_keyboard:[
+              [{text:"Public repository",callback_data:"gw:visibility:"+wizard.id+":public"}],
+              [{text:"Private repository",callback_data:"gw:visibility:"+wizard.id+":private"}],
+              [{text:"Cancel",callback_data:"gw:cancel:"+wizard.id}]
+            ]}});
+            return json({ok:true,route:"github-wizard-repo-visibility"});
+          }
+        }catch(error){await reply(token,chatId,String((error as Error)?.message||error));return json({ok:true,route:"github-wizard-input-error"});}
+      }
+    }
+    if(ownerPrivate&&/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+menu)?\s*$/i.test(text)){
+      try{const route=await sendPrivateGithubMenu(token,chatId,senderId);return json({ok:true,route});}
+      catch(error){await reply(token,chatId,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
+    }
+    const groupGithubCommand=text.match(/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+(menu|help|connect|install|status|repos|issues|prs|commits|branches|releases|open|ls|create|edit|mkdir|upload|create-repo|create-repository|disconnect|done|username|profile)(?:\s+([\s\S]+))?)?\s*$/i);
     if(groupChat&&groupGithubCommand){
-      const action=String(groupGithubCommand[1]||"status").toLowerCase();
-      const repository=String(groupGithubCommand[2]||"").trim();
+      const action=String(groupGithubCommand[1]||"menu").toLowerCase();
+      const commandArgs=String(groupGithubCommand[2]||"").trim();
+      const repository=String(commandArgs.split(/\s+/)[0]||"").trim();
       const isGroupAdmin=async()=>{
         const member=await telegram(token,"getChatMember",{chat_id:chatId,user_id:senderId});
         const status=String(member?.result?.status||"");
         return status==="creator"||status==="administrator";
       };
       try{
+        if(action==="menu"){
+          const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"repos"});
+          if(data?.error)throw new Error(String(data.error));
+          const repositories=Array.isArray(data.repositories)?data.repositories:[];
+          const id=crypto.randomUUID();
+          await sb.from("telegram_pending_github_actions").delete().eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","github_wizard");
+          const payload={stage:"choose_repo",repositories:repositories.map((r:any)=>({full_name:String(r.name||""),name:String(r.name||"").split("/").pop(),private:Boolean(r.private),url:String(r.url||""),description:String(r.description||"")})).filter((r:any)=>r.full_name).slice(0,50)};
+          const {error}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:senderId,chat_id:chatId,action:"github_wizard",repository:"",payload,status:"pending",expires_at:new Date(Date.now()+30*60_000).toISOString()});
+          if(error)throw error;
+          const rows=payload.repositories.slice(0,20).map((r:any,i:number)=>[{text:String(r.full_name).slice(0,55)+(r.private?" · private":""),callback_data:"gw:repo:"+id+":"+i}]);
+          rows.push([{text:"Create new repository",callback_data:"gw:action:"+id+":newrepo"}],[{text:"Cancel",callback_data:"gw:cancel:"+id}]);
+          const header=repositories.length?"Choose a GitHub repository to work on:":"No repositories were returned. You can create a new repository below.";
+          await telegram(token,"sendMessage",{chat_id:chatId,text:header+(data.account?"\nConnected account: "+String(data.account):"")+(repositories.length>20?"\nShowing the first 20 repositories.":"") ,reply_markup:{inline_keyboard:rows}});
+          return json({ok:true,route:"group-github-menu",repositories:repositories.length});
+        }
+        if(action==="help"){
+          await reply(token,chatId,"GitHub group commands\n\n/github — open the interactive repository and file manager\n/github install — install TivalsDeveloper on a GitHub organization (admins only; recommended)\n/github connect — connect shared personal GitHub account (admins only)\n/github status — connection status\n/github repos — recent repositories\n/github issues owner/repo — open issues\n/github prs owner/repo — open pull requests\n/github commits owner/repo — recent commits\n/github branches owner/repo — list branches\n/github releases owner/repo — recent releases\n/github create-repo NAME [public|private] [description] — create a repository in the connected organization (default: public)\n/github open owner/repo path — read a file\n/github ls owner/repo [folder] — list files/folders\n/github create owner/repo path then paste code on the next lines — create a file\n/github edit owner/repo path then paste replacement code on the next lines — replace a file\n/github mkdir owner/repo folder — create a folder (.gitkeep)\n/github upload owner/repo [folder/path] — start multi-file upload; press the button and send files one after another\nUpload folders as ZIP archives to preserve nested folders; use a file caption for its relative path. Use /github done to finish.\nSingle-file upload also works with caption /github upload owner/repo/path/to/file.\n/github username YOUR_GITHUB_USERNAME — save your GitHub profile name for commit attribution (self-reported until verified).\n/github profile — view your saved GitHub profile.\nWrite commands are available to group members and commit directly to the default branch. Only admins can connect or disconnect GitHub.");
+          return json({ok:true,route:"group-github-help"});
+        }
         if(!senderId)throw new Error("Telegram could not identify the group member.");
+        if(action==="username"){
+          const match=commandArgs.match(/^@?([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))$/);
+          if(!match)throw new Error("Usage: /github username YOUR_GITHUB_USERNAME");
+          const requested=match[1];
+          const response=await fetch("https://api.github.com/users/"+encodeURIComponent(requested),{headers:{accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot"}});
+          const account=await response.json().catch(()=>({}));
+          if(!response.ok||!account?.login||!account?.id)throw new Error("GitHub could not find that public username. Check the spelling and try again.");
+          const {error}=await sb.from("telegram_github_profiles").upsert({telegram_user_id:senderId,telegram_username:String(message?.from?.username||"")||null,github_username:String(account.login),github_user_id:Number(account.id),github_verified:false,github_profile_url:String(account.html_url||("https://github.com/"+account.login)),updated_at:new Date().toISOString()},{onConflict:"telegram_user_id"});
+          if(error)throw error;
+          await reply(token,chatId,"Saved GitHub profile @"+String(account.login)+".\nProfile: "+String(account.html_url||("https://github.com/"+account.login))+"\n\nThis is self-reported: GitHub confirms the account exists, but this does not prove you own it. Commits will label it as an entered profile, not a verified identity.");
+          return json({ok:true,route:"group-github-username"});
+        }
+        if(action==="profile"){
+          const {data:profile,error}=await sb.from("telegram_github_profiles").select("github_username,github_verified,github_profile_url,updated_at").eq("telegram_user_id",senderId).maybeSingle();
+          if(error)throw error;
+          if(!profile)throw new Error("No GitHub profile saved yet. Use /github username YOUR_GITHUB_USERNAME first.");
+          await reply(token,chatId,"Your saved GitHub profile: @"+String(profile.github_username)+"\nProfile: "+String(profile.github_profile_url||("https://github.com/"+profile.github_username))+"\nOwnership verified: "+(profile.github_verified?"yes":"no — self-reported"));
+          return json({ok:true,route:"group-github-profile"});
+        }
+        if(action==="install"){
+          if(!await isGroupAdmin())throw new Error("Only a group administrator can install GitHub for this group.");
+          const link=await oauth("create_github_group_install_link",senderId,"github",{chat_id:Number(chatId),chat_title:String(message?.chat?.title||"Telegram group")});
+          if(!link?.url)throw new Error(link?.error||"Could not create the GitHub organization installation link.");
+          await telegram(token,"sendMessage",{chat_id:chatId,text:"Install TivalsDeveloper on your GitHub organization. Select OpenCS-Community (or the organization you want), then choose all repositories or only computer-science-projects and confirm. Only selected repositories will be accessible.",reply_markup:{inline_keyboard:[[{text:"Install on GitHub organization",url:String(link.url)}]]}});
+          return json({ok:true,route:"group-github-install"});
+        }
         if(action==="connect"){
           if(!await isGroupAdmin())throw new Error("Only a group administrator can connect GitHub for this group.");
           const link=await oauth("create_github_group_link",senderId,"github",{chat_id:Number(chatId),chat_title:String(message?.chat?.title||"Telegram group")});
@@ -1537,21 +2056,95 @@ Deno.serve(async (req: Request) => {
           await telegram(token,"sendMessage",{chat_id:chatId,text:"Connect one shared GitHub account for this group. Only a group administrator can start or replace this connection. Review GitHub permissions before approving.",reply_markup:{inline_keyboard:[[{text:"Connect GitHub account",url:String(link.url)}]]}});
           return json({ok:true,route:"group-github-connect"});
         }
+        if(action==="create-repo"||action==="create-repository"){
+          const parsed=commandArgs.match(/^([A-Za-z0-9_.-]{1,100})(?:\s+(public|private))?(?:\s+([\s\S]*))?$/i);
+          if(!parsed)throw new Error("Usage: /github create-repo NAME [public|private] [description]. Example: /github create-repo python-learning public Python projects from our community.");
+          const name=String(parsed[1]||"").trim();
+          const visibility=String(parsed[2]||"public").toLowerCase();
+          const description=String(parsed[3]||"").trim().slice(0,350);
+          const created=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"create_repository",name,description,private:visibility==="private"});
+          if(created?.error)throw new Error(String(created.error));
+          await reply(token,chatId,"Created GitHub repository: "+String(created.full_name||name)+"\nVisibility: "+(created.private?"private":"public")+"\n"+String(created.html_url||"")+"\n\nYou can now use /github ls "+String(created.full_name||"")+" to explore its files.");
+          return json({ok:true,route:"group-github-create-repository"});
+        }
         if(action==="disconnect"&&!await isGroupAdmin())throw new Error("Only a group administrator can disconnect the shared GitHub account.");
-        const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:action,repository});
+        const data=["install","open","ls","create","edit","mkdir","upload","create-repo","create-repository","done"].includes(action)?{}:await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:action,repository});
         if(data?.error)throw new Error(String(data.error));
-        if(action==="disconnect"){
+        if(action==="done"){
+          if(!activeGithubUploadSession)throw new Error("No active upload session found for you. Start one with /github upload owner/repo [folder/path].");
+          await sb.from("telegram_pending_github_actions").delete().eq("id",activeGithubUploadSession.id).eq("telegram_user_id",senderId).eq("chat_id",chatId);
+          await reply(token,chatId,"Upload session finished. Files uploaded in this session: "+Number(activeGithubUploadSession.payload?.uploaded_count||0)+".");
+        }else if(action==="disconnect"){
           await reply(token,chatId,"GitHub has been disconnected from this group.");
         }else if(action==="status"){
-          await reply(token,chatId,data.connected?("Group GitHub connection\n\nAccount: @"+String(data.account||"unknown")+"\nConnected by Telegram user ID: "+Number(data.connected_by||0)+"\n\nCommands: /github repos · /github issues owner/repo · /github prs owner/repo"):"No GitHub account is connected. Ask a group administrator to run /github connect.");
+          await reply(token,chatId,data.connected?("Group GitHub connection\n\nAccount: @"+String(data.account||"unknown")+"\nConnected by Telegram user ID: "+Number(data.connected_by||0)+"\n\nCommands: /github help · /github repos · /github issues owner/repo · /github prs owner/repo · /github commits owner/repo · /github branches owner/repo · /github releases owner/repo"):"No GitHub account is connected. Ask a group administrator to run /github connect.");
+        }else if(["open","ls","create","edit","mkdir","upload"].includes(action)){
+          const lines=commandArgs.split(/\r?\n/);
+          const first=String(lines[0]||"").trim();
+          const bits=first.split(/\s+/);
+          let repo=String(bits[0]||"");
+          let path=String(bits[1]||"");
+          if(action==="upload"){
+            if(!message?.document){
+              const target=String(bits[0]||"");const match=target.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/);const basePath=String(bits[1]||"").replace(/^\/+|\/+$/g,"");
+              if(!match)throw new Error("Usage: /github upload owner/repo [folder/path]. A button will start a multi-file upload session.");
+              if(basePath.split("/").some((part:string)=>part==="."||part===".."))throw new Error("Invalid destination folder path.");
+              await sb.from("telegram_pending_github_actions").delete().eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","upsert_file").contains("payload",{batch_upload:true});
+              const id=crypto.randomUUID();const {error:insertError}=await sb.from("telegram_pending_github_actions").insert({id,telegram_user_id:senderId,chat_id:chatId,action:"upsert_file",repository:match[1],payload:{batch_upload:true,base_path:basePath,uploaded_count:0},status:"pending",expires_at:new Date(Date.now()+2*60*60_000).toISOString()});if(insertError)throw insertError;
+              await telegram(token,"sendMessage",{chat_id:chatId,text:"Multi-file GitHub upload is ready.\nRepository: "+match[1]+(basePath?"\nDestination folder: "+basePath:"\nDestination folder: repository root")+"\n\nPress Start upload, then send documents one after another. To upload a folder, send it as a ZIP archive; nested folder paths and empty folders will be preserved. The session expires in 2 hours.",reply_markup:{inline_keyboard:[[{text:"Start upload",callback_data:"github_batch_start:"+id},{text:"Cancel",callback_data:"github_batch_cancel:"+id}]]}});
+              return json({ok:true,route:"group-github-batch-ready"});
+            }
+            const target=String(bits[0]||"");
+            const m=target.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(.+)$/);
+            if(!m)throw new Error("Usage: caption your file /github upload owner/repo/path/to/file");
+            repo=m[1];path=m[2];
+            const fileBytes=await telegramFileBytes(token,String(message.document.file_id),5_000_000);
+            const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"write",repository:repo,path,content_base64:bytesToB64(fileBytes),mode:"upload",message:"Upload "+path,...(await githubContributorIdentity(senderId,String(message?.from?.username||"")))});
+            if(data?.error)throw new Error(String(data.error));
+            await reply(token,chatId,"Uploaded "+repo+"/"+path+" and committed it.\n"+String(data.url||""));
+            return json({ok:true,route:"group-github-upload"});
+          }
+          if(action==="open"||action==="ls"){
+            const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:action,repository:repo,path});
+            if(data?.error)throw new Error(String(data.error));
+            if(action==="ls"){
+              const rows=Array.isArray(data.items)?data.items:[];
+              const listing=rows.length?rows.map((x:any)=>{const fullPath=repo+"/"+String(x.path||"");return (x.type==="dir"?"[FOLDER] ":"[FILE] ")+String(x.name||"")+(x.type==="dir"?"/":"")+"\nFull path: "+fullPath+"\n"+(x.type==="dir"?("List: /github ls "+repo+" "+String(x.path||"")):("Open: /github open "+repo+" "+String(x.path||"")));}).join("\n\n"):"This folder is empty.";
+              await reply(token,chatId,"GitHub folder: "+repo+(path?" / "+path:"")+"\n\n"+listing);
+            }else{
+              await reply(token,chatId,"GitHub file\nFull path: "+repo+(path?"/"+path:"")+"\nURL: "+String(data.url||"")+"\n\n"+String(data.content||"").slice(0,3000));
+            }
+            return json({ok:true,route:"group-github-"+action});
+          }
+          if(action==="create"||action==="edit"){
+            const code=lines.slice(1).join("\n");
+            if(!repo||!path||!code.trim())throw new Error("Use /github "+action+" owner/repo path, then paste the complete code on the following lines.");
+            const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"write",repository:repo,path,content_base64:bytesToB64(new TextEncoder().encode(code)),mode:action,message:(action==="create"?"Create ":"Update ")+path,...(await githubContributorIdentity(senderId,String(message?.from?.username||"")))});
+            if(data?.error)throw new Error(String(data.error));
+            await reply(token,chatId,(action==="create"?"Created ":"Updated ")+repo+"/"+path+" and committed it.\n"+String(data.url||"")+"\nCommit: "+String(data.commit_sha||""));
+            return json({ok:true,route:"group-github-"+action});
+          }
+          if(action==="mkdir"){
+            path=String(path||"").replace(/\/+$/,"");
+            if(!repo||!path)throw new Error("Usage: /github mkdir owner/repo folder/path");
+            const data=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"write",repository:repo,path:path+"/.gitkeep",content_base64:bytesToB64(new TextEncoder().encode("")),mode:"create",message:"Create folder "+path,...(await githubContributorIdentity(senderId,String(message?.from?.username||"")))});
+            if(data?.error)throw new Error(String(data.error));
+            await reply(token,chatId,"Created folder "+repo+"/"+path+" using .gitkeep.\n"+String(data.url||""));
+            return json({ok:true,route:"group-github-mkdir"});
+          }
         }else if(action==="repos"){
           const rows=Array.isArray(data.repositories)?data.repositories:[];
           const body=rows.length?rows.map((r:any)=>"• "+String(r.name||"repository")+(r.private?" · private":"")+(r.description?"\n  "+String(r.description).slice(0,160):"")+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No repositories were returned for the connected account.";
           await reply(token,chatId,"GitHub repositories (@"+String(data.account||"")+")\n\n"+body);
         }else{
           const rows=Array.isArray(data.items)?data.items:[];
-          const body=rows.length?rows.map((r:any)=>"• #"+Number(r.number||0)+" · "+String(r.title||"Untitled").slice(0,180)+" — @"+String(r.user||"unknown")+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No open items found.";
-          await reply(token,chatId,"GitHub "+(action==="prs"?"pull requests":"issues")+" · "+repository+"\n\n"+body);
+          let body="";
+          if(action==="commits") body=rows.length?rows.map((r:any)=>"• "+String(r.sha||"").slice(0,8)+" · "+String(r.title||"Commit").slice(0,160)+"\n  "+String(r.user||"unknown")+" · "+String(r.url||"https://github.com")).join("\n\n"):"No commits found.";
+          else if(action==="branches") body=rows.length?rows.map((r:any)=>"• "+String(r.title||"branch")+" · "+String(r.sha||"").slice(0,8)+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No branches found.";
+          else if(action==="releases") body=rows.length?rows.map((r:any)=>"• "+String(r.sha||"").slice(0,40)+" · "+String(r.title||"Release").slice(0,160)+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No releases found.";
+          else body=rows.length?rows.map((r:any)=>"• #"+Number(r.number||0)+" · "+String(r.title||"Untitled").slice(0,180)+" — @"+String(r.user||"unknown")+"\n  "+String(r.url||"https://github.com")).join("\n\n"):"No open items found.";
+          const heading=action==="prs"?"pull requests":action==="issues"?"issues":action;
+          await reply(token,chatId,"GitHub "+heading+" · "+repository+"\n\n"+body);
         }
         return json({ok:true,route:"group-github-"+action});
       }catch(e){
@@ -1559,7 +2152,7 @@ Deno.serve(async (req: Request) => {
         return json({ok:true,route:"group-github-error"});
       }
     }
-    const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website|challenge)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
+    const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request));return json({ok:true,route});}
     const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(mediaCommand){
