@@ -36,6 +36,28 @@ function json(data: unknown, status = 200) {
     headers: { ...cors, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
+function decodeGithubContent(encoded:string){const raw=atob(encoded.replace(/\s/g,""));return new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(raw,c=>c.charCodeAt(0)));}
+function githubBinaryExtension(path:string) {
+  return /\.(?:pdf|png|jpe?g|gif|webp|bmp|ico|tiff?|psd|ai|eps|docx?|xlsx?|pptx?|odt|ods|odp|zip|7z|rar|tar|gz|bz2|xz|mp3|wav|ogg|flac|m4a|mp4|mov|avi|mkv|webm|woff2?|ttf|otf|eot|exe|dll|so|dylib|class|jar|war|wasm|bin|sqlite3?|db|parquet|feather|npy|npz)$/i.test(path);
+}
+function githubBytesFromBase64(encoded:string) {
+  const raw=atob(String(encoded||"").replace(/\s/g,""));
+  return Uint8Array.from(raw,c=>c.charCodeAt(0));
+}
+async function extractGithubPdfText(bytes:Uint8Array) {
+  if(bytes.byteLength>15000000) throw new Error("This PDF exceeds the 15 MB reading limit. Open it directly on GitHub or split it into smaller PDFs.");
+  const pdfjs:any=await import("npm:pdfjs-dist@4.10.38/legacy/build/pdf.mjs");
+  const task=pdfjs.getDocument({data:bytes,useSystemFonts:true,isEvalSupported:false,disableFontFace:true,useWorkerFetch:false});
+  const pdf=await task.promise;
+  try {
+    const pageLimit=Math.min(Number(pdf.numPages||0),40); const chunks:string[]=[]; let chars=0;
+    for(let n=1;n<=pageLimit&&chars<30000;n++){const page=await pdf.getPage(n);const content=await page.getTextContent();const line=content.items.map((item:any)=>String(item?.str||"")).filter(Boolean).join(" ");if(line)chunks.push("[Page "+n+"]\n"+line);chars+=line.length;}
+    let text=chunks.join("\n\n").slice(0,30000).trim();
+    if(!text)text="No selectable text was found. This may be a scanned/image-only PDF; OCR is required to read its pages.";
+    if(Number(pdf.numPages)>pageLimit)text+="\n\n[Stopped after "+pageLimit+" of "+pdf.numPages+" pages to keep the Telegram response manageable.]";
+    return {text,pages_read:pageLimit,total_pages:Number(pdf.numPages||0)};
+  } finally { await pdf.destroy().catch(()=>{}); }
+}
 function internal(req: Request) {
   return Boolean(SERVICE_KEY && (req.headers.get("authorization") || "") === `Bearer ${SERVICE_KEY}`);
 }
@@ -463,22 +485,38 @@ async function githubUserToken(tg:number) {
 async function githubInstallationAccess(tg: number) {
   const conn = await githubConnection(tg);
   const installationId = Number(conn?.metadata?.installation_id || 0);
-  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
-    throw new Error("The GitHub connection is incomplete. Disconnect GitHub, then use /connect again.");
+  let installationError = "";
+  if (Number.isSafeInteger(installationId) && installationId > 0) {
+    try {
+      const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${await githubAppJwt()}`,
+          accept: "application/vnd.github+json",
+          "user-agent": "Tivals-AI",
+        },
+      });
+      const tokenData = await tokenRes.json().catch(() => ({}));
+      if (tokenRes.ok && tokenData?.token) {
+        return { conn, token: String(tokenData.token), permissions: tokenData?.permissions || conn?.metadata?.permissions || {} };
+      }
+      installationError = String(tokenData?.message || `GitHub installation token failed (${tokenRes.status}).`);
+    } catch (e) {
+      installationError = String((e as Error)?.message || e);
+    }
   }
-  const tokenRes = await fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${await githubAppJwt()}`,
-      accept: "application/vnd.github+json",
-      "user-agent": "Tivals-AI",
-    },
-  });
-  const tokenData = await tokenRes.json().catch(() => ({}));
-  if (!tokenRes.ok || !tokenData?.token) {
-    throw new Error(tokenData?.message || `GitHub access failed (${tokenRes.status}). Reconnect GitHub with /connect.`);
+  // A user's OAuth authorization is also valid for personal repositories. Use it
+  // when this account has not installed the GitHub App, or its installation is stale.
+  try {
+    const token = await githubUserToken(tg);
+    return { conn, token, permissions: conn?.metadata?.permissions || {} };
+  } catch (e) {
+    const userError = String((e as Error)?.message || e);
+    if (installationError) {
+      throw new Error(`GitHub App installation unavailable (${installationError}). User authorization fallback failed (${userError}). Reconnect GitHub and ensure the app is installed for the repositories you want to manage.`);
+    }
+    throw new Error(userError || "GitHub is not connected. Use /connect first.");
   }
-  return { conn, token: String(tokenData.token), permissions: tokenData?.permissions || conn?.metadata?.permissions || {} };
 }
 async function githubJson(token: string, url: string, init?: RequestInit) {
   const r = await fetch(url, {
@@ -578,11 +616,23 @@ function githubFilePath(value:string,writable=false) {
 async function githubFile(tg:number,repository:string,pathValue:string) {
   const fullName=githubRepositoryName(repository),path=githubFilePath(pathValue);
   const {token}=await githubInstallationAccess(tg);
-  const url=`https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const url="https://api.github.com/repos/"+fullName.split("/").map(encodeURIComponent).join("/")+"/contents/"+path.split("/").map(encodeURIComponent).join("/");
   const d=await githubJson(token,url);
   if(d?.type!=="file" || !d?.sha) throw new Error("The requested GitHub path is not a file.");
-  const content=String(d?.content || "").replace(/\s/g,"");
-  return {repository:fullName,path,sha:String(d.sha),size:Number(d?.size || 0),encoding:d?.encoding || "base64",content_base64:content};
+  const size=Number(d?.size||0),isPdf=/\.pdf$/i.test(path);
+  const headers={authorization:"Bearer "+token,accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot"};
+  let bytes:Uint8Array|null=null;
+  if(isPdf || (!d?.content && size<=2000000)){
+    if(d?.content&&d?.encoding==="base64")bytes=githubBytesFromBase64(String(d.content));
+    else if(d?.download_url){const raw=await fetch(String(d.download_url),{headers:{...headers,accept:"application/vnd.github.raw+json"}});if(!raw.ok)throw new Error("GitHub could not download this file ("+raw.status+").");bytes=new Uint8Array(await raw.arrayBuffer());}
+  }
+  if(isPdf){if(!bytes)throw new Error("GitHub did not provide readable PDF bytes for this file.");const pdf=await extractGithubPdfText(bytes);return {repository:fullName,path,sha:String(d.sha),size,encoding:"pdf-text",content_base64:"",content_type:"application/pdf",is_pdf:true,is_binary:false,html_url:String(d.html_url||""),extracted_text:pdf.text,pages_read:pdf.pages_read,total_pages:pdf.total_pages};}
+  if(githubBinaryExtension(path))return {repository:fullName,path,sha:String(d.sha),size,encoding:"binary",content_base64:"",content_type:"application/octet-stream",is_binary:true,html_url:String(d.html_url||""),download_url:String(d.download_url||"")};
+  if(!bytes&&d?.content&&d?.encoding==="base64")bytes=githubBytesFromBase64(String(d.content));
+  if(!bytes&&d?.download_url&&size<=2000000){const raw=await fetch(String(d.download_url),{headers:{...headers,accept:"application/vnd.github.raw+json"}});if(raw.ok)bytes=new Uint8Array(await raw.arrayBuffer());}
+  if(!bytes)throw new Error("This file is too large or GitHub did not return its contents. Use the GitHub link to inspect it.");
+  let source="";try{source=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{return {repository:fullName,path,sha:String(d.sha),size,encoding:"binary",content_base64:"",content_type:"application/octet-stream",is_binary:true,html_url:String(d.html_url||""),download_url:String(d.download_url||"")};}
+  return {repository:fullName,path,sha:String(d.sha),size,encoding:"base64",content_base64:b64(bytes),content_type:"text/plain; charset=utf-8",is_binary:false,html_url:String(d.html_url||""),download_url:String(d.download_url||"")};
 }
 async function githubDirectory(tg:number,repository:string,pathValue="") {
   const fullName=githubRepositoryName(repository);
@@ -608,7 +658,22 @@ async function githubUpsertFile(tg:number,repository:string,pathValue:string,con
   if(sha) body.sha=sha;
   const url=`https://api.github.com/repos/${fullName.split("/").map(encodeURIComponent).join("/")}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
   const d=await githubJson(token,url,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
-  return {ok:true,repository:fullName,path,commit_sha:d?.commit?.sha || null,html_url:d?.content?.html_url || null};
+  const commitSha=String(d?.commit?.sha || "");
+  const commitUrl=String(d?.commit?.html_url || (commitSha ? "https://github.com/"+fullName+"/commit/"+commitSha : d?.content?.html_url || "https://github.com/"+fullName+"/blob/"+path));
+  const {data:profile}=await sb.from("telegram_github_profiles").select("telegram_username,github_username,github_verified").eq("telegram_user_id",tg).maybeSingle();
+  const {error:trackingError}=await sb.from("telegram_github_contributions").insert({
+    telegram_user_id:tg,
+    telegram_username:profile?.telegram_username || null,
+    github_username:profile?.github_username || null,
+    github_verified:Boolean(profile?.github_verified),
+    repository:fullName,
+    path,
+    operation:sha ? "edit" : (path.endsWith("/.gitkeep") ? "folder" : "create"),
+    commit_sha:commitSha || null,
+    commit_url:commitUrl
+  });
+  if(trackingError)console.error("Contributor tracking insert failed after successful GitHub write:",trackingError.message);
+  return {ok:true,repository:fullName,path,commit_sha:commitSha || null,html_url:d?.content?.html_url || null};
 }
 async function githubCreateRepository(tg:number,nameValue:string,description:string,isPrivate:boolean) {
   const name=nameValue.trim();
@@ -1042,6 +1107,43 @@ Deno.serve(async (req: Request) => {
   }
   if (req.method === "GET" && u.pathname.endsWith("/github/user/callback")) {
     const state=u.searchParams.get("state") || "",code=u.searchParams.get("code") || "";
+    // GitHub App installation setup may be configured to return to this callback URL.
+    // Handle installation_id here as well as /github/setup so the organization install
+    // flow works regardless of the GitHub App's configured Setup URL.
+    const installationId=u.searchParams.get("installation_id") || "";
+    if (installationId) {
+      const failInstall=(message:string)=>Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`,302);
+      const groupInstallState=await stateRow(state,"github_group_install");
+      const userInstallState=groupInstallState ? null : await stateRow(state,"github");
+      if (!groupInstallState && !userInstallState) return failInstall("The GitHub installation link is invalid or expired. Return to Telegram and start the connection again.");
+      try {
+        const installation=await githubInstallation(installationId);
+        const account=String(installation?.account?.login || installation?.account?.name || "GitHub account");
+        if (groupInstallState) {
+          if (String(installation?.account?.type || installation?.target_type || "").toLowerCase() !== "organization") return failInstall("Choose an organization account when installing TivalsDeveloper. This link is for a GitHub organization.");
+          const chatId=Number(groupInstallState.group_id || 0);
+          if (!Number.isSafeInteger(chatId) || chatId >= 0) return failInstall("The Telegram group information is missing. Run /github install in the group again.");
+          const {error}=await sb.from("telegram_group_github_installations").upsert({
+            chat_id:chatId, chat_title:String(groupInstallState.group_title || "Telegram group").slice(0,200),
+            connected_by:Number(groupInstallState.telegram_user_id), installation_id:Number(installationId),
+            account_login:account, account_id:Number(installation?.account?.id || 0) || null,
+            target_type:String(installation?.target_type || "Organization"),
+            repository_selection:String(installation?.repository_selection || "selected"),
+            permissions:installation?.permissions || {}, updated_at:new Date().toISOString(),
+          },{onConflict:"chat_id"});
+          if(error) throw error;
+          await sb.from("telegram_oauth_states").delete().eq("state",state);
+          return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(account)}&group_install=1`,302);
+        }
+        await saveConnection(userInstallState!,"github",{
+          providerUserId:String(installationId), label:account, scope:"github_app_installation",
+          metadata:{installation_id:Number(installationId),account_login:installation?.account?.login || null,
+            account_id:installation?.account?.id || null,target_type:installation?.target_type || null,
+            repository_selection:installation?.repository_selection || null,permissions:installation?.permissions || {}},
+        });
+        return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(account)}`,302);
+      } catch(e) { return failInstall(String((e as Error)?.message || e)); }
+    }
     const groupState=await stateRow(state,"github_group");
     if(groupState){
       const fail=(message:string)=>Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`,302);
@@ -1088,27 +1190,35 @@ Deno.serve(async (req: Request) => {
     const installationId = u.searchParams.get("installation_id") || "";
     const fail = (message: string) => Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=0&error=${encodeURIComponent(message)}`, 302);
     const st = await stateRow(state, "github");
-    if (!st || !installationId) return fail("The GitHub connection link is invalid or expired. Return to Telegram and run /connect again.");
+    const groupSt = st ? null : await stateRow(state, "github_group_install");
+    if (!installationId || (!st && !groupSt)) return fail("The GitHub installation link is invalid or expired. Return to Telegram and start the connection again.");
     try {
       const installation = await githubInstallation(installationId);
-      const account = installation?.account?.login || installation?.account?.name || "GitHub account";
-      await saveConnection(st, "github", {
-        providerUserId: String(installationId),
-        label: String(account),
-        scope: "github_app_installation",
-        metadata: {
-          installation_id: Number(installationId),
-          account_login: installation?.account?.login || null,
-          account_id: installation?.account?.id || null,
-          target_type: installation?.target_type || null,
-          repository_selection: installation?.repository_selection || null,
-          permissions: installation?.permissions || {},
-        },
+      const account = String(installation?.account?.login || installation?.account?.name || "GitHub account");
+      if (groupSt) {
+        if (String(installation?.account?.type || installation?.target_type || "").toLowerCase() !== "organization") return fail("Choose an organization account when installing TivalsDeveloper. This link is for a GitHub organization.");
+        const chatId = Number(groupSt.group_id || 0);
+        if (!Number.isSafeInteger(chatId) || chatId >= 0) return fail("The Telegram group information is missing. Run /github install in the group again.");
+        const { error } = await sb.from("telegram_group_github_installations").upsert({
+          chat_id: chatId, chat_title: String(groupSt.group_title || "Telegram group").slice(0, 200),
+          connected_by: Number(groupSt.telegram_user_id), installation_id: Number(installationId),
+          account_login: account, account_id: Number(installation?.account?.id || 0) || null,
+          target_type: String(installation?.target_type || "Organization"),
+          repository_selection: String(installation?.repository_selection || "selected"),
+          permissions: installation?.permissions || {}, updated_at: new Date().toISOString(),
+        }, { onConflict: "chat_id" });
+        if (error) throw error;
+        await sb.from("telegram_oauth_states").delete().eq("state", state);
+        return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(account)}&group_install=1`, 302);
+      }
+      await saveConnection(st!, "github", {
+        providerUserId: String(installationId), label: account, scope: "github_app_installation",
+        metadata: { installation_id: Number(installationId), account_login: installation?.account?.login || null,
+          account_id: installation?.account?.id || null, target_type: installation?.target_type || null,
+          repository_selection: installation?.repository_selection || null, permissions: installation?.permissions || {} },
       });
-      return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(String(account))}`, 302);
-    } catch (e) {
-      return fail(String((e as Error)?.message || e));
-    }
+      return Response.redirect(`${STATIC_BASE}/telegram-github.html?ok=1&account=${encodeURIComponent(account)}`, 302);
+    } catch (e) { return fail(String((e as Error)?.message || e)); }
   }
 
   if (req.method === "GET" && u.pathname.endsWith("/tiktok/callback")) {
@@ -1311,6 +1421,19 @@ Deno.serve(async (req: Request) => {
     try{return json({shop:await configureShopifyApp(tg,String(body.shop||""),String(body.client_id||""),String(body.client_secret||""))});}
     catch(e){return json({error:String((e as Error)?.message||e)},400);}
   }
+  if (action === "create_github_group_install_link") {
+    if (!internal(req)) return json({error:"Unauthorized"},401);
+    const chatId=Number(body.chat_id||0);
+    if(!Number.isSafeInteger(tg)||tg<=0||!Number.isSafeInteger(chatId)||chatId>=0) return json({error:"A valid Telegram group is required."},400);
+    try {
+      const app=await githubAppInfo(),slug=String(app?.slug||"");
+      if(!slug)throw new Error("GitHub App slug is unavailable. Check the GitHub App configuration.");
+      const state=await createState(tg,"github_group_install",chatId);
+      const {error}=await sb.from("telegram_oauth_states").update({group_title:String(body.chat_title||"Telegram group").slice(0,200)}).eq("state",state);
+      if(error)throw error;
+      return json({url:`https://github.com/apps/${encodeURIComponent(slug)}/installations/new?state=${encodeURIComponent(state)}`,app_slug:slug});
+    } catch(e) { return json({error:String((e as Error)?.message||e)},400); }
+  }
   if (action === "create_github_group_link") {
     if (!internal(req)) return json({error:"Unauthorized"},401);
     const chatId=Number(body.chat_id||0);
@@ -1335,23 +1458,49 @@ Deno.serve(async (req: Request) => {
   if (action === "create_link") return createLink(req, provider, tg);
   if (!internal(req)) return json({ error: "Unauthorized" }, 401);
 
-  if(action==="github_group_action"){
+  
+async function syncOpenCSContributors(repository:string,headers:Record<string,string>,currentPath:string,projectCreator:string){
+ const fileUrl=(p:string)=>"https://api.github.com/repos/"+repository+"/contents/"+p.split("/").map(encodeURIComponent).join("/");
+ const read=async(p:string)=>{const r=await fetch(fileUrl(p),{headers}),d=await r.json().catch(()=>({}));if(r.status===404)return{content:"",sha:""};if(!r.ok)throw new Error(String(d?.message||"Read failed: "+p));return{content:d?.content?decodeGithubContent(String(d.content)):"",sha:String(d?.sha||"")};};
+ const write=async(p:string,c:string)=>{const old=await read(p),bytes=new TextEncoder().encode(c);let binary="";for(const b of bytes)binary+=String.fromCharCode(b);const body:any={message:"Update OpenCS contributor register",content:btoa(binary)};if(old.sha)body.sha=old.sha;const r=await fetch(fileUrl(p),{method:"PUT",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(String(d?.message||"Write failed: "+p));};
+ const old=await read("CONTRIBUTORS.md");let starter=String(projectCreator||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,32);if(!starter){const m=old.content.match(/(?:Project initiator|Project starter):\s*@?([A-Za-z0-9_]+)/i);starter=String(m?.[1]||"");}
+ const q=await sb.from("telegram_github_contributions").select("telegram_user_id,telegram_username,github_username,path,commit_url").eq("repository",repository).limit(500);if(q.error)throw q.error;const rows=Array.isArray(q.data)?q.data:[];
+ const list=(items:any[])=>{const people=new Map<string,any>();for(const r of items){const tg=String(r.telegram_username||"").replace(/^@/,"").trim(),gh=String(r.github_username||"").replace(/^@/,"").trim(),id=Number(r.telegram_user_id||0),key=(tg?"t:"+tg.toLowerCase():(id?"id:"+id:""))+(gh?"|g:"+gh.toLowerCase():"");if(!key)continue;const p=people.get(key)||{tg,gh,id,paths:new Set<string>(),url:""};if(r.path)p.paths.add(String(r.path));if(r.commit_url)p.url=String(r.commit_url);people.set(key,p);}return [...people.values()].map(p=>"- "+(p.tg?"Telegram @"+p.tg:(p.id?"Telegram user ID "+p.id:"Telegram contributor"))+(p.gh?" · GitHub @"+p.gh:"")+(p.paths.size?" · Files: "+[...p.paths].slice(0,8).join(", "):"")+(p.url?" · [latest commit]("+p.url+")":"")).join("\n");};
+ const origin=starter?"@"+starter:"Not recorded (repository existed before OpenCS tracking).";
+ await write("CONTRIBUTORS.md","# OpenCS Community Contributors\n\nRepository: `"+repository+"`\n\n## Project initiator\n\n"+origin+"\n\n## Contributors\n\n"+(list(rows)||"No recorded contributors yet.")+"\n\n---\nMaintained automatically by OpenCS Community. Earlier contributions may not be recoverable.\n");
+ const folder=currentPath.includes("/")?currentPath.split("/").slice(0,-1).join("/"):"";
+ if(folder&&!/(^|\/)CONTRIBUTORS\.md$/i.test(currentPath)){const items=rows.filter((r:any)=>String(r.path||"").startsWith(folder+"/"));await write(folder+"/CONTRIBUTORS.md","# Folder Contributors\n\nRepository: `"+repository+"`\n\nFolder: `"+folder+"`\n\n## Project initiator\n\n"+origin+"\n\n## Contributors to this folder\n\n"+(list(items)||"No recorded contributors for this folder yet.")+"\n\n---\nMaintained automatically by OpenCS Community.\n");}
+}
+
+if(action==="github_group_action"){
     if(!internal(req))return json({error:"Unauthorized"},401);
     const chatId=Number(body.chat_id||0),command=String(body.command||"status").toLowerCase(),repository=String(body.repository||"").trim();
     if(!Number.isSafeInteger(chatId)||chatId>=0)return json({error:"A valid group chat is required."},400);
     try{
       const {data:conn,error}=await sb.from("telegram_group_github_connections").select("*").eq("chat_id",chatId).maybeSingle();
       if(error)throw error;
+      const {data:installConn,error:installError}=await sb.from("telegram_group_github_installations").select("*").eq("chat_id",chatId).maybeSingle();
+      if(installError)throw installError;
       if(command==="disconnect"){
         const {error:delError}=await sb.from("telegram_group_github_connections").delete().eq("chat_id",chatId);
         if(delError)throw delError;
+        const {error:installDelError}=await sb.from("telegram_group_github_installations").delete().eq("chat_id",chatId);
+        if(installDelError)throw installDelError;
         return json({ok:true,disconnected:true});
       }
-      if(!conn)return json({error:"No GitHub account is connected to this group. A group administrator can run /github connect."},404);
-      if(command==="status")return json({connected:true,account:conn.account_login,connected_by:conn.connected_by,updated_at:conn.updated_at});
-      let access=await decrypt(String(conn.access_token_enc||""));
-      if(!access)throw new Error("The stored GitHub authorization is empty. Reconnect with /github connect.");
-      if(conn.expires_at&&new Date(conn.expires_at).getTime()<=Date.now()+60000){
+      if(!conn&&!installConn)return json({error:"No GitHub connection is set up for this group. A group administrator can run /github install (recommended) or /github connect."},404);
+      if(command==="status")return json({connected:true,account:installConn?.account_login||conn?.account_login,connected_by:installConn?.connected_by||conn?.connected_by,updated_at:installConn?.updated_at||conn?.updated_at,connection_type:installConn?"organization_install":"user_oauth",repository_selection:installConn?.repository_selection||null});
+      let access="";
+      if(installConn){
+        const tokenRes=await fetch(`https://api.github.com/app/installations/${Number(installConn.installation_id)}/access_tokens`,{method:"POST",headers:{authorization:`Bearer ${await githubAppJwt()}`,accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot"}});
+        const tokenData=await tokenRes.json().catch(()=>({}));
+        if(!tokenRes.ok||!tokenData?.token)throw new Error(String(tokenData?.message||"Could not create a GitHub organization installation token."));
+        access=String(tokenData.token);
+      } else {
+        access=await decrypt(String(conn.access_token_enc||""));
+        if(!access)throw new Error("The stored GitHub authorization is empty. Reconnect with /github connect.");
+      }
+      if(!installConn&&conn.expires_at&&new Date(conn.expires_at).getTime()<=Date.now()+60000){
         const refresh=await decrypt(String(conn.refresh_token_enc||"")).catch(()=> "");
         if(!refresh||!GITHUB_CLIENT_SECRET)throw new Error("The shared GitHub authorization expired. A group administrator must run /github connect again.");
         const app=await githubAppInfo();
@@ -1365,24 +1514,165 @@ Deno.serve(async (req: Request) => {
       }
       const headers={authorization:`Bearer ${access}`,accept:"application/vnd.github+json","user-agent":"TivalsDeveloper-Telegram-Bot","x-github-api-version":"2022-11-28"};
       const api=async(path:string)=>{const r=await fetch("https://api.github.com"+path,{headers});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(String(d?.message||`GitHub request failed (${r.status}).`));return d;};
-      if(command==="challenge-create"){
-        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("A valid owner/repository is required.");
-        const title=String(body.title||"").trim().slice(0,240),details=String(body.issue_body||"").trim().slice(0,12000);
-        if(!title||!details)throw new Error("Challenge title and instructions are required.");
-        const write=await fetch("https://api.github.com/repos/"+repository+"/issues",{method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({title:"Challenge: "+title,body:"## Challenge\n\n"+details+"\n\n## Submission requirements\n- Describe your approach.\n- Link your code or pull request.\n- Explain how you tested it.\n\n## Review\nAwaiting community submissions and review."})});
-        const issue=await write.json().catch(()=>({}));
-        if(!write.ok)throw new Error(String(issue?.message||"GitHub could not create the challenge."));
-        return json({connected:true,account:conn.account_login,number:issue.number,title:issue.title,url:issue.html_url,repository});
-      }
       if(command==="repos"){
-        const rows=await api("/user/repos?sort=updated&per_page=10&affiliation=owner,collaborator,organization_member");
-        return json({connected:true,account:conn.account_login,repositories:(Array.isArray(rows)?rows:[]).map((x:any)=>({name:x.full_name,description:x.description,private:Boolean(x.private),url:x.html_url,updated_at:x.updated_at}))});
+        const rows=installConn?await api("/installation/repositories?per_page=50"):await api("/user/repos?sort=updated&per_page=10&affiliation=owner,collaborator,organization_member");
+        const list=Array.isArray(rows)?rows:(Array.isArray(rows?.repositories)?rows.repositories:[]);
+        return json({connected:true,account:installConn?.account_login||conn?.account_login,repositories:list.map((x:any)=>({name:x.full_name,description:x.description,private:Boolean(x.private),url:x.html_url,updated_at:x.updated_at}))});
       }
-      if(command==="issues"||command==="prs"){
+      if(command==="create_repository"){
+        const name=String(body.name||"").trim();
+        const description=String(body.description||"").trim().slice(0,350);
+        const isPrivate=Boolean(body.private);
+        if(!/^[A-Za-z0-9_.-]{1,100}$/.test(name))throw new Error("Choose a repository name using letters, numbers, dots, underscores, or hyphens (maximum 100 characters).");
+        if(installConn&&!/^[A-Za-z0-9_.-]+$/.test(String(installConn.account_login||"")))throw new Error("The connected GitHub organization name is invalid.");
+        const endpoint=installConn
+          ? "https://api.github.com/orgs/"+encodeURIComponent(String(installConn.account_login||""))+"/repos"
+          : "https://api.github.com/user/repos";
+        const createRes=await fetch(endpoint,{method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({name,description,private:isPrivate,auto_init:true})});
+        const created=await createRes.json().catch(()=>({}));
+        if(!createRes.ok)throw new Error(String(created?.message||("GitHub repository creation failed ("+createRes.status+"). Check organization repository policies and GitHub App Administration: write permission.")));
+        const fullName=String(created.full_name||((installConn?.account_login||conn?.account_login||"")+"/"+name)),creator=String(body.telegram_username||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,32);
+        if(creator){try{const bytes=new TextEncoder().encode("# OpenCS Community Contributors\n\nRepository: `"+fullName+"`\n\n## Project initiator\n\n@"+creator+" (created this repository through OpenCS Community)\n\n## Contributors\n\n- Telegram @"+creator+" — project setup\n");let binary="";for(const b of bytes)binary+=String.fromCharCode(b);const put=await fetch("https://api.github.com/repos/"+fullName+"/contents/CONTRIBUTORS.md",{method:"PUT",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({message:"Add OpenCS contributor register",content:btoa(binary)})});if(!put.ok)console.error("Initial contributor register failed:",put.status);}catch(e){console.error("Initial contributor register failed:",String((e as Error)?.message||e));}}
+        return json({connected:true,account:installConn?.account_login||conn?.account_login,full_name:fullName,html_url:String(created.html_url||""),private:Boolean(created.private),description:String(created.description||"")});
+      }
+      if(["open","ls"].includes(command)){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("Usage: /github "+command+" owner/repository [path]");
+        const rawPath=String(body.path||"").trim();
+        if(rawPath.split("/").some((p:string)=>p===".."||p==="."))throw new Error("Invalid repository path.");
+        const path=rawPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+        const endpoint="/repos/"+repository+"/contents"+(path?"/"+path:"");
+        const result=await api(endpoint);
+        if(command==="ls"){
+          if(!Array.isArray(result))throw new Error("That path is a file. Use /github open owner/repo path.");
+          return json({connected:true,account:installConn?.account_login||conn?.account_login,items:result.map((x:any)=>({name:x.name,path:x.path,type:x.type,url:x.html_url}))});
+        }
+        if(Array.isArray(result))throw new Error("That path is a folder, not a file: "+repository+(rawPath?"/"+rawPath:"")+". List it with: /github ls "+repository+" "+rawPath);
+        let content="",isPdf=/\.pdf$/i.test(rawPath),isBinary=githubBinaryExtension(rawPath),pagesRead=0,totalPages=0;
+        if(isPdf){
+          let bytes:Uint8Array|null=null;
+          if(result.content&&result.encoding==="base64")bytes=githubBytesFromBase64(String(result.content));
+          else if(result.download_url){const raw=await fetch(String(result.download_url),{headers:{...headers,accept:"application/vnd.github.raw+json"}});if(!raw.ok)throw new Error("GitHub could not download this PDF ("+raw.status+").");bytes=new Uint8Array(await raw.arrayBuffer());}
+          if(!bytes)throw new Error("GitHub did not return PDF bytes for this file.");
+          const pdf=await extractGithubPdfText(bytes);content=pdf.text;pagesRead=pdf.pages_read;totalPages=pdf.total_pages;
+        }else if(isBinary){content="Binary file ("+Number(result.size||0)+" bytes). This format cannot be displayed as plain text.";}
+        else if(result.encoding==="base64"&&result.content){try{content=decodeGithubContent(String(result.content));}catch{isBinary=true;content="This file is not UTF-8 text and cannot be displayed as plain text.";}}
+        else if(result.download_url){const raw=await fetch(String(result.download_url),{headers:{...headers,accept:"application/vnd.github.raw+json"}});if(raw.ok){const bytes=new Uint8Array(await raw.arrayBuffer());if(bytes.length<=2000000){try{content=new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{isBinary=true;content="This file is not UTF-8 text and cannot be displayed as plain text.";}}else content="This file is too large to display in Telegram. Open it directly on GitHub."; } }
+        return json({connected:true,account:installConn?.account_login||conn?.account_login,content,url:result.html_url,path:result.path,is_pdf:isPdf,is_binary:isBinary,pages_read:pagesRead,total_pages:totalPages,size:Number(result.size||0)});
+      }
+      if(command==="delete_file"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("Provide a valid owner/repository.");
+        const path=String(body.path||"").replace(/^\/+|\/+$/g,"").trim();
+        if(!path||path.split("/").some((p:string)=>!p||p==="."||p===".."))throw new Error("Provide a valid file path inside the repository.");
+        const url="https://api.github.com/repos/"+repository+"/contents/"+path.split("/").map(encodeURIComponent).join("/");
+        const currentRes=await fetch(url,{headers}),current=await currentRes.json().catch(()=>({}));
+        if(!currentRes.ok||!current?.sha)throw new Error(String(current?.message||"The file could not be found."));
+        const del=await fetch(url,{method:"DELETE",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({message:"Delete "+path+" via OpenCS Community",sha:String(current.sha)})});
+        const result=await del.json().catch(()=>({}));
+        if(!del.ok)throw new Error(String(result?.message||("GitHub file deletion failed ("+del.status+").")));
+        return json({connected:true,deleted:true,path});
+      }
+      if(command==="delete_folder"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("Provide a valid owner/repository.");
+        const folder=String(body.path||"").replace(/^\/+|\/+$/g,"").trim();
+        if(!folder||folder.split("/").some((p:string)=>!p||p==="."||p===".."))throw new Error("Choose a non-root folder inside the repository.");
+        const files:Array<{path:string,sha:string}>=[];
+        const collect=async(path:string,depth:number):Promise<void>=>{
+          if(depth>20)throw new Error("Folder nesting exceeds the safe deletion limit.");
+          const rows=await api("/repos/"+repository+"/contents/"+path.split("/").map(encodeURIComponent).join("/"));
+          if(!Array.isArray(rows))throw new Error("The selected path is not a folder.");
+          for(const item of rows){
+            if(item.type==="dir")await collect(String(item.path||""),depth+1);
+            else if(item.type==="file"&&item.sha)files.push({path:String(item.path),sha:String(item.sha)});
+            if(files.length>100)throw new Error("This folder contains more than 100 files. Nothing was deleted; use GitHub for this large deletion.");
+          }
+        };
+        await collect(folder,0);
+        if(!files.length)throw new Error("The folder is empty or contains no deletable files.");
+        let deleted=0;
+        for(const file of files){
+          const url="https://api.github.com/repos/"+repository+"/contents/"+file.path.split("/").map(encodeURIComponent).join("/");
+          const del=await fetch(url,{method:"DELETE",headers:{...headers,"content-type":"application/json"},body:JSON.stringify({message:"Delete "+file.path+" via OpenCS Community",sha:file.sha})});
+          const result=await del.json().catch(()=>({}));
+          if(!del.ok)throw new Error("Folder deletion stopped after "+deleted+" of "+files.length+" files. "+String(result?.message||("GitHub returned "+del.status+".")));
+          deleted++;
+        }
+        return json({connected:true,deleted:true,path:folder,deleted_files:deleted});
+      }
+      if(command==="delete_repository"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("Provide a valid owner/repository.");
+        const del=await fetch("https://api.github.com/repos/"+repository,{method:"DELETE",headers});
+        const result=await del.json().catch(()=>({}));
+        if(!del.ok)throw new Error(String(result?.message||("GitHub repository deletion failed ("+del.status+"). The connected account or GitHub App may lack Administration: write permission.")));
+        return json({connected:true,deleted:true,repository});
+      }
+      if(command==="write"){
+        if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error("Provide a valid owner/repository.");
+        const path=String(body.path||"").replace(/^\/+|\/+$/g,"").trim();
+        if(!path||path.split("/").some((p:string)=>!p||p==="."||p===".."))throw new Error("Provide a valid file path inside the repository.");
+        if(path.length>450)throw new Error("The file path is too long.");
+        const mode=String(body.mode||"create");
+        if(!["create","edit","upload"].includes(mode))throw new Error("Unknown file write mode.");
+        const encoded=String(body.content_base64||"");
+        if(encoded.length>7_000_000)throw new Error("The file is too large. Keep Telegram uploads under 5 MB.");
+        const url="https://api.github.com/repos/"+repository+"/contents/"+path.split("/").map(encodeURIComponent).join("/");
+        const currentRes=await fetch(url,{headers});
+        const current=await currentRes.json().catch(()=>({}));
+        if(mode==="create"&&currentRes.ok)throw new Error("That file already exists. Use /github edit owner/repo path followed by the complete replacement code.");
+        if(mode==="edit"&&(!currentRes.ok||!current?.sha))throw new Error("That file does not exist yet. Use /github create owner/repo path followed by the file contents.");
+        if(!currentRes.ok&&currentRes.status!==404)throw new Error(String(current?.message||"Could not inspect the target file."));
+        const telegramUsername=String(body.telegram_username||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,32);
+        const telegramUserId=Number(body.telegram_user_id||tg||0);
+        const githubUsername=String(body.github_username||"").replace(/^@/,"").replace(/[^A-Za-z0-9-]/g,"").slice(0,39);
+        const githubVerified=Boolean(body.github_verified&&body.github_user_id);
+        const baseMessage=String(body.message||((mode==="create"?"Create ":"Update ")+path)).replace(/[\\r\\n]+/g," ").trim();
+        const actor=telegramUsername?"via Telegram @"+telegramUsername:(telegramUserId?"via Telegram member":"via Telegram group");
+        const profileLabel=githubUsername?"; GitHub profile entered: @"+githubUsername+(githubVerified?" (verified)":" (unverified)"):"";
+        const attribution=" ["+actor+profileLabel+"]";
+        const commitMessage=(baseMessage+attribution).slice(0,200);
+        const payload:any={message:commitMessage,content:encoded};
+        if(telegramUsername)payload.author={name:"Telegram @"+telegramUsername,email:"telegram-contributor@tivalsdeveloper.site"};
+        else if(telegramUserId)payload.author={name:"Telegram community member"+(githubUsername?" (GitHub @"+githubUsername+(githubVerified?"":"; unverified")+")":""),email:"telegram-contributor@tivalsdeveloper.site"};
+        if(current?.sha)payload.sha=String(current.sha);
+        const put=await fetch(url,{method:"PUT",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload)});
+        const result=await put.json().catch(()=>({}));
+        if(!put.ok)throw new Error(String(result?.message||("GitHub write failed ("+put.status+").")));
+        const contributionSha=String(result?.commit?.sha||"");
+        const contributionUrl=String(result?.commit?.html_url|| (contributionSha ? "https://github.com/"+repository+"/commit/"+contributionSha : result?.content?.html_url||"https://github.com/"+repository+"/blob/"+path));
+        const contributionOperation=path.endsWith("/.gitkeep") ? "folder" : mode;
+        if(telegramUserId>0){
+          const {error:contributionError}=await sb.from("telegram_github_contributions").insert({
+            telegram_user_id:telegramUserId,
+            telegram_username:telegramUsername||null,
+            github_username:githubUsername||null,
+            github_verified:githubVerified,
+            repository,
+            path,
+            operation:contributionOperation,
+            commit_sha:contributionSha||null,
+            commit_url:contributionUrl
+          });
+          if(contributionError)console.error("Contributor tracking insert failed after successful GitHub write:",contributionError.message);
+          else if(!/(^|\/)CONTRIBUTORS\.md$/i.test(path)){try{await syncOpenCSContributors(repository,headers,path,String(body.project_creator||""));}catch(e){console.error("Contributor register update failed:",String((e as Error)?.message||e));}}
+        }
+        return json({connected:true,account:installConn?.account_login||conn?.account_login,commit_sha:contributionSha,url:result?.content?.html_url||("https://github.com/"+repository+"/blob/"+path)});
+      }
+      if(["issues","prs","commits","branches","releases"].includes(command)){
         if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))throw new Error(`Usage: /github ${command} owner/repository`);
-        const path=command==="issues"?`/repos/${repository}/issues?state=open&per_page=10`:`/repos/${repository}/pulls?state=open&per_page=10`;
-        const rows=await api(path);
-        return json({connected:true,account:conn.account_login,items:(Array.isArray(rows)?rows:[]).filter((x:any)=>command==="prs"||!x.pull_request).map((x:any)=>({number:x.number,title:x.title,url:x.html_url,state:x.state,user:x.user?.login,created_at:x.created_at}))});
+        if(command==="issues"||command==="prs"){
+          const path=command==="issues"?`/repos/${repository}/issues?state=open&per_page=10`:`/repos/${repository}/pulls?state=open&per_page=10`;
+          const rows=await api(path);
+          return json({connected:true,account:installConn?.account_login||conn?.account_login,items:(Array.isArray(rows)?rows:[]).filter((x:any)=>command==="prs"||!x.pull_request).map((x:any)=>({number:x.number,title:x.title,url:x.html_url,state:x.state,user:x.user?.login,created_at:x.created_at}))});
+        }
+        if(command==="commits"){
+          const rows=await api(`/repos/${repository}/commits?per_page=8`);
+          return json({connected:true,account:installConn?.account_login||conn?.account_login,items:(Array.isArray(rows)?rows:[]).map((x:any)=>({sha:x.sha,title:String(x.commit?.message||"").split("\\n")[0],url:x.html_url,user:x.author?.login||x.commit?.author?.name||"unknown"}))});
+        }
+        if(command==="branches"){
+          const rows=await api(`/repos/${repository}/branches?per_page=20`);
+          return json({connected:true,account:installConn?.account_login||conn?.account_login,items:(Array.isArray(rows)?rows:[]).map((x:any)=>({sha:x.commit?.sha,title:x.name,url:`https://github.com/${repository}/tree/${encodeURIComponent(String(x.name||""))}`}))});
+        }
+        const rows=await api(`/repos/${repository}/releases?per_page=8`);
+        return json({connected:true,account:installConn?.account_login||conn?.account_login,items:(Array.isArray(rows)?rows:[]).map((x:any)=>({sha:x.tag_name,title:x.name||x.tag_name,url:x.html_url,user:x.author?.login||"unknown"}))});
       }
       return json({error:"Unknown GitHub group action."},400);
     }catch(e){return json({error:String((e as Error)?.message||e)},400);}
