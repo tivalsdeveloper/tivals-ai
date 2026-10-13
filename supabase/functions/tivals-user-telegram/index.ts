@@ -1504,6 +1504,21 @@ Deno.serve(async (req: Request) => {
         return json({ok:true,route:"store-error"});
       }
     }
+    const groupChallengeCommand=text.match(/^\/challenge(?:@[A-Za-z0-9_]+)?\s+create(?:\s+([\s\S]+))?$/i);
+    if(groupChat&&groupChallengeCommand){
+      try{
+        const member=await telegram(token,"getChatMember",{chat_id:chatId,user_id:senderId}),status=String(member?.result?.status||"");
+        if(status!=="creator"&&status!=="administrator")throw new Error("Only a group administrator can publish a challenge to the connected GitHub repository.");
+        const args=String(groupChallengeCommand[1]||"").trim();
+        const match=args.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*\|\s*([^|]+)\|\s*([\s\S]+)/);
+        if(!match){await reply(token,chatId,"Create a challenge using:\n/challenge create owner/repository | Challenge title | Instructions and acceptance criteria\n\nA group administrator must run this command. GitHub must already be connected with /github connect.");return json({ok:true,route:"group-challenge-help"});}
+        const repository=match[1],title=match[2].trim().slice(0,240),details=match[3].trim().slice(0,12000);
+        const result=await oauth("github_group_action",senderId,"github",{chat_id:Number(chatId),command:"challenge-create",repository,title,issue_body:details});
+        if(result?.error)throw new Error(String(result.error));
+        await reply(token,chatId,"Challenge published to GitHub:\n"+String(result.title||title)+"\n"+String(result.url||""));
+        return json({ok:true,route:"group-challenge-created",url:result.url||null});
+      }catch(e){await reply(token,chatId,String((e as Error)?.message||e));return json({ok:true,route:"group-challenge-error"});}
+    }
     const groupGithubCommand=text.match(/^\/github(?:@[A-Za-z0-9_]+)?(?:\s+(connect|status|repos|issues|prs|disconnect)(?:\s+([^\s]+))?)?\s*$/i);
     if(groupChat&&groupGithubCommand){
       const action=String(groupGithubCommand[1]||"status").toLowerCase();
