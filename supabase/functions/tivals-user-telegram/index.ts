@@ -353,7 +353,7 @@ async function handleChallengeButton(token:string,q:any){
  if(kind==="skip")return "challenge-created-"+await finishChallengeCreation(token,chatId,senderId,session,"");
  if(kind==="visibility"){if(!["public","private"].includes(value)||!payload.new_repo_name)throw new Error("Choose public or private repository visibility.");const created=await oauth("github_group_action",senderId,"github",{chat_id:chatId,command:"create_repository",name:String(payload.new_repo_name),description:"Repository for OpenCS challenge "+String(payload.title||""),private:value==="private"});if(created?.error)throw new Error(String(created.error));const repository=String(created.full_name||created.repository?.full_name||created.name||payload.new_repo_name);if(!repository.includes("/"))throw new Error("GitHub did not return owner/repository for the new repository.");return "challenge-created-"+await finishChallengeCreation(token,chatId,senderId,session,repository);}
  }
- const detail=data.match(/^ch:(submit|leader):(\d{1,12})$/);if(detail){await reply(token,chatId,"Use /challenge "+(detail[1]==="submit"?"submit":"leaderboard")+" "+detail[2]+" to continue.");return "challenge-detail-help";}return "challenge-button-ignored";
+ const detail=data.match(/^ch:(submit|leader):(\d{1,12})$/);if(detail){const command=detail[1]==="submit"?"submit":"leaderboard";return await handleChallengeCommand(token,chatId,senderId,String(q?.from?.username||""),"/challenge "+command+" "+detail[2]);}return "challenge-button-ignored";
 }
 
 async function handleChallengeCommand(token:string,chatId:number,senderId:number,username:string,text:string){
