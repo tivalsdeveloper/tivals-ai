@@ -1,6 +1,4 @@
--- Repair Telegram GitHub pending-action constraints.
--- /challenge create uses create_challenge, which was not allowed by the
--- original constraint. Keep the allowed values explicit and bounded.
+-- Preserve all action types used by deployed Telegram GitHub and challenge workflows.
 alter table public.telegram_pending_github_actions
   drop constraint if exists telegram_pending_github_actions_action_check;
 
@@ -10,6 +8,10 @@ alter table public.telegram_pending_github_actions
     'create_issue',
     'upsert_file',
     'create_repository',
+    'github_wizard',
+    'github_private_wizard',
+    'challenge_create',
+    'challenge_submit',
     'create_challenge',
     'select_repository'
   ));
