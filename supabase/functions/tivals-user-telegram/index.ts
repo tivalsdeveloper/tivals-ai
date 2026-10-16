@@ -1814,7 +1814,8 @@ Deno.serve(async (req: Request) => {
         if (paywallOwner && callbackBusiness && !(await businessBelongsToOwner(token, callbackBusiness, paywallOwner))) {
           return json({ ok: true, route: "business-owner-rejected" });
         }
-        if(tool==="github"&&callbackChat&&String(q?.message?.chat?.type||"")==="group" ){await reply(token,callbackChat,"🐙 Shared GitHub for this group\\nUse `/github status`, `/github repos`, or `/github connect`. Only a group administrator can connect or disconnect the shared account.",callbackBusiness);return json({ok:true,route:"group-github-tool-help"});}\n        if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
+        if(tool==="github"&&callbackChat&&String(q?.message?.chat?.type||"")==="group" ){await reply(token,callbackChat,"🐙 Shared GitHub for this group\\nUse `/github status`, `/github repos`, or `/github connect`. Only a group administrator can connect or disconnect the shared account.",callbackBusiness);return json({ok:true,route:"group-github-tool-help"});}
+        if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
           try{const route=await sendPrivateGithubMenu(token,callbackChat,paywallOwner);return json({ok:true,route,tool});}
           catch(error){await reply(token,callbackChat,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
         }
