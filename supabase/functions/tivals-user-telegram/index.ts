@@ -1126,14 +1126,14 @@ async function handleEmailCommand(token:string,chatId:number,tg:number,profile:a
   if(command.command==="email") {
     await consumeOwnerAiUsage(tg);
     const d=await oauth("gmail_messages",tg,"gmail",{query:"",max_results:6});
-    await reply(token,chatId,emailSearchSummary(d));
+    await sendEmailSearchResults(token,chatId,d);
     return;
   }
   if(!command.args){await reply(token,chatId,command.command==="findemail"?"Use `/findemail sender, subject, or Gmail search terms`":command.command==="reademail"?"Use `/reademail MESSAGE_ID` from /findemail results":"Use `/replyemail MESSAGE_ID | what you want to say` from /findemail results");return;}
   await consumeOwnerAiUsage(tg);
   if(command.command==="findemail"){
     const d=await oauth("gmail_messages",tg,"gmail",{query:emailSearchQuery(command.args),max_results:10});
-    await reply(token,chatId,emailSearchSummary(d));
+    await sendEmailSearchResults(token,chatId,d);
     return;
   }
   const match=command.args.match(/^([a-f0-9]{8,32})(?:\s*\|\s*([\s\S]+))?$/i);
