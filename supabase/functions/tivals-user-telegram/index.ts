@@ -1210,7 +1210,7 @@ async function handleOwnerTool(token:string,chatId:number,tg:number,profile:any,
   }
   if(["gmail","email"].includes(tool)){
     if(gmailSendIntent(request)){await showEmailConfirmation(token,chatId,tg,profile,request);return"gmail-email-draft";}
-    const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:5});await reply(token,chatId,gmailDirectReply(data,resolved.title));return"gmail";
+    const intent=gmailIntent(request||"check my latest emails"),resolved=intent.matched?intent:{matched:true,query:request,title:request?`Email search: ${request}`:"Latest emails"};const data=await oauth("gmail_messages",tg,"gmail",{query:resolved.query,max_results:6});await sendEmailSearchResults(token,chatId,data);return"gmail";
   }
   if(tool==="github"){
     if(/\bcreate\s+(?:an?\s+)?issue\b/i.test(request)){
