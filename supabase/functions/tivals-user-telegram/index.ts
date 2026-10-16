@@ -1848,7 +1848,7 @@ Deno.serve(async (req: Request) => {
     } else if(!update?.business_message&&chatType!=="private"){
       const mode=String(conn.group_mode||"mentions");
       if(mode==="off")return json({ok:true,ignored:true,reason:"groups-disabled"});
-      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|github|challenge|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
+      const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|web|search|github|challenge|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
       if(mode!=="all"&&!groupCommand&&!activeGithubUploadSession&&!await hasPendingChallengeSession(chatId,senderId)&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
     }
     if(!activeGithubUploadSession&&!acceptChat(`${connectorKey}:${chatId}:${senderId}`))return json({ok:true,ignored:true,reason:"rate-limited"});
@@ -2276,7 +2276,7 @@ Deno.serve(async (req: Request) => {
       return json({ok:true,route:"voice-setting"});
     }
     if(/^\/grouphelp(?:@[A-Za-z0-9_]+)?$/i.test(text)){
-      await reply(token,chatId,"In groups, mention me or reply to one of my messages. Educational commands: `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. In channels, use `/ask question` or an educational command. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
+      await reply(token,chatId,"In groups, mention me or reply to one of my messages. Group tools: `/web search query` for public web search, `/github help` for the shared GitHub account, plus `/lesson topic`, `/explain topic`, `/quiz topic`, and `/practice topic`. Personal Gmail and other personal connected accounts are never exposed in groups. Only my creator is allowed to add me to groups or channels.",businessConnectionId);
       return json({ok:true,route:"group-help"});
     }
     if(privateConversation&&/^\/newchat(?:@[A-Za-z0-9_]+)?$/i.test(text)){
