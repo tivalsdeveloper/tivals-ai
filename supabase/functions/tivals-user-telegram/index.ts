@@ -238,6 +238,13 @@ function emailSearchSummary(data:any){
   });
   return "📬 **Email results** · "+Number(data?.result_size||messages.length)+" found\n\n"+results.join("\n\n")+"\n\n/reademail ID · /replyemail ID | instructions";
 }
+function emailResultButtons(data:any){
+  const messages=Array.isArray(data?.messages)?data.messages.slice(0,6):[];
+  const rows:any[][]=[];
+  for(const m of messages){const id=String(m?.id||"");if(!/^[a-f0-9]{8,32}$/i.test(id))continue;const subject=toolText(m?.subject||"Email",24);rows.push([{text:"Read · "+subject,callback_data:"gmail_item:read:"+id},{text:"Draft reply",callback_data:"gmail_item:reply:"+id}]);}
+  return rows.length?{inline_keyboard:rows}:undefined;
+}
+async function sendEmailSearchResults(token:string,chatId:number,data:any){const markup=emailResultButtons(data);await telegram(token,"sendMessage",{chat_id:chatId,text:emailSearchSummary(data),...(markup?{reply_markup:markup}:{})});}
 function gmailIntent(text:string):{matched:boolean;query:string;title:string} {
   const t=String(text||"").trim();
   if(/^\/emails(?:\s|$)/i.test(t)||/^(?:check|show|read|get|see)\s+(?:my\s+)?(?:latest\s+|recent\s+)?emails?\b/i.test(t))return{matched:true,query:"",title:"Latest emails"};
@@ -1764,6 +1771,13 @@ Deno.serve(async (req: Request) => {
       if(paywallOwner&&chatSelect){const route=await selectConversation(token,q,paywallOwner,chatSelect[1].toLowerCase());return json({ok:true,route});}
       const reminderCancel=data.match(/^reminder_cancel:([0-9a-f-]{36})$/i);
       if(paywallOwner&&reminderCancel){const route=await cancelReminder(token,q,paywallOwner,reminderCancel[1].toLowerCase());return json({ok:true,route});}
+      const emailItem=data.match(/^gmail_item:(read|reply):([a-f0-9]{8,32})$/i);
+      if(emailItem){
+        const tg=Number(q?.from?.id||0),chatId=Number(q?.message?.chat?.id||0);
+        if(!paywallOwner||tg!==paywallOwner||chatId!==tg||String(q?.message?.chat?.type||"")!=="private"||q?.message?.business_connection_id){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Email buttons are private to the bot owner.",show_alert:true}).catch(()=>{});return json({ok:true,route:"gmail-item-rejected"});}
+        await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:emailItem[1].toLowerCase()==="read"?"Opening email…":"Preparing reply draft…"}).catch(()=>{});
+        try{if(emailItem[1].toLowerCase()==="read"){await handleEmailCommand(token,chatId,tg,conn,{command:"reademail",args:emailItem[2]});return json({ok:true,route:"gmail-item-read"});}await handleEmailCommand(token,chatId,tg,conn,{command:"replyemail",args:emailItem[2]+" | Draft a concise, polite reply that responds to the sender message. Do not invent facts or commitments."});return json({ok:true,route:"gmail-item-reply"});}catch(e){await reply(token,chatId,String((e as Error)?.message||e));return json({ok:true,route:"gmail-item-error"});}
+      }
       const emailAction=data.match(/^gmail_(send|cancel|edit):([0-9a-f-]{36})$/i);
       if(emailAction&&paywallOwner){
         const route=await handleEmailConfirmation(token,q,paywallOwner,emailAction[1].toLowerCase() as "send"|"cancel"|"edit",emailAction[2].toLowerCase());
@@ -2230,7 +2244,16 @@ Deno.serve(async (req: Request) => {
       }
     }
     const slashTool=text.match(/^\/(web|search|gmail|github|shopify|website)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
-    if(slashTool){if(!ownerPrivate){await reply(token,chatId,"Connected tools are private and can only be used by the bot owner in a direct chat.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim()||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");const route=await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleOwnerTool(token,chatId,paywallOwner,conn,`${connectorKey}:${chatId}:${senderId}`,tool,request));return json({ok:true,route});}
+    if(slashTool){
+      const tool=slashTool[1].toLowerCase(),request=String(slashTool[2]||"").trim();
+      if(groupChat&&(tool==="web"||tool==="search")){
+        if(!request){await reply(token,chatId,"Usage: /web your search query",businessConnectionId);return json({ok:true,route:"group-web-help"});}
+        try{const r=await fetch(WEB_SEARCH_URL,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer "+SERVICE_KEY},body:JSON.stringify({query:request,num:6})});const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data?.error||"Web search is temporarily unavailable.");const results=Array.isArray(data?.results)?data.results.slice(0,6):[];const body=results.map((x:any,i:number)=>(i+1)+". "+toolText(x?.title||"Untitled",180)+"\n"+toolText(x?.url||"",300)+"\n"+toolText(x?.snippet||"",360)).join("\n\n");await reply(token,chatId,"Web search: "+request+"\n\n"+(body||toolText(data?.answerBox?.answer||"No results returned.",1000)),businessConnectionId);return json({ok:true,route:"group-web-search",count:results.length});}catch(e){await reply(token,chatId,String((e as Error)?.message||e),businessConnectionId);return json({ok:true,route:"group-web-search-error"});}
+      }
+      if(!ownerPrivate){await reply(token,chatId,"Personal connected accounts remain private. In groups, use /web query for public web search; shared account connections must be set up by a group admin.",businessConnectionId);return json({ok:true,route:"owner-tool-rejected"});}
+      const resolved=request||(tool==="gmail"?"check my latest emails":tool==="github"?"check my GitHub account":"");
+      const route=await withToolVoice(speakTool,token,chatId,businessConnectionId,()=>handleOwnerTool(token,chatId,paywallOwner,conn,""+connectorKey+":"+chatId+":"+senderId,tool,resolved));return json({ok:true,route});
+    }
     const mediaCommand=text.match(/^\/(image|video)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i);
     if(mediaCommand){
       const kind=String(mediaCommand[1]).toLowerCase() as "image"|"video"; const prompt=String(mediaCommand[2]||"").trim();
