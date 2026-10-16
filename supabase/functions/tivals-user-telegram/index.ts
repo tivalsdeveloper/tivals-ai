@@ -506,7 +506,7 @@ async function sendToolSuggestions(token:string,chatId:number,business="") {
     [{text:"📧 Gmail",callback_data:"tool_suggest:gmail"},{text:"🐙 GitHub",callback_data:"tool_suggest:github"}],
     [{text:"🔎 Find email",callback_data:"tool_suggest:findemail"},{text:"📖 Read email",callback_data:"tool_suggest:reademail"}],
     [{text:"↩️ Reply to email",callback_data:"tool_suggest:replyemail"},{text:"✉️ Compose email",callback_data:"tool_suggest:composeemail"}],
-    [{text:"✏️ Edit draft",callback_data:"tool_suggest:editdraft",{text:"🌐 Web Search",callback_data:"tool_suggest:web"}],
+    [{text:"✏️ Edit draft",callback_data:"tool_suggest:editdraft"},{text:"🌐 Web Search",callback_data:"tool_suggest:web"}],
     [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"▶️ More tools",callback_data:"tool_suggest:more"}],
     [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"},{text:"🖼️ Images",callback_data:"tool_suggest:image"}],
     [{text:"🎙️ Voice",callback_data:"tool_suggest:voice"},{text:"⏰ Reminders",callback_data:"tool_suggest:reminder"}],
