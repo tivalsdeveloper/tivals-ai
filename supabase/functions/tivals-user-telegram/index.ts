@@ -1840,7 +1840,8 @@ Deno.serve(async (req: Request) => {
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
     const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private");
-    const groupChat=chatType==="group"||chatType==="supergroup";\n    if(ownerPrivate)await telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"AI Assistant",web_app:{url:APP_URL}}}).catch(()=>{});
+    const groupChat=chatType==="group"||chatType==="supergroup";
+    if(ownerPrivate)await telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"AI Assistant",web_app:{url:APP_URL}}}).catch(()=>{});
     let activeGithubUploadSession:any=null;
     if(groupChat&&senderId&&(document||/^\/github(?:@[A-Za-z0-9_]+)?\s+done\s*$/i.test(text))){const {data:uploadSession}=await sb.from("telegram_pending_github_actions").select("*").eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","upsert_file").eq("status","running").contains("payload",{batch_upload:true}).gt("expires_at",new Date().toISOString()).order("created_at",{ascending:false}).limit(1).maybeSingle();activeGithubUploadSession=uploadSession||null;}
     const reminderConversation=Boolean(privateConversation||(groupChat&&paywallOwner&&senderId));
