@@ -491,12 +491,12 @@ async function ownerAccounts(token:string,chatId:number,tg:number,business="") {
 async function publicAppEntry(token:string,chatId:number,business="") {
   // Telegram only permits web_app keyboard buttons in private chats.
   // In groups, use a regular URL button to avoid BUTTON_TYPE_INVALID.
-  await telegram(token,"sendMessage",{chat_id:chatId,text:"📚 <b>OpenCS Community</b>\n\nOpen the community app. Bot management and connected accounts remain restricted to the bot owner.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open OpenCS Community",url:APP_URL}]]},...(business?{business_connection_id:business}:{})});
+  await telegram(token,"sendMessage",{chat_id:chatId,text:"🤖 <b>Tivals AI Assistant</b>\n\nOpen your AI assistant interface. Bot management and connected accounts remain restricted to the bot owner.",parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:"Open AI Assistant",web_app:{url:APP_URL}}]]},...(business?{business_connection_id:business}:{})});
 }
 async function ownerApp(token:string,chatId:number,business="",kind="personal") {
-  const businessBot=kind==="business",url=APP_URL,label="Bot Studio";
+  const businessBot=kind==="business",url=APP_URL,label="AI Assistant";
   await Promise.all([
-    telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"My Bot",web_app:{url}}}),
+    telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"AI Assistant",web_app:{url}}}),
     registerBotCommands(token,chatId)
   ]).catch(()=>{});
   await telegram(token,"sendMessage",{chat_id:chatId,text:`📱 <b>${label}</b>\n\nManage your ${businessBot?"business details, products, services and bot settings":"bot’s personality, learning subjects, voice and group settings"}.`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:`Open ${label}`,web_app:{url}}]]},...(business?{business_connection_id:business}:{})});
@@ -505,8 +505,8 @@ async function sendToolSuggestions(token:string,chatId:number,business="") {
   await telegram(token,"sendMessage",{chat_id:chatId,text:"Choose a Tivals AI tool:",reply_markup:{inline_keyboard:[
     [{text:"📧 Gmail",callback_data:"tool_suggest:gmail"},{text:"🐙 GitHub",callback_data:"tool_suggest:github"}],
     [{text:"🔎 Find email",callback_data:"tool_suggest:findemail"},{text:"📖 Read email",callback_data:"tool_suggest:reademail"}],
-    [{text:"↩️ Reply to email",callback_data:"tool_suggest:replyemail"},{text:"✉️ Send email",callback_data:"tool_suggest:sendemail"}],
-    [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"🔎 Web Search",callback_data:"tool_suggest:web"}],
+    [{text:"↩️ Reply to email",callback_data:"tool_suggest:replyemail"},{text:"✉️ Compose email",callback_data:"tool_suggest:composeemail"}],\n    [{text:"✏️ Edit draft",callback_data:"tool_suggest:editdraft"},{text:"🌐 Web Search",callback_data:"tool_suggest:web"}],
+    [{text:"🌐 Website",callback_data:"tool_suggest:website"},{text:"▶️ More tools",callback_data:"tool_suggest:more"}],
     [{text:"✨ Personal AI",callback_data:"tool_suggest:ai"},{text:"🖼️ Images",callback_data:"tool_suggest:image"}],
     [{text:"🎙️ Voice",callback_data:"tool_suggest:voice"},{text:"⏰ Reminders",callback_data:"tool_suggest:reminder"}],
     [{text:"💬 Chats",callback_data:"tool_suggest:chats"},{text:"🎓 Tutor",callback_data:"tool_suggest:tutor"}]
@@ -517,11 +517,11 @@ const TOOL_SUGGESTION_TEXT:Record<string,string>={
   findemail:"🔎 **Find an email**\n\nUse `/findemail application status` or `/findemail from:example@example.com`. The results include IDs for reading and replying.",
   reademail:"📖 **Read an email**\n\nFirst use `/findemail QUERY`, then copy its ID into `/reademail ID`.",
   replyemail:"↩️ **Reply to an email**\n\nFirst find and read the message. Then use `/replyemail ID | Thank them and ask for more details`. You must confirm before sending.",
-  sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",
+  sendemail:"✉️ **Write an email**\n\nUse `/sendemail to name@example.com about your request`. Review the draft and tap Send to confirm.",\n  composeemail:"✉️ **Compose an email**\n\nReply with the recipient and what you want to say, for example: `Draft an email to name@example.com explaining that I will send the project tomorrow.` I will show you a draft with **Edit**, **Send**, and **Cancel** buttons. Nothing is sent without confirmation.",\n  editdraft:"✏️ **Edit a draft**\n\nOpen the draft and tap **Edit**, then send the changes you want. Review the updated draft before using **Send** or **Cancel**.",\n  more:"More tools: `@youtube query`, `@image description`, `@voice`, `@reminder`, `@tutor`, `@website`. Use `/tools` to reopen this menu.",
   github:"🐙 **GitHub**\n\n`@github inspect owner/repository`\n`@github list files owner/repository`\n`@github read file owner/repository:path/to/file`\n`@github create file owner/repository:path/to/file containing ...`\n`@github add to file owner/repository:path/to/file | exact text`\n`@github fix code owner/repository:path/to/file to ...`\n`@github create issue in owner/repository | Title | Details`\n`@github create repository my-project as private`\n\nOnly the bot owner can access connected repositories.",
   shopify:"🛍️ **Shopify products**\n\nUse `/shopify` to see products, or `@shopify product name` to search your connected store. Connect the store in the Mini App first.",
   website:"🌐 **Website account**\n\nType: `@website check my connected website`",
-  web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",
+  web:"🔎 **Live web search**\n\nType: `@web latest AI news`\nOr: `/search latest AI news`",\n  youtube:"▶️ **YouTube search**\\n\\nUse `/youtube Python tutorial` or `@youtube Python tutorial`.",
   ai:"✨ **Personal AI**\n\nType: `@ai explain recursion`",
   image:"🖼️ **Image understanding**\n\nAttach a photo and add your question as the caption. I can describe it, read visible text and answer questions about it.",
   voice:"🎙️ **Voice**\n\nSend a Telegram voice note. I will transcribe it, answer naturally and return a spoken reply when voice replies are enabled.",
@@ -1809,7 +1809,7 @@ Deno.serve(async (req: Request) => {
         if (paywallOwner && callbackBusiness && !(await businessBelongsToOwner(token, callbackBusiness, paywallOwner))) {
           return json({ ok: true, route: "business-owner-rejected" });
         }
-        if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
+        if(tool==="github"&&callbackChat&&String(q?.message?.chat?.type||"")==="group" ){await reply(token,callbackChat,"🐙 Shared GitHub for this group\\nUse `/github status`, `/github repos`, or `/github connect`. Only a group administrator can connect or disconnect the shared account.",callbackBusiness);return json({ok:true,route:"group-github-tool-help"});}\n        if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
           try{const route=await sendPrivateGithubMenu(token,callbackChat,paywallOwner);return json({ok:true,route,tool});}
           catch(error){await reply(token,callbackChat,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
         }
@@ -1840,7 +1840,7 @@ Deno.serve(async (req: Request) => {
     const reminderConversation=Boolean(privateConversation||(groupChat&&paywallOwner&&senderId));
     if (!chatId || (!text&&!voice&&!photos.length&&!imageDocument&&!document) || message?.from?.is_bot || message?.sender_business_bot || message?.via_bot) return json({ ok: true });
     if(channelPost){
-      const mode=String(conn.channel_mode||"commands");
+      const mode=String(conn.channel_mode||"all");
       if(mode==="off")return json({ok:true,ignored:true,reason:"channel-disabled"});
       const addressed=/^\/(?:ask|lesson|explain|quiz|practice)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)||await groupMessageAllowed(token,connectorKey,message,text);
       if(mode!=="all"&&!addressed)return json({ok:true,ignored:true,reason:"channel-command-required"});
@@ -1907,7 +1907,7 @@ Deno.serve(async (req: Request) => {
     }
     const disconnect=text.match(/^\/disconnect_(gmail|github|tiktok|website)$/i);
     if(disconnect&&ownerPrivate){const provider=disconnect[1].toLowerCase();await oauth("disconnect",paywallOwner,provider);if(provider==="gmail")await sb.from("telegram_gmail_monitor_settings").update({enabled:false,last_error:"Gmail disconnected.",updated_at:new Date().toISOString()}).eq("telegram_user_id",paywallOwner);await reply(token,chatId,`✅ ${disconnect[1]} disconnected from your personal bot.`);return json({ok:true,route:"owner-disconnect",provider});}
-    if(/^\/(?:tools|help)$/i.test(text)){
+    if(/^\/(?:tools|help)$/i.test(text)){\n      if(groupChat){await telegram(token,"sendMessage",{chat_id:chatId,text:"Group Tools — choose a tool. Personal Gmail and personal connected accounts are not available in group chats.",reply_markup:{inline_keyboard:[[{text:"🌐 Web Search",callback_data:"tool_suggest:web"},{text:"🐙 Shared GitHub",callback_data:"tool_suggest:github"}],[{text:"📘 Explain",callback_data:"tool_suggest:ai"},{text:"🎓 Tutor",callback_data:"tool_suggest:tutor"}],[{text:"▶️ YouTube",callback_data:"tool_suggest:youtube"}]]}});return json({ok:true,route:"group-tools-menu"});}
       await reply(token,chatId,"**Personal bot commands and tools**\n\n**AI & learning**\n/start · /newchat · /chats · /lesson · /explain · /quiz · /practice\n\n**Current information & media**\n/search · /web · /youtube · /image · /voice on · /voice auto · /voice off\n\n**Personal organization**\n/remind · /reminders\n\n**Owner tools**\n/connect · /accounts · /gmail · /emails · /unread · /sendemail · /github · /website · /app\n/reminder email on · /reminder email off · /reminder status\n\n**@ tools**\n`@gmail` · `@github` · `@web` · `@youtube` · `@website` · `@ai` · `@image` · `@voice` · `@reminder` · `@tutor`\n\nSend only `@` to open the visual tool picker. Connected-account tools are private to the bot owner.");await sendToolSuggestions(token,chatId,businessConnectionId);return json({ok:true,route:"tools-help"});
     }
     const youtubeTool=parseToolRequest(text),youtubeSlash=text.match(/^\/youtube(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]+))?$/i),youtubeNatural=text.match(/^\s*(?:search|find)\s+(.+?)\s+on\s+youtube\s*[.!]?\s*$/i);
