@@ -1814,7 +1814,7 @@ Deno.serve(async (req: Request) => {
         if (paywallOwner && callbackBusiness && !(await businessBelongsToOwner(token, callbackBusiness, paywallOwner))) {
           return json({ ok: true, route: "business-owner-rejected" });
         }
-        if(tool==="github"&&callbackChat&&String(q?.message?.chat?.type||"")==="group" ){await reply(token,callbackChat,"🐙 Shared GitHub for this group\\nUse `/github status`, `/github repos`, or `/github connect`. Only a group administrator can connect or disconnect the shared account.",callbackBusiness);return json({ok:true,route:"group-github-tool-help"});}
+        if(tool==="github"&&callbackChat&&["group","supergroup"].includes(String(q?.message?.chat?.type||""))){await reply(token,callbackChat,"🐙 Shared GitHub for this group\\nUse `/github status`, `/github repos`, or `/github connect`. Only a group administrator can connect or disconnect the shared account.",callbackBusiness);return json({ok:true,route:"group-github-tool-help"});}
         if(tool==="github"&&callbackChat&&callbackChat===paywallOwner&&!callbackBusiness){
           try{const route=await sendPrivateGithubMenu(token,callbackChat,paywallOwner);return json({ok:true,route,tool});}
           catch(error){await reply(token,callbackChat,"GitHub menu unavailable: "+String((error as Error)?.message||error));return json({ok:true,route:"github-private-menu-error"});}
@@ -1840,7 +1840,7 @@ Deno.serve(async (req: Request) => {
     const chatType=String(message?.chat?.type||"private");
     const ownerPrivate=Boolean(paywallOwner&&senderId===paywallOwner&&chatType==="private"&&!businessConnectionId);
     const privateConversation=Boolean(paywallOwner&&senderId&&chatType==="private");
-    const groupChat=chatType==="group"||chatType==="supergroup";
+    const groupChat=chatType==="group"||chatType==="supergroup";\n    if(ownerPrivate)await telegram(token,"setChatMenuButton",{chat_id:chatId,menu_button:{type:"web_app",text:"AI Assistant",web_app:{url:APP_URL}}}).catch(()=>{});
     let activeGithubUploadSession:any=null;
     if(groupChat&&senderId&&(document||/^\/github(?:@[A-Za-z0-9_]+)?\s+done\s*$/i.test(text))){const {data:uploadSession}=await sb.from("telegram_pending_github_actions").select("*").eq("chat_id",chatId).eq("telegram_user_id",senderId).eq("action","upsert_file").eq("status","running").contains("payload",{batch_upload:true}).gt("expires_at",new Date().toISOString()).order("created_at",{ascending:false}).limit(1).maybeSingle();activeGithubUploadSession=uploadSession||null;}
     const reminderConversation=Boolean(privateConversation||(groupChat&&paywallOwner&&senderId));
@@ -1852,7 +1852,7 @@ Deno.serve(async (req: Request) => {
       if(mode!=="all"&&!addressed)return json({ok:true,ignored:true,reason:"channel-command-required"});
       text=text.replace(/^\/ask(?:@[A-Za-z0-9_]+)?\s*/i,"").trim();
     } else if(!update?.business_message&&chatType!=="private"){
-      const mode=String(conn.group_mode||"mentions");
+      const mode=String(conn.group_mode||"all");
       if(mode==="off")return json({ok:true,ignored:true,reason:"groups-disabled"});
       const groupCommand=/^\/(?:ask|lesson|explain|quiz|practice|grouphelp|web|search|github|challenge|remind|reminders)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text);
       if(mode!=="all"&&!groupCommand&&!activeGithubUploadSession&&!await hasPendingChallengeSession(chatId,senderId)&&!await groupMessageAllowed(token,connectorKey,message,text))return json({ok:true,ignored:true,reason:"group-message-not-addressed"});
