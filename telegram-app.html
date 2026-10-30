@@ -95,6 +95,72 @@ body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,
 button{font-weight:700}.pill{white-space:nowrap}
 @media(max-width:520px){.nav button{min-height:59px;font-size:11px}.nav svg{width:20px;height:20px}.bizRow{padding:13px 11px;grid-template-columns:44px 1fr auto}.bizIcon{width:44px;height:44px}.grid{gap:10px}.connector{min-height:176px}}
 </style>
+
+<style id="tivals-animation-pack">
+/* Tivals AI motion system — lightweight and Telegram-friendly */
+:root {
+  --tival-motion-fast: 180ms;
+  --tival-motion-medium: 320ms;
+  --tival-motion-ease: cubic-bezier(.2,.75,.25,1);
+}
+@keyframes tivalPageEnter {
+  from { opacity: 0; transform: translate3d(0, 10px, 0); filter: blur(3px); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); filter: blur(0); }
+}
+@keyframes tivalSoftFloat {
+  0%,100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes tivalGlowPulse {
+  0%,100% { box-shadow: 0 0 0 rgba(47,174,245,0); }
+  50% { box-shadow: 0 0 24px rgba(47,174,245,.2); }
+}
+@keyframes tivalDotPulse {
+  0%,100% { opacity: .45; transform: scale(.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@keyframes tivalShimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -150% 0; }
+}
+.page.active.tival-entering { animation: tivalPageEnter var(--tival-motion-medium) var(--tival-motion-ease) both; }
+.hero { animation: tivalPageEnter 420ms var(--tival-motion-ease) both; }
+.botProfilePhoto { animation: tivalSoftFloat 4.5s ease-in-out infinite; }
+.card, .bizRow, .listItem, .nav button, button {
+  transition: transform var(--tival-motion-fast) var(--tival-motion-ease),
+              border-color var(--tival-motion-fast) ease,
+              box-shadow var(--tival-motion-fast) ease,
+              background-color var(--tival-motion-fast) ease;
+}
+.card:active, .bizRow:active { transform: scale(.992); }
+button:active { transform: scale(.975); }
+button:focus-visible, .bizRow:focus-visible {
+  outline: 2px solid rgba(116,206,255,.9);
+  outline-offset: 3px;
+}
+.tival-live-dot {
+  display:inline-block; width:7px; height:7px; border-radius:50%;
+  background:#38d99b; margin-right:7px; vertical-align:middle;
+  animation:tivalDotPulse 1.6s ease-in-out infinite;
+}
+.tival-loading-line {
+  height:12px; border-radius:8px; margin:8px 0;
+  background:linear-gradient(90deg,rgba(255,255,255,.045) 20%,rgba(118,202,255,.16) 45%,rgba(255,255,255,.045) 70%);
+  background-size:220% 100%; animation:tivalShimmer 1.25s linear infinite;
+}
+.ai-loading { align-items:center; min-height:36px; }
+.ai-loading span { animation:tivalDotPulse .85s ease-in-out infinite; }
+.nav button.active { animation:tivalGlowPulse 1.8s ease-in-out 1; }
+@media (prefers-reduced-motion: reduce) {
+  *,*::before,*::after {
+    scroll-behavior:auto!important;
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.01ms!important;
+  }
+}
+</style>
+
 </head>
 <body>
 <div class="wrap">
@@ -240,6 +306,48 @@ async function refreshAfterReturn(){if(document.hidden||!tg?.initData)return;con
 function showLoadError(e){const message=String(e?.message||e||"Could not load the dashboard.");let box=document.getElementById("dashboardLoadError");if(!box){box=document.createElement("div");box.id="dashboardLoadError";box.className="card";document.querySelector(".wrap .top").after(box)}box.innerHTML='<b>Dashboard connection problem</b><p class="muted" id="loadErrorText"></p><button id="retryDashboard">Retry loading</button>';document.getElementById("loadErrorText").textContent=message;document.getElementById("retryDashboard").onclick=()=>load().catch(showLoadError)}
 if(personalMode){document.title="Personal Bot Studio · Tivals AI";document.getElementById("ownedBotConnector").hidden=true;document.querySelector("#personalProfileSlot").closest(".card").classList.add("personalStudioShell");document.querySelector(".top h1").textContent="Personal Bot Studio";document.querySelectorAll(".nav button").forEach(button=>{if(button.dataset.page==="business"){button.dataset.page="personal";button.innerHTML='<span data-icon="personal" aria-hidden="true"></span>Personal';button.querySelector("span").innerHTML=appIcon("personal");button.onclick=()=>go("personal")}if(button.dataset.page==="settings")button.style.display="none"});document.querySelector('#home .grid .card:nth-child(3) b').textContent="Your personal bot";document.querySelector('#home .grid .card:nth-child(3) p').textContent="Set its personality, teaching style, voice and group rules.";document.querySelector('#home .grid .card:nth-child(3) button').textContent="Manage personal bot";document.querySelector('#home .grid .card:nth-child(2) p').textContent="Link private Gmail and GitHub tools.";document.querySelector('#home .grid .card:nth-child(1) b').textContent="🎙️ Voice messages";document.querySelector('#home .grid .card:nth-child(1) p').textContent="Send a voice note in your personal bot chat for a spoken reply.";document.querySelector('#home .grid .card:nth-child(1) button').textContent="Open bot chat";document.querySelector('#home .grid .card:nth-child(1) button').onclick=openPersonalChat;personalProfileSlot.appendChild(botStudio);document.querySelector("#connectors .section").textContent="Your connected bot";document.querySelector("#plans .planCard b").textContent="Free forever";document.querySelector("#plans .planCard .muted").textContent="25 AI messages/day · 1 image/day, free forever.";const zone=document.createElement("div");zone.className="field";zone.innerHTML='<label for="personalTimezone">Reminder timezone</label><input id="personalTimezone" maxlength="80" placeholder="Africa/Johannesburg"><span class="hint">Used to schedule your personal reminders.</span>';saveBotProfileButton.before(zone);personalMonitorToggle.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();togglePersonalMonitor()}}}
 document.addEventListener("visibilitychange",refreshAfterReturn);window.addEventListener("focus",refreshAfterReturn);editorModal.addEventListener("click",e=>{if(e.target===editorModal)closeModal()});(async()=>{await load();if(location.hash==="#connectors")go("connectors");else if(location.hash==="#business"&&!personalMode){go("business");document.title="Tivals AI Business Bot Studio"}else if(personalMode)go("personal")})().catch(showLoadError);
+
+/* Tivals AI page transitions and accessible loading helpers */
+(function initTivalsMotion(){
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  const enter = (page) => {
+    if (!page || reduced) return;
+    page.classList.remove("tival-entering");
+    void page.offsetWidth;
+    page.classList.add("tival-entering");
+  };
+  const observePages = () => {
+    document.querySelectorAll(".page.active").forEach(enter);
+    const observer = new MutationObserver((changes) => {
+      for (const change of changes) {
+        if (change.type === "attributes" && change.target.classList?.contains("active")) {
+          if (change.target.classList.contains("page")) enter(change.target);
+        }
+      }
+    });
+    document.querySelectorAll(".page").forEach(page =>
+      observer.observe(page,{attributes:true,attributeFilter:["class"]})
+    );
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded",observePages,{once:true});
+  } else observePages();
+
+  window.tivalsShowLoading = function(container, rows=3) {
+    if (!container) return;
+    const count = Math.max(1,Math.min(6,Number(rows)||3));
+    container.setAttribute("aria-busy","true");
+    container.innerHTML = Array.from({length:count},(_,i)=>
+      '<div class="tival-loading-line" style="width:'+([92,74,84,66,88,72][i])+'%"></div>'
+    ).join("");
+  };
+  window.tivalsHideLoading = function(container) {
+    if (!container) return;
+    container.removeAttribute("aria-busy");
+    container.querySelectorAll(".tival-loading-line").forEach(node=>node.remove());
+  };
+})();
+
 </script>
 </body>
 </html>
