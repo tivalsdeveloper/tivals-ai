@@ -155,20 +155,30 @@ async function ownedBot(tg:number, requestedBotId?:number|null) {
   return data;
 }
 async function syncOwnedBotSetup(tg:number) {
-  const {data}=await sb.from("telegram_owned_bots")
-    .select("token_enc,webhook_secret_enc,is_active,bot_kind")
-    .eq("telegram_user_id",tg).eq("is_active",true).order("updated_at",{ascending:false}).limit(1).maybeSingle();
-  if(!data?.is_active||!data?.token_enc||!data?.webhook_secret_enc) return;
-  const [token,secret]=await Promise.all([decrypt(String(data.token_enc)),decrypt(String(data.webhook_secret_enc))]);
-  await botApi(token,"setWebhook",{
-    url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
-    secret_token:secret,
-    allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
-    drop_pending_updates:false
-  });
-  await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20261030-5"}}
-  }).catch(()=>null);
+  const {data:rows,error}=await sb.from("telegram_owned_bots")
+    .select("bot_id,token_enc,webhook_secret_enc,is_active,bot_kind")
+    .eq("telegram_user_id",tg).eq("is_active",true).order("updated_at",{ascending:false}).limit(50);
+  if(error)throw error;
+  const results=await Promise.all((rows||[]).map(async(row:any)=>{
+    if(!row?.token_enc||!row?.webhook_secret_enc)return {bot_id:row?.bot_id,ok:false};
+    try{
+      const [token,secret]=await Promise.all([decrypt(String(row.token_enc)),decrypt(String(row.webhook_secret_enc))]);
+      await botApi(token,"setWebhook",{
+        url:OWNED_BOT_WEBHOOK+"?tg_owner="+encodeURIComponent(String(tg)),
+        secret_token:secret,
+        allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
+        drop_pending_updates:false
+      });
+      await botApi(token,"setChatMenuButton",{
+        menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20261030-5"}}
+      });
+      return {bot_id:row.bot_id,ok:true};
+    }catch(e){
+      console.error("Owned bot setup sync failed",Number(row?.bot_id||0),String((e as Error)?.message||e));
+      return {bot_id:row?.bot_id,ok:false};
+    }
+  }));
+  return results;
 }
 
 function botCommands(purpose:string) {
