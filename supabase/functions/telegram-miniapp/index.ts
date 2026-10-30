@@ -157,7 +157,7 @@ async function ownedBot(tg:number, requestedBotId?:number|null) {
 async function syncOwnedBotSetup(tg:number) {
   const {data}=await sb.from("telegram_owned_bots")
     .select("token_enc,webhook_secret_enc,is_active,bot_kind")
-    .eq("telegram_user_id",tg).maybeSingle();
+    .eq("telegram_user_id",tg).eq("is_active",true).order("updated_at",{ascending:false}).limit(1).maybeSingle();
   if(!data?.is_active||!data?.token_enc||!data?.webhook_secret_enc) return;
   const [token,secret]=await Promise.all([decrypt(String(data.token_enc)),decrypt(String(data.webhook_secret_enc))]);
   await botApi(token,"setWebhook",{
@@ -300,7 +300,7 @@ async function validateInitData(initData:string) {
   try{candidate=JSON.parse(new URLSearchParams(initData).get("user")||"{}")}catch{}
   const tg=Number(candidate?.id||0);
   if(!tg) return null;
-  const {data}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).maybeSingle();
+  const {data}=await sb.from("telegram_owned_bots").select("token_enc,is_active").eq("telegram_user_id",tg).eq("is_active",true).order("updated_at",{ascending:false}).limit(1).maybeSingle();
   if(!data?.is_active||!data?.token_enc) return null;
   try{return await verifyInitData(initData,await decrypt(String(data.token_enc)))}catch{return null}
 }
