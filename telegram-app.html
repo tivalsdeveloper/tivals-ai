@@ -68,8 +68,8 @@ input:focus,textarea:focus,select:focus{border-color:rgba(66,180,246,.65);box-sh
 #toast{background:rgba(235,247,255,.96);color:#07111f;font-weight:800;box-shadow:0 14px 40px rgba(0,0,0,.3)}
 .voiceBack{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;padding:20px;background:radial-gradient(circle at 50% 32%,rgba(37,153,224,.28),transparent 24rem),rgba(3,10,19,.94);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)}
 .voiceBack.open{display:flex}.voicePanel{width:min(560px,100%);text-align:center}.voiceClose{position:absolute;right:18px;top:calc(14px + env(safe-area-inset-top));background:rgba(255,255,255,.08);color:#fff;box-shadow:none}.voiceOrb{width:154px;height:154px;margin:34px auto 22px;border-radius:50%;display:grid;place-items:center;font-size:52px;background:radial-gradient(circle at 35% 30%,#74d9ff,#258edc 50%,#2948c7);border:1px solid rgba(255,255,255,.28);box-shadow:0 0 0 16px rgba(55,167,235,.08),0 26px 70px rgba(23,132,211,.42);transition:transform .2s ease,box-shadow .2s ease}
-.voiceBack.listening .voiceOrb{animation:voicePulse 1.25s infinite}.voiceBack.thinking .voiceOrb{animation:voiceThink 1.1s linear infinite}.voiceStatus{font-size:22px;font-weight:850;letter-spacing:-.02em}.voiceHint{max-width:390px;margin:8px auto 20px}.voiceTranscript{display:grid;gap:10px;text-align:left;margin:22px auto;max-height:210px;overflow:auto}.voiceLine{padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.07);font-size:14px;line-height:1.45}.voiceLine.ai{background:rgba(41,151,240,.14);border:1px solid rgba(91,190,246,.16)}.endCall{background:linear-gradient(135deg,#e74555,#bd263d);min-width:150px}
-@keyframes voicePulse{50%{transform:scale(1.06);box-shadow:0 0 0 30px rgba(55,167,235,.04),0 30px 80px rgba(23,132,211,.5)}}@keyframes voiceThink{to{filter:hue-rotate(360deg)}}
+.voiceStatus{font-size:22px;font-weight:850;letter-spacing:-.02em}.voiceHint{max-width:390px;margin:8px auto 20px}.voiceTranscript{display:grid;gap:10px;text-align:left;margin:22px auto;max-height:210px;overflow:auto}.voiceLine{padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.07);font-size:14px;line-height:1.45}.voiceLine.ai{background:rgba(41,151,240,.14);border:1px solid rgba(91,190,246,.16)}.endCall{background:linear-gradient(135deg,#e74555,#bd263d);min-width:150px}
+}
 @media(max-width:520px){
   .wrap{padding:12px 12px 108px}.top{top:7px;border-radius:18px}.hero{padding:18px}.hero h2{font-size:24px}
   .card{padding:16px}.section{font-size:19px}.nav{bottom:6px;width:calc(100% - 12px)}.nav button{font-size:10px;padding:7px 1px}.nav span{font-size:18px}
@@ -96,25 +96,6 @@ button{font-weight:700}.pill{white-space:nowrap}
 @media(max-width:520px){.nav button{min-height:59px;font-size:11px}.nav svg{width:20px;height:20px}.bizRow{padding:13px 11px;grid-template-columns:44px 1fr auto}.bizIcon{width:44px;height:44px}.grid{gap:10px}.connector{min-height:176px}}
 </style>
 
-<style id="tivals-animation-pack">
-/* Low-cost motion for Telegram's embedded WebView */
-@keyframes tivalPageEnter {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.page.active { animation: tivalPageEnter 160ms ease-out both; }
-button, .bizRow { transition: transform 120ms ease-out; }
-button:active, .bizRow:active { transform: scale(.99); }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-  }
-}
-</style>
-
-
 <style id="telegram-low-memory-compat">
 /* Keep Telegram's embedded Android WebView responsive on low-memory devices. */
 @media (max-width: 768px) {
@@ -138,6 +119,19 @@ button:active, .bizRow:active { transform: scale(.99); }
 }
 </style>
 
+<style id="tivals-static-motion-off">
+/* Static UI for Telegram Android WebView: no animation or transition work. */
+*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+button:hover, button:active, .btn:hover, .btn:active,
+.bizRow:hover, .bizRow:active, .grid > .card:hover {
+  transform: none !important;
+  filter: none !important;
+}
+</style>
 </head>
 <body>
 <div class="wrap">
