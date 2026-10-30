@@ -671,6 +671,14 @@ async function reply(token: string, chatId: number, text: string, businessConnec
   const state=toolVoiceOutput.getStore();if(state)state.text=String(text||"");
 }
 
+
+function hiLabel(r:any){const n=String(r.customer_name||"Telegram customer").replace(/[\r\n]/g," ").slice(0,65),u=String(r.customer_username||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,30);return n+(u?" (@"+u+")":"");}
+async function hiList(token:string,b:number,bot:number){const q=await sb.from("telegram_human_inquiries").select("id,customer_name,customer_username,is_selected").eq("business_id",b).eq("bot_id",bot).eq("status","open").order("created_at",{ascending:false}).limit(30);if(q.error)throw q.error;const rows:any[][]=(q.data||[]).map((r:any)=>[{text:(r.is_selected?"● ":"")+hiLabel(r).slice(0,48),callback_data:"hi:open:"+r.id},{text:"End",callback_data:"hi:end:"+r.id}]);await telegram(token,"sendMessage",{chat_id:b,text:rows.length?"Open human inquiries — select a customer to talk.":"No open human inquiries.",reply_markup:{inline_keyboard:rows}});}
+async function hiCreate(token:string,b:number,bot:number,m:any){const cid=Number(m?.from?.id||0),chat=Number(m?.chat?.id||0);if(!cid||!chat)throw new Error("Customer identity unavailable.");let q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();if(q.error)throw q.error;let r=q.data;if(!r){q=await sb.from("telegram_human_inquiries").insert({business_id:b,bot_id:bot,customer_id:cid,customer_chat_id:chat,customer_name:String([m?.from?.first_name,m?.from?.last_name].filter(Boolean).join(" ")).slice(0,120),customer_username:String(m?.from?.username||"").slice(0,80)}).select("id").single();if(q.error&&q.error.code!=="23505")throw q.error;r=q.data;if(!r){q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();if(q.error||!q.data)throw q.error||new Error("Inquiry creation failed.");r=q.data;}}await telegram(token,"sendMessage",{chat_id:chat,text:"Your request has been sent to the business. A team member will select your inquiry and reply here.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});await hiList(token,b,bot);return r.id;}
+async function hiCallback(token:string,q:any,b:number,bot:number){const d=String(q?.data||""),chat=Number(q?.message?.chat?.id||0),actor=Number(q?.from?.id||0),own=d.match(/^hi:(open|end):([0-9a-f-]{36})$/i),cust=d.match(/^hi:customer_end:([0-9a-f-]{36})$/i);if(!own&&!cust)return null;await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});if(own){if(actor!==b||chat!==b||q?.message?.chat?.type!=="private")return "hi-denied";const id=own[2].toLowerCase(),got=await sb.from("telegram_human_inquiries").select("*").eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("status","open").maybeSingle();if(got.error)throw got.error;const r=got.data;if(!r){await telegram(token,"sendMessage",{chat_id:chat,text:"This inquiry is already closed."});return "hi-closed";}if(own[1]==="end"){await sb.from("telegram_human_inquiries").update({status:"ended",is_selected:false,ended_by:"business",ended_at:new Date().toISOString()}).eq("id",id).eq("status","open");await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:"The business has ended this inquiry."}).catch(()=>{});await hiList(token,b,bot);return "hi-ended-business";}await sb.from("telegram_human_inquiries").update({is_selected:false}).eq("business_id",b).eq("bot_id",bot).eq("status","open");const upd=await sb.from("telegram_human_inquiries").update({is_selected:true}).eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("status","open");if(upd.error)throw upd.error;await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:"A team member has joined your conversation. You can now chat directly with the business.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+id}]]}});await telegram(token,"sendMessage",{chat_id:b,text:"You are now talking to "+hiLabel(r)+". Reply here normally — no command is needed.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:end:"+id}]]}});await hiList(token,b,bot);return "hi-selected";}
+const id=cust[1].toLowerCase();if(actor===b||chat!==actor)return "hi-customer-denied";const got=await sb.from("telegram_human_inquiries").select("*").eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("customer_id",actor).eq("status","open").maybeSingle();if(got.error)throw got.error;const r=got.data;if(!r)return "hi-closed";await sb.from("telegram_human_inquiries").update({status:"ended",is_selected:false,ended_by:"customer",ended_at:new Date().toISOString()}).eq("id",id).eq("status","open");await telegram(token,"sendMessage",{chat_id:b,text:"Customer ended the inquiry with "+hiLabel(r)+"."}).catch(()=>{});await telegram(token,"sendMessage",{chat_id:chat,text:"You ended this inquiry."});return "hi-ended-customer";}
+async function hiRelay(token:string,b:number,bot:number,m:any,owner:boolean){const chat=Number(m?.chat?.id||0),sender=Number(m?.from?.id||0);let q:any;if(owner){if(sender!==b||chat!==b||m?.chat?.type!=="private"||String(m?.text||"").trim().startsWith("/"))return null;q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("status","open").eq("is_selected",true).maybeSingle();}else{q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("customer_id",sender).eq("customer_chat_id",chat).eq("status","open").eq("is_selected",true).maybeSingle();}if(q.error)throw q.error;const r=q.data;if(!r)return null;const body=String(m?.text||m?.caption||"").trim();if(owner){if(body)await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:body.slice(0,3900),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:r.customer_chat_id,from_chat_id:chat,message_id:m.message_id});return "hi-owner-message";}if(body)await telegram(token,"sendMessage",{chat_id:b,text:"Customer · "+hiLabel(r)+"\n"+body.slice(0,3700),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:b,from_chat_id:chat,message_id:m.message_id});return "hi-customer-message";}
+
 async function telegramBusinessProfile(tg:number) {
   if(!tg) return null;
   const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
@@ -898,12 +906,18 @@ async function businessCommerceReply(ownerId:number,text:string):Promise<{messag
   return {message:`${note}Here are some published options. Tap one to view details and buy. Which one interests you?`,products:selected};
 }
 
-function personalBotSystem(profile:any) {
+function personalBotSystem(profile:any,businessProfile:any=null) {
   const name=String(profile?.bot_name||profile?.account_label||"AI assistant").slice(0,64);
   const purpose=String(profile?.bot_purpose||"general");
   const subjects=Array.isArray(profile?.subjects)?profile.subjects.map((x:any)=>String(x).slice(0,80)).filter(Boolean).slice(0,20):[];
   const lines=[
     `Your name is ${name}. ${profile?.bot_kind==="business"?"Speak as a friendly, professional representative.":"Speak like a warm, easygoing friend in a real chat: relaxed, attentive, and natural."}`,
+    ...(profile?.bot_kind==="business"?[
+      `VERIFIED BUSINESS IDENTITY: The business you represent is "${String(businessProfile?.business_name||"").trim()||"not yet verified"}". Your assistant/bot name is "${name}". These are distinct identities.`,
+      "If asked which company you belong to, who you work for, who owns the business, or who you represent, answer only with the verified business_name above. Never substitute the software platform, bot developer, hosting provider, creator of the bot platform, or TivalsDeveloper for the customer's business.",
+      "TivalsDeveloper is not the business you represent unless the verified business_name is explicitly TivalsDeveloper. Do not claim affiliation with TivalsDeveloper or any other company based on who built or hosts this bot.",
+      "If VERIFIED BUSINESS IDENTITY says not yet verified, do not guess or name any company. Say you cannot verify the business identity from the information provided and offer to connect the customer with the business owner."
+    ]:[]),
     `Personality: ${String(profile?.personality||"Friendly, natural and helpful").slice(0,1000)}.`,
     `Use ${String(profile?.language||"the user's language").slice(0,60)==="auto"?"the same language as the user":String(profile.language).slice(0,60)}.`,
     "Follow the conversation instead of restarting with an introduction. Match the user’s energy and language, use contractions when appropriate, and avoid canned phrases, repeated greetings or automatic follow-up questions.",
@@ -977,7 +991,7 @@ async function callPersonalAiWithContext(profile:any,memoryKey:string,prompt:str
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45_000);
   try {
     const history=persistentHistory||memoryMessages(memoryKey);
-    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:businessProfile,messages:[{role:"system",content:personalBotSystem(profile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
+    const ai=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:businessProfile,messages:[{role:"system",content:personalBotSystem(profile,businessProfile)},...history,{role:"user",content:prompt}]}),signal:controller.signal});
     const result=await ai.json().catch(()=>({}));if(result?.code==="ALL_PROVIDERS_FAILED"||result?.code==="NO_PROVIDER_KEYS")throw new Error("I couldn't answer just now. Please try your message again in a little while.");if(!ai.ok||!result?.reply)throw new Error(result?.error||"The AI is temporarily unavailable.");
     const answer=String(result.reply);if(!persistentHistory)remember(memoryKey,prompt,answer);return answer;
   } finally { clearTimeout(timer); }
@@ -1303,7 +1317,7 @@ Deno.serve(async (req: Request) => {
 
   if (tgOwner > 0) {
     const {data,error}=await sb.from("telegram_owned_bots")
-      .select("token_enc,webhook_secret_enc,account_label,is_active,bot_kind,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
+      .select("bot_id,token_enc,webhook_secret_enc,account_label,is_active,bot_kind,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
       .eq("telegram_user_id",tgOwner).maybeSingle();
     if(error || !data || !data.is_active) return json({error:"Connector not found"},404);
     conn={
@@ -1349,6 +1363,7 @@ Deno.serve(async (req: Request) => {
     }
     if(update?.callback_query){
       const q=update.callback_query,data=String(q?.data||"");
+      if(paywallOwner&&conn.bot_kind==="business"){const route=await hiCallback(token,q,paywallOwner,Number(conn.bot_id||0));if(route)return json({ok:true,route});}
       // A callback_query ID is unique per press. Persist it to survive Telegram retries
       // across Edge Function instances, including concurrent deliveries.
       if(paywallOwner){
@@ -1765,7 +1780,7 @@ Deno.serve(async (req: Request) => {
           const kind=classify(option);
           if(kind&&['booking','handoff'].includes(kind.type)){
             if(kind.type==="booking")await showBookingPreview(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},profile,responseBusiness,option);
-            else await createBusinessRequest(token,paywallOwner,{text:option,chat:{id:responseChat},from:q.from},Number(update?.update_id),kind,profile,responseBusiness);
+            else await hiCreate(token,paywallOwner,Number(conn.bot_id||0),{text:option,chat:{id:responseChat},from:q.from});
             return json({ok:true,route:'business-menu-request'});
           }
           const history=conversation?await conversationHistory(conversation.id):undefined;
@@ -1889,6 +1904,7 @@ Deno.serve(async (req: Request) => {
     if (paywallOwner && update?.business_message && senderId === paywallOwner) {
       return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
     }
+    if(paywallOwner&&conn.bot_kind==="business"&&ownerPrivate&&text){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,true);if(relay)return json({ok:true,route:relay});}
     if(voice){
       const duration=Number(voice?.duration||0),size=Number(voice?.file_size||0);if(duration>90||size>6_000_000)throw new Error("Please keep voice messages under 90 seconds.");
       await telegram(token,"sendChatAction",{chat_id:chatId,action:"record_voice",...(businessConnectionId?{business_connection_id:businessConnectionId}:{})}).catch(()=>{});
@@ -2351,6 +2367,8 @@ Deno.serve(async (req: Request) => {
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
     const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner):null;
     const selectedMenuOption=businessProfile?matchingMenuOption(text,businessMenu(businessProfile)):null;
+    if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&classify(selectedMenuOption||text)?.type==="handoff"){const inquiryId=await hiCreate(token,paywallOwner,Number(conn.bot_id||0),message);await reply(token,chatId,"I have notified the business. A team member will join this chat when they select your inquiry.",businessConnectionId);return json({ok:true,route:"human-inquiry-created",inquiryId});}
+    if(businessProfile&&senderId!==paywallOwner&&chatType==="private"){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,false);if(relay)return json({ok:true,route:relay});}
     if(businessProfile&&/^\/(?:delete_my_data|privacy_delete)(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       if(!privateConversation)throw new Error('Open a private chat to request deletion.');
       const scope={business_id:paywallOwner,customer_id:senderId};
