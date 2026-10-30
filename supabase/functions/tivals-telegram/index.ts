@@ -273,6 +273,18 @@ async function offerManagedBotCreation(chatId:number|string,tg:number,kind:"pers
 }
 
 
+
+function startTypingRefresh(chatId:number|string,business?:string) {
+  const timer=setInterval(()=>{
+    void telegram("sendChatAction",{
+      chat_id:chatId,
+      action:"typing",
+      ...(business?{business_connection_id:business}:{})
+    }).catch(()=>{});
+  },4000);
+  return ()=>clearInterval(timer);
+}
+
 async function sendWelcomeDraft(chatId:number|string,business?:string) {
   // Telegram's animated draft preview is private-chat only.
   if (business) return;
@@ -2384,7 +2396,9 @@ Deno.serve(async (req: Request) => {
       await sendLimitReached(chatId, aiQuota.plan as PlanName, "ai", business);
       return json({ok:true,route:"ai-limit-normal"});
     }
-    const answer=await askTivalsAI(text,effectiveTg);
+    const stopTypingRefresh=startTypingRefresh(chatId,business);
+    let answer:string;
+    try{answer=await askTivalsAI(text,effectiveTg)}finally{stopTypingRefresh()}
     const voiceMode=String((await telegramSettings(effectiveTg)).voice_mode||"off");
     await sendFormatted(chatId,answer,business);
     if(voiceMode==="always")queueVoiceReply(chatId,answer,business);
