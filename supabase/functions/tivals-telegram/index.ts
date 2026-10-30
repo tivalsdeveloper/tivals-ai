@@ -233,7 +233,7 @@ async function connectManagedBot(ownerId:number,bot:any) {
     voice_mode:"off",
     welcome_message:kind==="business"?`Welcome to ${botName}. How can I help you with our products or services?`:`Hi! I am ${botName}. How can I help you today?`,
     updated_at:new Date().toISOString()
-  },{onConflict:"telegram_user_id"});
+  },{onConflict:"telegram_user_id,bot_id"});
   if(error)throw error;
 
   try {
@@ -243,6 +243,9 @@ async function connectManagedBot(ownerId:number,bot:any) {
       allowed_updates:["message","business_message","business_connection","callback_query","my_chat_member","channel_post","inline_query"],
       drop_pending_updates:false
     });
+    const webhook=await managedBotApi(token,"getWebhookInfo",{});
+    const expectedWebhook=SUPABASE_URL+"/functions/v1/tivals-user-telegram?tg_owner="+encodeURIComponent(String(ownerId));
+    if(String(webhook?.url||"")!==expectedWebhook)throw new Error("Telegram did not confirm the new bot webhook.");
     await Promise.all([
       managedBotApi(token,"setChatMenuButton",{menu_button:{type:"web_app",text:"My Bot",web_app:{url:PERSONAL_BOT_APP_URL}}}),
       managedBotApi(token,"setMyShortDescription",{short_description:kind==="business"?"Business AI assistant for products, services and support":"Personal AI assistant and tutor"}),
