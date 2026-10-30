@@ -1113,14 +1113,24 @@ function emailApprovalButtons(id:string,replyDraft=false){return {inline_keyboar
   [{text:"❌ Cancel",callback_data:`gmail_cancel:${id}`}]
 ]};}
 async function resumeEmailEdit(token:string,ownerId:number,chatId:number,text:string){
-  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,source_message_id,expires_at").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
+  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,body,source_message_id,expires_at").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
   if(!editing)return false;
   if(text==="/cancel"){
     await sb.from("telegram_pending_emails").delete().eq("id",editing.id).eq("telegram_user_id",ownerId).eq("status","editing");
     await reply(token,chatId,"❌ Email draft cancelled. Nothing was sent.");return true;
   }
   if(text.startsWith("/"))return false;
-  let revised;try{revised=parseEmailRevision(text,editing.subject);}catch(e){await reply(token,chatId,String((e as Error).message));return true;}
+  if(!text.trim()||text.length>3000){await reply(token,chatId,"Describe what you want changed or added (up to 3,000 characters).");return true;}
+  const {data:profile}=await sb.from("telegram_owned_bots").select("bot_name,account_label,bot_kind,bot_purpose,personality,language,subjects").eq("telegram_user_id",ownerId).maybeSingle();
+  let revised;try{
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+    try{
+      const prompt=["Revise the existing email using the user's change instructions. Make only requested changes and preserve everything else. You may update the subject if requested. Never change the recipient. Return only valid JSON with string fields: to, subject, body.","RECIPIENT (must remain exactly): "+editing.recipient,"CURRENT SUBJECT: "+editing.subject,"CURRENT EMAIL BODY:\n"+toolText(editing.body,8000),"USER CHANGE INSTRUCTIONS:\n"+toolText(text,3000)].join("\n\n");
+      const r=await fetch(AI_URL,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${SERVICE_KEY}`},body:JSON.stringify({model:"auto",business_profile:null,messages:[{role:"system",content:personalBotSystem(profile||{})},{role:"user",content:prompt}]}),signal:controller.signal});
+      const d=await r.json().catch(()=>({}));if(!r.ok||!d?.reply)throw new Error(d?.error||"The requested changes could not be applied.");
+      revised=parseEmailDraft(String(d.reply));revised.recipient=editing.recipient;
+    }finally{clearTimeout(timer);}
+  }catch(e){await reply(token,chatId,"I couldn't apply those changes. Try describing them more clearly. "+String((e as Error).message));return true;}
   const {data:updated,error:updateError}=await sb.from("telegram_pending_emails").update({...revised,status:"pending"}).eq("id",editing.id).eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,source_message_id").maybeSingle();if(updateError)throw updateError;
   if(!updated){await reply(token,chatId,"This email draft expired. Nothing was sent.");return true;}
   await telegram(token,"sendMessage",{chat_id:chatId,text:`📧 <b>Review edited email</b>\n\n<b>To:</b> ${esc(updated.recipient)}\n<b>Subject:</b> ${esc(updated.subject)}\n\n${esc(toolText(updated.body,2400))}\n\n<i>Nothing is sent until you tap Send.</i>`,parse_mode:"HTML",reply_markup:emailApprovalButtons(updated.id,Boolean(updated.source_message_id))});
@@ -1178,14 +1188,14 @@ async function handleEmailConfirmation(token:string,q:any,ownerId:number,action:
     await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:editing?"Edit your draft in chat.":"Draft unavailable."}).catch(()=>{});
     if(!editing)return"gmail-edit-unavailable";
     await telegram(token,"editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
-    await reply(token,chatId,"✏️ Send the revised email body in your next message. To change the subject too, start with `Subject: Your new subject` on its own line, followed by the body. Send /cancel to discard. Nothing will be sent until you approve the updated preview.");
+    await reply(token,chatId,"✏️ Tell me what you want changed or added to this email in your next message. For example: “Make it more formal and add a deadline of Friday.” Send /cancel to discard. Nothing will be sent until you approve the updated preview.");
     return"gmail-editing";
   }
   if(action==="cancel"){if(p.source_message_id)await sb.from("telegram_gmail_monitor_events").update({status:"ignored",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("gmail_message_id",p.source_message_id);await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Email cancelled."}).catch(()=>{});await telegram(token,"editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});await reply(token,chatId,"❌ **Email cancelled.** Nothing was sent.");return"gmail-cancelled";}
   const {data:claimed,error:claimError}=await sb.from("telegram_pending_emails").update({status:"sending"}).eq("id",id).eq("telegram_user_id",tg).eq("status","pending").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,gmail_thread_id,in_reply_to,email_references,source_message_id").maybeSingle();if(claimError)throw claimError;
   if(!claimed){await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"This email is already being processed.",show_alert:true}).catch(()=>{});return"gmail-confirm-duplicate";}
   await telegram(token,"answerCallbackQuery",{callback_query_id:q.id,text:"Sending email…"}).catch(()=>{});await telegram(token,"editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
-  try{await oauth("gmail_send",tg,"gmail",{recipient:claimed.recipient,subject:claimed.subject,email_body:claimed.body,thread_id:claimed.gmail_thread_id||"",in_reply_to:claimed.in_reply_to||"",references:claimed.email_references||""});if(claimed.source_message_id)await sb.from("telegram_gmail_monitor_events").update({status:"replied",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("gmail_message_id",claimed.source_message_id);await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`✅ **Email sent**\n\nTo: ${claimed.recipient}\nSubject: ${claimed.subject}`);return"gmail-sent";}catch(e){await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,"⚠️ The email could not be confirmed as sent. Check Gmail Sent before trying again.\n\n"+String((e as Error)?.message||e));return"gmail-send-failed";}
+  try{const {data:botProfile}=await sb.from("telegram_owned_bots").select("bot_name,account_label").eq("telegram_user_id",tg).maybeSingle();await oauth("gmail_send",tg,"gmail",{recipient:claimed.recipient,subject:claimed.subject,email_body:claimed.body,display_name:String(botProfile?.bot_name||botProfile?.account_label||"AI assistant").slice(0,64),thread_id:claimed.gmail_thread_id||"",in_reply_to:claimed.in_reply_to||"",references:claimed.email_references||""});if(claimed.source_message_id)await sb.from("telegram_gmail_monitor_events").update({status:"replied",updated_at:new Date().toISOString()}).eq("telegram_user_id",tg).eq("gmail_message_id",claimed.source_message_id);await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,`✅ **Email sent**\n\nTo: ${claimed.recipient}\nSubject: ${claimed.subject}`);return"gmail-sent";}catch(e){await sb.from("telegram_pending_emails").delete().eq("id",id).eq("telegram_user_id",tg);await reply(token,chatId,"⚠️ The email could not be confirmed as sent. Check Gmail Sent before trying again.\n\n"+String((e as Error)?.message||e));return"gmail-send-failed";}
 }
 async function sendYouTubeSearch(token:string,chatId:number,query:string,business="") {
   const r=await fetch(YOUTUBE_SEARCH_URL,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({query,maxResults:6})});
