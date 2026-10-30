@@ -272,6 +272,32 @@ async function offerManagedBotCreation(chatId:number|string,tg:number,kind:"pers
   });
 }
 
+
+async function sendWelcomeDraft(chatId:number|string,business?:string) {
+  // Telegram's animated draft preview is private-chat only.
+  if (business) return;
+  const draftId = Math.max(1,Date.now()%2147483647);
+  const frames = [
+    "Preparing your Tivals AI workspace",
+    "Preparing your Tivals AI workspace…",
+    "<b>Tivals AI</b> is ready."
+  ];
+  try {
+    for (const text of frames) {
+      await telegram("sendMessageDraft",{
+        chat_id:chatId,
+        draft_id:draftId,
+        text,
+        parse_mode:"HTML"
+      });
+      await new Promise(resolve=>setTimeout(resolve,320));
+    }
+  } catch (error) {
+    // Older Bot API deployments may not support animated drafts.
+    console.warn("Tivals welcome draft unavailable; using standard welcome.",String((error as Error)?.message||error));
+  }
+}
+
 async function sendBotTypeChooser(chatId:number|string,business?:string) {
   const payload:any={
     chat_id:chatId,
@@ -2176,7 +2202,7 @@ Deno.serve(async (req: Request) => {
         await telegram("setMyCommands",{commands:[{command:"github",description:"Connect or browse group GitHub"},{command:"remind",description:"Set a group reminder"},{command:"reminders",description:"List your group reminders"}],scope:{type:"all_group_chats"}}).catch(()=>{});
       }
       await setMiniAppMenu(chatId);
-      if(String(message?.chat?.type||"")==="private"){await sendBotTypeChooser(chatId,business);return json({ok:true,route:"bot-welcome"});}
+      if(String(message?.chat?.type||"")==="private"){await sendWelcomeDraft(chatId,business);await sendBotTypeChooser(chatId,business);return json({ok:true,route:"bot-welcome"});}
       await sendFormatted(chatId, [
         "👋 **Welcome to Tivals AI**",
         "",
