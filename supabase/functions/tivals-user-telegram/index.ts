@@ -1347,15 +1347,24 @@ Deno.serve(async (req: Request) => {
   let paywallOwner=0;
 
   if (tgOwner > 0) {
-    const {data,error}=await sb.from("telegram_owned_bots")
+    const {data:ownedRows,error}=await sb.from("telegram_owned_bots")
       .select("bot_id,token_enc,webhook_secret_enc,account_label,is_active,bot_kind,bot_name,bot_purpose,personality,custom_instructions,subjects,education_level,teaching_style,language,welcome_message,voice_mode,group_mode,channel_mode,owner_only_invites,timezone")
-      .eq("telegram_user_id",tgOwner).maybeSingle();
-    if(error || !data || !data.is_active) return json({error:"Connector not found"},404);
+      .eq("telegram_user_id",tgOwner).eq("is_active",true).order("updated_at",{ascending:false}).limit(50);
+    if(error || !ownedRows?.length) return json({error:"Connector not found"},404);
+    const suppliedSecret=req.headers.get("x-telegram-bot-api-secret-token")||"";
+    let matched:any=null;
+    for(const row of ownedRows){
+      try{
+        const candidate=await decrypt(String(row.webhook_secret_enc||""));
+        if(candidate&&secureEqual(suppliedSecret,candidate)){matched=row;break;}
+      }catch(e){console.error("Owned bot secret could not be decrypted",Number(row.bot_id||0));}
+    }
+    if(!matched)return json({error:"Unauthorized bot webhook"},401);
     conn={
-      ...data,
-      access_token_enc:data.token_enc,
-      refresh_token_enc:data.webhook_secret_enc,
-      account_label:data.account_label
+      ...matched,
+      access_token_enc:matched.token_enc,
+      refresh_token_enc:matched.webhook_secret_enc,
+      account_label:matched.account_label
     };
     paywallOwner=tgOwner;
   } else {
