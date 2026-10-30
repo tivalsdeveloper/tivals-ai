@@ -341,6 +341,7 @@ const plans = {
 
 async function getDashboard(tg:number, requestedBotId?:number|null) {
   const today = new Date().toISOString().slice(0,10);
+  await syncOwnedBotSetup(tg);
   const [bot,bots] = await Promise.all([ownedBot(tg,requestedBotId),ownedBots(tg)]);
   const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection},{data:whatsappConnection}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
