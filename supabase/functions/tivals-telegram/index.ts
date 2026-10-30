@@ -19,6 +19,7 @@ const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: fal
 const seenUpdates = new Map<number, number>();
 const chatBuckets = new Map<string, { count:number; resetAt:number }>();
 let mainBotIdentity:{id:number;username:string}|null=null;
+let mainBotDisplayNameCache="";
 
 function acceptUpdate(id:number) {
   const now=Date.now(),expires=seenUpdates.get(id)||0;
@@ -346,6 +347,10 @@ async function telegramVoice(chatId:number|string, audio:Uint8Array, reply:strin
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d?.ok === false) throw new Error(d?.description || `Telegram sendVoice failed (${r.status}).`);
   return d;
+}
+async function mainBotDisplayName() {
+  if(!mainBotDisplayNameCache){const d=await telegram("getMe",{});mainBotDisplayNameCache=String(d?.result?.first_name||d?.result?.username||"Tivals AI").slice(0,64);}
+  return mainBotDisplayNameCache;
 }
 async function groupMessageAllowed(message:any,text:string) {
   if(String(message?.chat?.type||"private")==="private")return true;
@@ -1199,11 +1204,13 @@ async function showEmailConfirmation(chatId: number|string, tg: number, request:
 }
 
 async function resumeEmailEdit(ownerId:number,chatId:number,text:string){
-  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,source_message_id").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
+  const {data:editing,error}=await sb.from("telegram_pending_emails").select("id,recipient,subject,body,source_message_id").eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).order("expires_at",{ascending:false}).limit(1).maybeSingle();if(error)throw error;
   if(!editing)return false;
   if(text==="/cancel"){await sb.from("telegram_pending_emails").delete().eq("id",editing.id).eq("telegram_user_id",ownerId).eq("status","editing");await sendFormatted(chatId,"❌ Email draft cancelled. Nothing was sent.");return true;}
   if(text.startsWith("/"))return false;
-  let revised;try{revised=parseEmailRevision(text,editing.subject);}catch(e){await sendFormatted(chatId,String((e as Error).message));return true;}
+  if(!text.trim()||text.length>3000){await sendFormatted(chatId,"Describe what you want changed or added (up to 3,000 characters).");return true;}
+  const revisionPrompt=["Revise the existing email using the user's change instructions. Make only requested changes and preserve everything else. You may update the subject if requested. Never change the recipient. Return only valid JSON with string fields: to, subject, body.","RECIPIENT (must remain exactly): "+editing.recipient,"CURRENT SUBJECT: "+editing.subject,"CURRENT EMAIL BODY:\\n"+toolText(editing.body,8000),"USER CHANGE INSTRUCTIONS:\\n"+toolText(text,3000)].join("\\n\\n");
+  let revised;try{revised=parseEmailDraft(await askTivalsAI(revisionPrompt,ownerId));revised.recipient=editing.recipient;}catch(e){await sendFormatted(chatId,"I couldn't apply those changes. Try describing them more clearly. "+String((e as Error).message));return true;}
   const {data:updated,error:updateError}=await sb.from("telegram_pending_emails").update({...revised,status:"pending"}).eq("id",editing.id).eq("telegram_user_id",ownerId).eq("chat_id",chatId).eq("status","editing").gt("expires_at",new Date().toISOString()).select("id,recipient,subject,body,source_message_id").maybeSingle();if(updateError)throw updateError;
   if(!updated){await sendFormatted(chatId,"This email draft expired. Nothing was sent.");return true;}
   await telegram("sendMessage",{chat_id:chatId,text:`📧 <b>Review edited email</b>\n\n<b>To:</b> ${esc(updated.recipient)}\n<b>Subject:</b> ${esc(updated.subject)}\n\n${esc(toolText(updated.body,2400))}\n\n<i>Nothing is sent until you tap Send.</i>`,parse_mode:"HTML",reply_markup:{inline_keyboard:[[{text:updated.source_message_id?"✅ Send reply":"✅ Send email",callback_data:`gmail_send:${updated.id}`},{text:"✏️ Edit",callback_data:`gmail_edit:${updated.id}`}],[{text:"❌ Cancel",callback_data:`gmail_cancel:${updated.id}`}]]}});
@@ -1236,7 +1243,7 @@ async function handleEmailConfirmation(q: any, action: "send" | "cancel" | "edit
     await telegram("answerCallbackQuery",{callback_query_id:q.id,text:editing?"Edit your draft in chat.":"Draft unavailable."}).catch(()=>{});
     if(!editing)return"gmail-edit-unavailable";
     await telegram("editMessageReplyMarkup",{chat_id:chatId,message_id:q.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
-    await sendFormatted(chatId,"✏️ Send the revised email body in your next message. To change the subject too, start with `Subject: Your new subject` on its own line, followed by the body. Send /cancel to discard. Nothing will be sent until you approve the updated preview.");return"gmail-editing";
+    await sendFormatted(chatId,"✏️ Tell me what you want changed or added to this email in your next message. For example: “Make it more formal and add a deadline of Friday.” Send /cancel to discard. Nothing will be sent until you approve the updated preview.");return"gmail-editing";
   }
   if (action === "cancel") {
     await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
@@ -1259,7 +1266,7 @@ async function handleEmailConfirmation(q: any, action: "send" | "cancel" | "edit
   await telegram("answerCallbackQuery", { callback_query_id: q.id, text: "Sending email…" }).catch(()=>{});
   await telegram("editMessageReplyMarkup", { chat_id: chatId, message_id: q.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(()=>{});
   try {
-    await oauthCall("gmail_send", tg, "gmail", { recipient: claimed.recipient, subject: claimed.subject, email_body: claimed.body,thread_id:claimed.gmail_thread_id||"",in_reply_to:claimed.in_reply_to||"",references:claimed.email_references||"" });
+    await oauthCall("gmail_send", tg, "gmail", { recipient: claimed.recipient, subject: claimed.subject, email_body: claimed.body, display_name: await mainBotDisplayName(), thread_id:claimed.gmail_thread_id||"",in_reply_to:claimed.in_reply_to||"",references:claimed.email_references||"" });
     await sb.from("telegram_pending_emails").delete().eq("id", id).eq("telegram_user_id", tg);
     await sendFormatted(chatId, `✅ **Email sent**\n\nTo: ${claimed.recipient}\nSubject: ${claimed.subject}`);
     return "gmail-sent";
