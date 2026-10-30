@@ -253,7 +253,7 @@ async function connectOwnedBot(tg:number,rawToken:string,botKind:string) {
     webhook_secret_enc:await encrypt(secret),
     is_active:true,bot_kind:botKind,
     updated_at:new Date().toISOString()
-  },{onConflict:"telegram_user_id"});
+  },{onConflict:"telegram_user_id,bot_id"});
   if(error) {
     if(String(error.code||"")==="23505") {
       throw new Error("This Telegram bot is already connected to another Tivals AI account.");
