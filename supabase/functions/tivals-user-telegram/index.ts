@@ -2367,7 +2367,7 @@ Deno.serve(async (req: Request) => {
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
     const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner):null;
     const selectedMenuOption=businessProfile?matchingMenuOption(text,businessMenu(businessProfile)):null;
-    if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&classify(selectedMenuOption||text)?.type==="handoff"){const inquiryId=await hiCreate(token,paywallOwner,Number(conn.bot_id||0),message);await reply(token,chatId,"I have notified the business. A team member will join this chat when they select your inquiry.",businessConnectionId);return json({ok:true,route:"human-inquiry-created",inquiryId});}
+    if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&classify(selectedMenuOption||text)?.type==="handoff"){const inquiryId=await hiCreate(token,paywallOwner,Number(conn.bot_id||0),message);return json({ok:true,route:"human-inquiry-created",inquiryId});}
     if(businessProfile&&senderId!==paywallOwner&&chatType==="private"){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,false);if(relay)return json({ok:true,route:relay});}
     if(businessProfile&&/^\/(?:delete_my_data|privacy_delete)(?:@[A-Za-z0-9_]+)?$/i.test(text)){
       if(!privateConversation)throw new Error('Open a private chat to request deletion.');
