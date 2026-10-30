@@ -322,17 +322,17 @@ const plans = {
 
 async function getDashboard(tg:number) {
   const today = new Date().toISOString().slice(0,10);
-  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,bot,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection},{data:whatsappConnection}] = await Promise.all([
+  const bot = await ownedBot(tg);
+  const [{data:sub},{data:usage},{data:settings},{data:businessProfile},{data:catalog},{data:specialists},{data:faqs},connections,admin,{data:websiteWidget},{data:shopifyOwner},{data:shopifyConnection},{data:whatsappConnection}] = await Promise.all([
     sb.from("telegram_subscriptions").select("plan,status,stars_amount,is_recurring,subscription_expiration_date").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_daily_usage").select("ai_messages,image_generations").eq("telegram_user_id",tg).eq("usage_date",today).maybeSingle(),
     sb.from("telegram_user_settings").select("response_style,notifications,tool_suggestions").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").eq("telegram_user_id",tg).maybeSingle(),
+    sb.from("telegram_bot_business_profiles").select("business_name,assistant_name,business_details,products_services,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").eq("telegram_user_id",tg).eq("bot_id",Number(bot?.bot_id||0)).maybeSingle(),
     sb.from("telegram_business_catalog").select("id,item_type,name,price,currency,details,available,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_specialists").select("id,first_name,last_name,about,services,active,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     sb.from("telegram_business_faqs").select("id,question,answer,sort_order").eq("telegram_user_id",tg).order("sort_order").order("created_at"),
     oauth("status",tg).catch(()=>({connections:[]})),
     isAdmin(tg),
-    ownedBot(tg),
     sb.from("telegram_website_widgets").select("public_key,allowed_domains,welcome_message,position,is_active,request_count,last_used_at,updated_at").eq("telegram_user_id",tg).maybeSingle(),
     sb.from("telegram_owned_bots").select("telegram_user_id").ilike("username","Tivalsdeveloper1Bot").maybeSingle(),
     sb.from("telegram_oauth_connections").select("provider,account_label").eq("telegram_user_id",tg).eq("provider","shopify").maybeSingle(),
@@ -350,7 +350,7 @@ async function getDashboard(tg:number) {
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
     business_profile: businessProfile || {
-      business_name:"",assistant_name:"Tivals AI",business_details:"",industry:"other",behavior:"friendly",email:"",phone:"",address:"",
+      business_name:"",assistant_name:"Business Assistant",business_details:"",products_services:"",industry:"other",behavior:"friendly",email:"",phone:"",address:"",
       website_url:"",payment_options:"",business_hours:{},booking_reminders:false,
       booking_confirmations:false,booking_instructions:"",updated_at:null
     },
@@ -655,16 +655,20 @@ Deno.serve(async req => {
       if(websiteUrl && !/^https?:\/\//i.test(websiteUrl)) return json({error:"Website must start with https:// or http://."},400);
       const hours=body?.business_hours && typeof body.business_hours==="object" && !Array.isArray(body.business_hours) ? body.business_hours : {};
       if(JSON.stringify(hours).length>5000) return json({error:"Business hours are too long."},400);
+      const {data:bot,error:botError}=await sb.from("telegram_owned_bots").select("bot_id,bot_kind,is_active").eq("telegram_user_id",tg).maybeSingle();
+      if(botError)throw botError;
+      if(!bot?.is_active||bot.bot_kind!=="business"||!bot.bot_id)return json({error:"Connect an active Business bot before saving its business profile."},400);
       const row={
-        telegram_user_id:tg,business_name:businessName,assistant_name:assistantName,business_details:businessDetails,industry,behavior,languages:String(body?.languages||"").trim().slice(0,300),staff_contact:String(body?.staff_contact||"").trim().slice(0,300),
+        telegram_user_id:tg,bot_id:Number(bot.bot_id),business_name:businessName,assistant_name:assistantName,business_details:businessDetails,
+        products_services:String(body?.products_services||"").trim().slice(0,12000),industry,behavior,languages:String(body?.languages||"").trim().slice(0,300),staff_contact:String(body?.staff_contact||"").trim().slice(0,300),
         email:String(body?.email||"").trim().slice(0,160),phone:String(body?.phone||"").trim().slice(0,60),
         address:String(body?.address||"").trim().slice(0,500),website_url:websiteUrl,
         payment_options:String(body?.payment_options||"").trim().slice(0,1000),business_hours:hours,
         booking_reminders:Boolean(body?.booking_reminders),booking_confirmations:Boolean(body?.booking_confirmations),confirmation_mode:body?.confirmation_mode==="auto"?"auto":"manual",response_minutes:Math.max(5,Math.min(1440,Number(body?.response_minutes)||120)),
         booking_instructions:String(body?.booking_instructions||"").trim().slice(0,2000),updated_at:new Date().toISOString()
       };
-      const {data,error}=await sb.from("telegram_business_profiles").upsert(row,{onConflict:"telegram_user_id"})
-        .select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").single();
+      const {data,error}=await sb.from("telegram_bot_business_profiles").upsert(row,{onConflict:"bot_id"})
+        .select("business_name,assistant_name,business_details,products_services,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions,updated_at").single();
       if(error) throw error;
       return json({ok:true,business_profile:data});
     }
