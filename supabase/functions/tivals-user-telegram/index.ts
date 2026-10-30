@@ -674,7 +674,43 @@ async function reply(token: string, chatId: number, text: string, businessConnec
 
 function hiLabel(r:any){const n=String(r.customer_name||"Telegram customer").replace(/[\r\n]/g," ").slice(0,65),u=String(r.customer_username||"").replace(/^@/,"").replace(/[^A-Za-z0-9_]/g,"").slice(0,30);return n+(u?" (@"+u+")":"");}
 async function hiList(token:string,b:number,bot:number){const q=await sb.from("telegram_human_inquiries").select("id,customer_name,customer_username,is_selected").eq("business_id",b).eq("bot_id",bot).eq("status","open").order("created_at",{ascending:false}).limit(30);if(q.error)throw q.error;const rows:any[][]=(q.data||[]).map((r:any)=>[{text:(r.is_selected?"● ":"")+hiLabel(r).slice(0,48),callback_data:"hi:open:"+r.id},{text:"End",callback_data:"hi:end:"+r.id}]);await telegram(token,"sendMessage",{chat_id:b,text:rows.length?"Open human inquiries — select a customer to talk.":"No open human inquiries.",reply_markup:{inline_keyboard:rows}});}
-async function hiCreate(token:string,b:number,bot:number,m:any){const cid=Number(m?.from?.id||0),chat=Number(m?.chat?.id||0);if(!cid||!chat)throw new Error("Customer identity unavailable.");let q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();if(q.error)throw q.error;let r=q.data;if(!r){q=await sb.from("telegram_human_inquiries").insert({business_id:b,bot_id:bot,customer_id:cid,customer_chat_id:chat,customer_name:String([m?.from?.first_name,m?.from?.last_name].filter(Boolean).join(" ")).slice(0,120),customer_username:String(m?.from?.username||"").slice(0,80)}).select("id").single();if(q.error&&q.error.code!=="23505")throw q.error;r=q.data;if(!r){q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();if(q.error||!q.data)throw q.error||new Error("Inquiry creation failed.");r=q.data;}}await telegram(token,"sendMessage",{chat_id:chat,text:"Your request has been sent to the business. A team member will select your inquiry and reply here.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});await hiList(token,b,bot);return r.id;}
+async function hiCreate(token:string,b:number,bot:number,m:any){
+  const cid=Number(m?.from?.id||0),chat=Number(m?.chat?.id||0);
+  if(!cid||!chat)throw new Error("Customer identity unavailable.");
+  let q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();
+  if(q.error)throw q.error;
+  let r=q.data;
+  if(!r){
+    q=await sb.from("telegram_human_inquiries").insert({
+      business_id:b,bot_id:bot,customer_id:cid,customer_chat_id:chat,
+      customer_name:String([m?.from?.first_name,m?.from?.last_name].filter(Boolean).join(" ")).slice(0,120),
+      customer_username:String(m?.from?.username||"").slice(0,80)
+    }).select("id").single();
+    if(q.error&&q.error.code!=="23505")throw q.error;
+    r=q.data;
+    if(!r){
+      q=await sb.from("telegram_human_inquiries").select("id").eq("business_id",b).eq("bot_id",bot).eq("customer_id",cid).eq("status","open").maybeSingle();
+      if(q.error||!q.data)throw q.error||new Error("Inquiry creation failed.");
+      r=q.data;
+    }
+  }
+  // The inquiry is already durable. Telegram delivery failures must never turn it into a failed request.
+  try{
+    await telegram(token,"sendMessage",{chat_id:chat,text:"Your request has been saved and sent to the business. A team member will select your inquiry and reply here.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});
+  }catch(error){
+    console.error("Human inquiry customer confirmation failed",JSON.stringify({businessId:b,botId:bot,inquiryId:r.id,error:String((error as Error)?.message||error)}));
+    try{await telegram(token,"sendMessage",{chat_id:chat,text:"Your request has been saved. The business will follow up here."});}
+    catch(fallbackError){console.error("Human inquiry customer fallback failed",JSON.stringify({businessId:b,botId:bot,inquiryId:r.id,error:String((fallbackError as Error)?.message||fallbackError)}));}
+  }
+  try{
+    await hiList(token,b,bot);
+  }catch(error){
+    console.error("Human inquiry owner list delivery failed",JSON.stringify({businessId:b,botId:bot,inquiryId:r.id,error:String((error as Error)?.message||error)}));
+    try{await telegram(token,"sendMessage",{chat_id:b,text:"A customer has requested a human. The inquiry is saved. Send /inquiries to view open customer requests."});}
+    catch(fallbackError){console.error("Human inquiry owner fallback failed",JSON.stringify({businessId:b,botId:bot,inquiryId:r.id,error:String((fallbackError as Error)?.message||fallbackError)}));}
+  }
+  return r.id;
+}
 async function hiCallback(token:string,q:any,b:number,bot:number){const d=String(q?.data||""),chat=Number(q?.message?.chat?.id||0),actor=Number(q?.from?.id||0),own=d.match(/^hi:(open|end):([0-9a-f-]{36})$/i),cust=d.match(/^hi:customer_end:([0-9a-f-]{36})$/i);if(!own&&!cust)return null;await telegram(token,"answerCallbackQuery",{callback_query_id:q.id}).catch(()=>{});if(own){if(actor!==b||chat!==b||q?.message?.chat?.type!=="private")return "hi-denied";const id=own[2].toLowerCase(),got=await sb.from("telegram_human_inquiries").select("*").eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("status","open").maybeSingle();if(got.error)throw got.error;const r=got.data;if(!r){await telegram(token,"sendMessage",{chat_id:chat,text:"This inquiry is already closed."});return "hi-closed";}if(own[1]==="end"){await sb.from("telegram_human_inquiries").update({status:"ended",is_selected:false,ended_by:"business",ended_at:new Date().toISOString()}).eq("id",id).eq("status","open");await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:"The business has ended this inquiry."}).catch(()=>{});await hiList(token,b,bot);return "hi-ended-business";}await sb.from("telegram_human_inquiries").update({is_selected:false}).eq("business_id",b).eq("bot_id",bot).eq("status","open");const upd=await sb.from("telegram_human_inquiries").update({is_selected:true}).eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("status","open");if(upd.error)throw upd.error;await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:"A team member has joined your conversation. You can now chat directly with the business.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+id}]]}});await telegram(token,"sendMessage",{chat_id:b,text:"You are now talking to "+hiLabel(r)+". Reply here normally — no command is needed.",reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:end:"+id}]]}});await hiList(token,b,bot);return "hi-selected";}
 const id=cust[1].toLowerCase();if(actor===b||chat!==actor)return "hi-customer-denied";const got=await sb.from("telegram_human_inquiries").select("*").eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("customer_id",actor).eq("status","open").maybeSingle();if(got.error)throw got.error;const r=got.data;if(!r)return "hi-closed";await sb.from("telegram_human_inquiries").update({status:"ended",is_selected:false,ended_by:"customer",ended_at:new Date().toISOString()}).eq("id",id).eq("status","open");await telegram(token,"sendMessage",{chat_id:b,text:"Customer ended the inquiry with "+hiLabel(r)+"."}).catch(()=>{});await telegram(token,"sendMessage",{chat_id:chat,text:"You ended this inquiry."});return "hi-ended-customer";}
 async function hiRelay(token:string,b:number,bot:number,m:any,owner:boolean){const chat=Number(m?.chat?.id||0),sender=Number(m?.from?.id||0);let q:any;if(owner){if(sender!==b||chat!==b||m?.chat?.type!=="private"||String(m?.text||"").trim().startsWith("/"))return null;q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("status","open").eq("is_selected",true).maybeSingle();}else{q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("customer_id",sender).eq("customer_chat_id",chat).eq("status","open").eq("is_selected",true).maybeSingle();}if(q.error)throw q.error;const r=q.data;if(!r)return null;const body=String(m?.text||m?.caption||"").trim();if(owner){if(body)await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:body.slice(0,3900),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:r.customer_chat_id,from_chat_id:chat,message_id:m.message_id});return "hi-owner-message";}if(body)await telegram(token,"sendMessage",{chat_id:b,text:"Customer · "+hiLabel(r)+"\n"+body.slice(0,3700),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:b,from_chat_id:chat,message_id:m.message_id});return "hi-customer-message";}
@@ -1903,6 +1939,11 @@ Deno.serve(async (req: Request) => {
     // Ignore it so automation never answers the owner while they are talking to a customer.
     if (paywallOwner && update?.business_message && senderId === paywallOwner) {
       return json({ ok: true, ignored: true, reason: "outgoing-owner-message" });
+    }
+    if(paywallOwner&&conn.bot_kind==="business"&&ownerPrivate&&/^\/(?:inquiries|humans)(?:@[A-Za-z0-9_]+)?\s*$/i.test(text)){
+      try{await hiList(token,paywallOwner,Number(conn.bot_id||0));}
+      catch(error){console.error("Human inquiry manual list failed",JSON.stringify({businessId:paywallOwner,botId:Number(conn.bot_id||0),error:String((error as Error)?.message||error)}));await reply(token,chatId,"Could not load open inquiries right now. Please try again shortly.");}
+      return json({ok:true,route:"human-inquiries-list"});
     }
     if(paywallOwner&&conn.bot_kind==="business"&&ownerPrivate&&text){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,true);if(relay)return json({ok:true,route:relay});}
     if(voice){
