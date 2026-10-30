@@ -114,6 +114,30 @@ button:active, .bizRow:active { transform: scale(.99); }
 }
 </style>
 
+
+<style id="telegram-low-memory-compat">
+/* Keep Telegram's embedded Android WebView responsive on low-memory devices. */
+@media (max-width: 768px) {
+  html, body { background-attachment: scroll !important; }
+  body::before { display: none !important; }
+  .top, .hero, .stat, .card, .listItem, .nav, .modalBack, .voiceBack {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .top, .card, .listItem, .nav, .hero, .stat {
+    box-shadow: none !important;
+  }
+  .page.active { animation: none !important; }
+  button, .btn, .grid > .card, .bizRow, .nav button {
+    transition: none !important;
+  }
+  .grid > .card:hover, .bizRow:hover, button:hover {
+    transform: none !important;
+    filter: none !important;
+  }
+}
+</style>
+
 </head>
 <body>
 <div class="wrap">
