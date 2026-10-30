@@ -167,7 +167,7 @@ async function syncOwnedBotSetup(tg:number) {
     drop_pending_updates:false
   });
   await botApi(token,"setChatMenuButton",{
-    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20260930-3"}}
+    menu_button:{type:"web_app",text:"My Bot",web_app:{url:"https://ai.tivalsdeveloper.site/telegram-app.html?v=20261030-5"}}
   }).catch(()=>null);
 }
 
