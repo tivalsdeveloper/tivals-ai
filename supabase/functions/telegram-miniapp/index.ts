@@ -138,10 +138,19 @@ async function personalBotAccess(tg:number) {
   if(subscribed)return{allowed:true,owner:false,plan:String(sub.plan),trial:false,trial_expires_at:null};
   return{allowed:true,owner:false,plan:"free",trial:false,trial_expires_at:null};
 }
-async function ownedBot(tg:number) {
+async function ownedBots(tg:number) {
   const {data,error}=await sb.from("telegram_owned_bots")
     .select(BOT_PROFILE_COLUMNS)
-    .eq("telegram_user_id",tg).maybeSingle();
+    .eq("telegram_user_id",tg)
+    .order("updated_at",{ascending:false})
+    .limit(50);
+  if(error) throw error;
+  return data||[];
+}
+async function ownedBot(tg:number, requestedBotId?:number|null) {
+  let query=sb.from("telegram_owned_bots").select(BOT_PROFILE_COLUMNS).eq("telegram_user_id",tg);
+  if(Number(requestedBotId)>0) query=query.eq("bot_id",Number(requestedBotId));
+  const {data,error}=await query.order("updated_at",{ascending:false}).limit(1).maybeSingle();
   if(error) throw error;
   return data;
 }
@@ -346,6 +355,8 @@ async function getDashboard(tg:number) {
     : { id:plan, ...plans[plan as "free"|"basic"|"pro"], active:plan==="free"||active, expiration:active ? sub.subscription_expiration_date : null };
   return {
     owner:admin,
+    bots:bots.map((item:any)=>({bot_id:item.bot_id,username:item.username,bot_name:item.bot_name,bot_kind:item.bot_kind,is_active:item.is_active,account_label:item.account_label})),
+    selected_bot_id:bot?.bot_id||null,
     plan:planData,
     usage:{ ai:Number(usage?.ai_messages||0), images:Number(usage?.image_generations||0) },
     settings: settings || {response_style:"balanced",notifications:true,tool_suggestions:true},
@@ -452,7 +463,7 @@ Deno.serve(async req => {
       }
     }
 
-    if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg)});
+    if (action==="dashboard") return json({ok:true,user,dashboard:await getDashboard(tg,Number(body?.bot_id||0)||null)});
     if (action==="personal_bot_dashboard") return json({ok:true,user,dashboard:await getPersonalBotDashboard(tg)});
     if (action==="bot_profile_photo") {
       const {data:bot}=await sb.from("telegram_owned_bots").select("bot_id,username,is_active,token_enc").eq("telegram_user_id",tg).maybeSingle();
@@ -655,7 +666,10 @@ Deno.serve(async req => {
       if(websiteUrl && !/^https?:\/\//i.test(websiteUrl)) return json({error:"Website must start with https:// or http://."},400);
       const hours=body?.business_hours && typeof body.business_hours==="object" && !Array.isArray(body.business_hours) ? body.business_hours : {};
       if(JSON.stringify(hours).length>5000) return json({error:"Business hours are too long."},400);
-      const {data:bot,error:botError}=await sb.from("telegram_owned_bots").select("bot_id,bot_kind,is_active").eq("telegram_user_id",tg).maybeSingle();
+      const requestedBotId=Number(body?.bot_id||0);
+      let botQuery=sb.from("telegram_owned_bots").select("bot_id,bot_kind,is_active").eq("telegram_user_id",tg);
+      if(requestedBotId>0)botQuery=botQuery.eq("bot_id",requestedBotId);
+      const {data:bot,error:botError}=await botQuery.order("updated_at",{ascending:false}).limit(1).maybeSingle();
       if(botError)throw botError;
       if(!bot?.is_active||bot.bot_kind!=="business"||!bot.bot_id)return json({error:"Connect an active Business bot before saving its business profile."},400);
       const row={
