@@ -940,7 +940,7 @@ async function gmailFetchJson(token: string, url: string) {
   if (!r.ok) throw new Error(d?.error?.message || `Gmail request failed (${r.status}).`);
   return d;
 }
-function gmailRawMessage(recipient: string, subject: string, body: string,reply?:{inReplyTo?:string;references?:string}) {
+function gmailRawMessage(recipient: string, subject: string, body: string,reply?:{inReplyTo?:string;references?:string},sender?:{name?:string;email?:string}) {
   const safeRecipient = recipient.trim();
   if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(safeRecipient) || /[\r\n]/.test(safeRecipient)) {
     throw new Error("Enter one valid recipient email address.");
@@ -952,6 +952,7 @@ function gmailRawMessage(recipient: string, subject: string, body: string,reply?
   const encodedSubject = b64(subjectBytes);
   const raw = [
     `To: ${safeRecipient}`,
+    ...(sender?.name&&sender?.email&&/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(sender.email)?[`From: =?UTF-8?B?${b64(new TextEncoder().encode(sender.name.replace(/[\r\n\x00-\x1f\x7f]/g,"").slice(0,64)))}?= <${sender.email}>`]:[]),
     `Subject: =?UTF-8?B?${encodedSubject}?=`,
     ...(reply?.inReplyTo?[`In-Reply-To: ${reply.inReplyTo.replace(/[\r\n]/g,"").slice(0,998)}`]:[]),
     ...(reply?.references?[`References: ${reply.references.replace(/[\r\n]/g,"").slice(0,1800)}`]:[]),
@@ -963,7 +964,7 @@ function gmailRawMessage(recipient: string, subject: string, body: string,reply?
   ].join("\r\n");
   return b64(new TextEncoder().encode(raw)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-async function gmailSend(tg: number, recipient: string, subject: string, body: string,reply?:{threadId?:string;inReplyTo?:string;references?:string}) {
+async function gmailSend(tg: number, recipient: string, subject: string, body: string,reply?:{threadId?:string;inReplyTo?:string;references?:string},displayName="") {
   const conn = await gmailConnection(tg);
   const scope = String(conn.scope || "");
   if (!scope.includes("gmail.send") && !scope.includes("mail.google.com")) {
@@ -973,7 +974,7 @@ async function gmailSend(tg: number, recipient: string, subject: string, body: s
   const r = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ raw: gmailRawMessage(recipient, subject, body,reply),...(reply?.threadId?{threadId:reply.threadId}:{}) }),
+    body: JSON.stringify({ raw: gmailRawMessage(recipient, subject, body,reply,{name:String(displayName||"").trim(),email:String(conn?.metadata?.email||"").trim()}),...(reply?.threadId?{threadId:reply.threadId}:{}) }),
   });
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 || r.status === 403) {
@@ -1727,7 +1728,7 @@ if(action==="github_group_action"){
   if (action === "gmail_send") {
     try {
       if (!Number.isSafeInteger(tg) || tg <= 0) return json({ error: "Invalid Telegram user." }, 400);
-      return json(await gmailSend(tg, String(body.recipient || ""), String(body.subject || ""), String(body.email_body || ""),{threadId:String(body.thread_id||""),inReplyTo:String(body.in_reply_to||""),references:String(body.references||"")}));
+      return json(await gmailSend(tg, String(body.recipient || ""), String(body.subject || ""), String(body.email_body || ""),{threadId:String(body.thread_id||""),inReplyTo:String(body.in_reply_to||""),references:String(body.references||"")},String(body.display_name||"").trim().slice(0,64)));
     } catch (e) {
       return json({ error: String((e as Error)?.message || e) }, 400);
     }
