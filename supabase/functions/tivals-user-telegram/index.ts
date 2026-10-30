@@ -715,16 +715,11 @@ async function hiCallback(token:string,q:any,b:number,bot:number){const d=String
 const id=cust[1].toLowerCase();if(actor===b||chat!==actor)return "hi-customer-denied";const got=await sb.from("telegram_human_inquiries").select("*").eq("id",id).eq("business_id",b).eq("bot_id",bot).eq("customer_id",actor).eq("status","open").maybeSingle();if(got.error)throw got.error;const r=got.data;if(!r)return "hi-closed";await sb.from("telegram_human_inquiries").update({status:"ended",is_selected:false,ended_by:"customer",ended_at:new Date().toISOString()}).eq("id",id).eq("status","open");await telegram(token,"sendMessage",{chat_id:b,text:"Customer ended the inquiry with "+hiLabel(r)+"."}).catch(()=>{});await telegram(token,"sendMessage",{chat_id:chat,text:"You ended this inquiry."});return "hi-ended-customer";}
 async function hiRelay(token:string,b:number,bot:number,m:any,owner:boolean){const chat=Number(m?.chat?.id||0),sender=Number(m?.from?.id||0);let q:any;if(owner){if(sender!==b||chat!==b||m?.chat?.type!=="private"||String(m?.text||"").trim().startsWith("/"))return null;q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("status","open").eq("is_selected",true).maybeSingle();}else{q=await sb.from("telegram_human_inquiries").select("*").eq("business_id",b).eq("bot_id",bot).eq("customer_id",sender).eq("customer_chat_id",chat).eq("status","open").eq("is_selected",true).maybeSingle();}if(q.error)throw q.error;const r=q.data;if(!r)return null;const body=String(m?.text||m?.caption||"").trim();if(owner){if(body)await telegram(token,"sendMessage",{chat_id:r.customer_chat_id,text:body.slice(0,3900),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:customer_end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:r.customer_chat_id,from_chat_id:chat,message_id:m.message_id});return "hi-owner-message";}if(body)await telegram(token,"sendMessage",{chat_id:b,text:"Customer · "+hiLabel(r)+"\n"+body.slice(0,3700),reply_markup:{inline_keyboard:[[{text:"End inquiry",callback_data:"hi:end:"+r.id}]]}});else if(m?.message_id)await telegram(token,"copyMessage",{chat_id:b,from_chat_id:chat,message_id:m.message_id});return "hi-customer-message";}
 
-async function telegramBusinessProfile(tg:number) {
-  if(!tg) return null;
-  const [{data:profile,error},{data:catalog},{data:specialists},{data:faqs}] = await Promise.all([
-    sb.from("telegram_business_profiles").select("business_name,assistant_name,business_details,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions").eq("telegram_user_id",tg).maybeSingle(),
-    sb.from("telegram_business_catalog").select("item_type,name,price,currency,details,available").eq("telegram_user_id",tg).eq("available",true).order("sort_order"),
-    sb.from("telegram_business_specialists").select("first_name,last_name,about,services").eq("telegram_user_id",tg).eq("active",true).order("sort_order"),
-    sb.from("telegram_business_faqs").select("question,answer").eq("telegram_user_id",tg).order("sort_order")
-  ]);
+async function telegramBusinessProfile(tg:number,botId:number) {
+  if(!tg||!botId) return null;
+  const {data:profile,error}=await sb.from("telegram_bot_business_profiles").select("business_name,assistant_name,business_details,products_services,industry,behavior,languages,staff_contact,email,phone,address,website_url,payment_options,business_hours,booking_reminders,booking_confirmations,confirmation_mode,response_minutes,booking_instructions").eq("telegram_user_id",tg).eq("bot_id",botId).maybeSingle();
   if(error) throw error;
-  return profile ? {...profile,catalog:catalog||[],specialists:specialists||[],faqs:faqs||[]} : null;
+  return profile ? {...profile,catalog:[],specialists:[],faqs:[]} : null;
 }
 
 const BUSINESS_MENUS:Record<string,string[]>={
@@ -2406,7 +2401,7 @@ Deno.serve(async (req: Request) => {
     });
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
-    const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner):null;
+    const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner,Number(conn.bot_id||0)):null;
     const selectedMenuOption=businessProfile?matchingMenuOption(text,businessMenu(businessProfile)):null;
     if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&classify(selectedMenuOption||text)?.type==="handoff"){const inquiryId=await hiCreate(token,paywallOwner,Number(conn.bot_id||0),message);return json({ok:true,route:"human-inquiry-created",inquiryId});}
     if(businessProfile&&senderId!==paywallOwner&&chatType==="private"){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,false);if(relay)return json({ok:true,route:relay});}
