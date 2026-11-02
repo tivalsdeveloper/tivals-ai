@@ -18,3 +18,7 @@ verify_jwt = false
 
 [functions.telegram-gmail-monitor]
 verify_jwt = true
+
+[functions.web-search]
+# The endpoint authenticates internal Telegram requests with the service-role bearer token.
+verify_jwt = false
