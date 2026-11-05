@@ -2533,6 +2533,13 @@ Deno.serve(async (req: Request) => {
     let conversation:any=null,persistentHistory:Array<{role:"user"|"assistant";content:string}>|undefined;
     if(privateConversation){conversation=await activeConversation(paywallOwner,chatId,senderId);persistentHistory=await conversationHistory(conversation.id);}
     const businessProfile=conn.bot_kind==="business"&&paywallOwner?await telegramBusinessProfile(paywallOwner,Number(conn.bot_id||0)):null;
+    // Every standalone greeting from a business customer opens the business menu,
+    // including returning customers; do not route greetings into AI chat or an old inquiry.
+    const isBusinessGreeting=/^(?:(?:hi|hello|hey|hiya|howdy|yo)(?:\\s+there)?|good\\s+(?:morning|afternoon|evening)|greetings|how\\s+are\\s+you)[\\s!.,?]*$/i.test(text.trim());
+    if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&isBusinessGreeting){
+      await sendBusinessMenu(token,chatId,businessProfile,businessConnectionId,"Welcome! Please choose an option from the menu below.");
+      return json({ok:true,route:"business-greeting-menu"});
+    }
     const selectedMenuOption=businessProfile?matchingMenuOption(text,businessMenu(businessProfile)):null;
     if(businessProfile&&senderId!==paywallOwner&&chatType==="private"&&classify(selectedMenuOption||text)?.type==="handoff"){const inquiryId=await hiCreate(token,paywallOwner,Number(conn.bot_id||0),message,businessConnectionId);return json({ok:true,route:"human-inquiry-created",inquiryId});}
     if(businessProfile&&senderId!==paywallOwner&&chatType==="private"){const relay=await hiRelay(token,paywallOwner,Number(conn.bot_id||0),message,false);if(relay)return json({ok:true,route:relay});}
